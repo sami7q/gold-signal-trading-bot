@@ -14,6 +14,7 @@ trading engine marks the trade FAILED.
 
 from __future__ import annotations
 
+import time
 from decimal import Decimal
 
 from app.core.config import Settings
@@ -54,7 +55,11 @@ class MT5Broker(Broker):
         self._mt5 = mt5
 
         terminal_path = self._settings.mt5_terminal_path or None
-        if not mt5.initialize(path=terminal_path):
+        # `mt5.initialize(path=None)` is not equivalent to `mt5.initialize()` --
+        # passing an explicit `path=None` fails with "Invalid path argument"
+        # against a real terminal, so the argument is only passed when set.
+        initialized = mt5.initialize(path=terminal_path) if terminal_path else mt5.initialize()
+        if not initialized:
             raise MT5ConnectionError(f"MT5 initialize() failed: {mt5.last_error()}")
 
         authorized = mt5.login(
@@ -86,12 +91,25 @@ class MT5Broker(Broker):
         symbol_info = mt5.symbol_info(self._symbol)
         if symbol_info is None:
             raise MT5ConnectionError(f"Symbol {self._symbol} not found on this broker.")
-        if not symbol_info.visible and not mt5.symbol_select(self._symbol, True):
-            raise MT5ConnectionError(f"Could not select symbol {self._symbol}.")
+        if not symbol_info.visible:
+            if not mt5.symbol_select(self._symbol, True):
+                raise MT5ConnectionError(f"Could not select symbol {self._symbol}.")
+            # Re-read after selecting: the object fetched before selection
+            # may be stale (visible/trade_mode reflect the pre-selection
+            # state), and a freshly-selected symbol needs a brief moment
+            # before the terminal has a live tick for it below.
+            symbol_info = mt5.symbol_info(self._symbol)
+            if symbol_info is None:
+                raise MT5ConnectionError(f"Symbol {self._symbol} disappeared after selection.")
         if not symbol_info.trade_mode:
             raise MT5ConnectionError(f"Trading is disabled for {self._symbol} on this account.")
 
-        tick = mt5.symbol_info_tick(self._symbol)
+        tick = None
+        for _ in range(10):
+            tick = mt5.symbol_info_tick(self._symbol)
+            if tick is not None and tick.bid != 0:
+                break
+            time.sleep(0.5)
         if tick is None or tick.bid == 0:
             raise MT5ConnectionError(f"No market data available for {self._symbol}.")
 
