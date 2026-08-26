@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #0b0d10;
+  --surface: #14171c;
+  --surface-raised: #1b1f26;
+  --border: #262b33;
+  --border-soft: #1d2129;
+
+  --gold: #c9a227;
+  --gold-bright: #e8c766;
+  --gold-dim: #8a7220;
+
+  --bone: #ede7da;
+  --muted: #8b8f98;
+  --muted-dim: #5a5e66;
+
+  --win: #4f9d69;
+  --win-bright: #6cc98a;
+  --loss: #c1554a;
+  --loss-bright: #e17469;
+  --warn: #d1a13a;
+  --info: #5c9ad1;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
+
+  --color-gold: var(--gold);
+  --color-gold-bright: var(--gold-bright);
+  --color-gold-dim: var(--gold-dim);
+
+  --color-bone: var(--bone);
+  --color-muted: var(--muted);
+  --color-muted-dim: var(--muted-dim);
+
+  --color-win: var(--win);
+  --color-win-bright: var(--win-bright);
+  --color-loss: var(--loss);
+  --color-loss-bright: var(--loss-bright);
+  --color-warn: var(--warn);
+  --color-info: var(--info);
+
+  --font-display: var(--font-space-grotesk);
+  --font-data: var(--font-plex-mono);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--ink);
+  color: var(--bone);
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(201, 162, 39, 0.08), transparent);
+  background-repeat: no-repeat;
+}
+
+.font-data {
+  font-family: var(--font-data), ui-monospace, "SFMono-Regular", monospace;
+  font-feature-settings: "tnum" 1, "zero" 1;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+::selection {
+  background: var(--gold-dim);
+  color: var(--bone);
+}
+
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+.pulse {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-dim);
+}

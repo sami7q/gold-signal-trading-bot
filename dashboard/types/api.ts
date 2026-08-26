@@ -1,0 +1,234 @@
+export type TradingMode = "SIMULATION" | "DEMO" | "LIVE";
+export type Side = "BUY" | "SELL";
+export type OrderType = "MARKET" | "LIMIT" | "STOP";
+
+export type SignalStatus =
+  | "RECEIVED"
+  | "CLASSIFIED"
+  | "WAITING_FOR_DETAILS"
+  | "READY"
+  | "VALIDATING"
+  | "REJECTED"
+  | "EXECUTION_PENDING"
+  | "EXECUTED"
+  | "FAILED"
+  | "EXPIRED"
+  | "IGNORED"
+  | "DUPLICATE";
+
+export type TradeStatus =
+  | "CREATED"
+  | "SUBMITTING"
+  | "OPEN"
+  | "CLOSED_TP"
+  | "CLOSED_SL"
+  | "CLOSED_MANUAL"
+  | "REJECTED"
+  | "FAILED"
+  | "UNKNOWN";
+
+export type TradeResult = "WIN" | "LOSS" | "BREAKEVEN";
+
+export type AuditSeverity = "INFO" | "WARNING" | "ERROR" | "CRITICAL";
+
+export interface TradingSettings {
+  id: number;
+  auto_trading: boolean;
+  mode: TradingMode;
+  buy_enabled: boolean;
+  sell_enabled: boolean;
+  lot_size: string;
+  target_pips: string;
+  require_stop_loss: boolean;
+  max_open_trades: number;
+  signal_completion_timeout_seconds: number;
+}
+
+export interface PipPreview {
+  symbol: string;
+  broker: string;
+  broker_healthy: boolean;
+  digits: number | null;
+  point: string | null;
+  pip_size: string | null;
+  target_pips: string;
+  price_distance: string | null;
+  example_entry: string | null;
+  calculated_take_profit: string | null;
+}
+
+export interface TradingSettingsUpdate {
+  auto_trading?: boolean;
+  mode?: TradingMode;
+  buy_enabled?: boolean;
+  sell_enabled?: boolean;
+  lot_size?: string;
+  target_pips?: string;
+  require_stop_loss?: boolean;
+  max_open_trades?: number;
+  signal_completion_timeout_seconds?: number;
+  confirm_live_phrase?: string;
+}
+
+export interface Trade {
+  id: number;
+  signal_id: number;
+  execution_key: string;
+  broker: string;
+  broker_order_id: string | null;
+  broker_position_id: string | null;
+  symbol: string;
+  side: Side;
+  requested_lot: string;
+  executed_lot: string | null;
+  entry_price: string | null;
+  stop_loss: string | null;
+  target_pips: string;
+  take_profit_price: string | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  exit_price: string | null;
+  profit: string | null;
+  profit_currency: string;
+  status: TradeStatus;
+  result: TradeResult | null;
+  close_reason: string | null;
+  failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type MessageRole = "ENTRY" | "DETAILS" | "STOP_LOSS" | "TARGETS" | "UPDATE" | "RESULT" | "OTHER";
+
+export interface SignalSourceMessage {
+  role: MessageRole;
+  raw_text: string;
+  normalized_text: string;
+  sent_at: string;
+}
+
+export interface Signal {
+  id: number;
+  symbol: string;
+  side: Side;
+  signal_type: OrderType;
+  entry_min: string | null;
+  entry_max: string | null;
+  channel_stop_loss: string | null;
+  status: SignalStatus;
+  source: string;
+  channel_id: string;
+  first_message_at: string;
+  completed_at: string | null;
+  expires_at: string | null;
+  rejection_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  linked_trade_id: number | null;
+  messages: SignalSourceMessage[];
+}
+
+export interface AuditEvent {
+  id: number;
+  event_type: string;
+  severity: AuditSeverity;
+  message: string;
+  metadata_json: string;
+  created_at: string;
+}
+
+export interface TradeStatistics {
+  trades_executed: number;
+  open_trades: number;
+  closed_trades: number;
+  wins: number;
+  losses: number;
+  win_rate: string;
+  net_profit: string;
+  gross_profit: string;
+  gross_loss: string;
+  average_win: string;
+  average_loss: string;
+  best_trade: string | null;
+  worst_trade: string | null;
+  today_trades: number;
+  today_pl: string;
+}
+
+export interface DashboardSummary {
+  total_signals_received: number;
+  executable_signals: number;
+  ignored_messages: number;
+  rejected_signals: number;
+  statistics: TradeStatistics;
+  balance: string | null;
+  equity: string | null;
+  broker_healthy: boolean;
+}
+
+export interface DashboardSummaryResponse {
+  summary: DashboardSummary;
+  settings: TradingSettings;
+}
+
+export interface ProfitCurvePoint {
+  closed_at: string;
+  trade_id: number;
+  profit: string;
+  cumulative_profit: string;
+}
+
+export interface DailyPerformance {
+  day: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  profit: string;
+}
+
+export interface HealthStatus {
+  healthy: boolean;
+  detail: string;
+}
+
+export interface SignalSourceHealth extends HealthStatus {
+  source: string;
+  enabled: boolean;
+  connected: boolean;
+  authenticated: boolean;
+  allowed_channel_configured: boolean;
+  last_message_at: string | null;
+  last_error: string | null;
+}
+
+export interface SimulationPosition {
+  position_id: string;
+  symbol: string;
+  side: string;
+  lot: string;
+  entry_price: string;
+  stop_loss: string | null;
+  take_profit: string | null;
+  is_open: boolean;
+  close_price: string | null;
+  profit: string | null;
+  close_reason: string | null;
+}
+
+export interface SimulationState {
+  symbol: string;
+  bid: string;
+  ask: string;
+  balance: string;
+  equity: string;
+  open_positions: SimulationPosition[];
+}
+
+export interface SendMessageResult {
+  message_id: string;
+  duplicate: boolean;
+  classification: string | null;
+  signal_id: number | null;
+  signal_status: string | null;
+  became_ready: boolean;
+}
