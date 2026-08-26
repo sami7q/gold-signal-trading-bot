@@ -185,11 +185,13 @@ def test_pip_preview_uses_the_same_math_as_the_trading_engine(client):
     assert preview["symbol"] == "XAUUSD"
     assert preview["broker_healthy"] is True
     assert preview["point"] == "0.01"
-    assert preview["pip_size"] == "0.01"
+    # Gold pip size is 10x point (confirmed against a real MT5 Demo XAUUSD
+    # symbol -- digits=2, point=0.01, 1 pip=$0.10 -- see app/trading/pips.py).
+    assert preview["pip_size"] == "0.1"
     assert preview["target_pips"] == "100"
-    assert preview["price_distance"] == "1"
+    assert preview["price_distance"] == "10"
     assert preview["example_entry"] == "4638.5"
-    assert preview["calculated_take_profit"] == "4639.5"
+    assert preview["calculated_take_profit"] == "4648.5"
 
     default_preview = client.get("/api/settings/pip-preview").json()
     assert default_preview["target_pips"] == "100"  # falls back to current settings.target_pips
