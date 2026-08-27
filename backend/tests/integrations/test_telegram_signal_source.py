@@ -19,6 +19,7 @@ from sqlmodel import select
 from app.core.config import Settings
 from app.core.constants import AuditEventType, SignalStatus
 from app.database.models.audit_event import AuditEvent
+from app.database.models.signal import Signal
 from app.integrations.broker.paper import PaperBroker
 from app.integrations.signal_source.telegram import TelegramSignalSource
 from app.signals.models import IncomingMessageData
@@ -107,6 +108,59 @@ def test_allowed_channel_message_accepted(session):
     source._handle_event(event, is_edit=False)
 
     assert len(received) == 1
+
+
+def test_photo_with_no_caption_is_normalized_to_empty_text_and_never_crashes(session):
+    """A photo/chart image with no caption has `raw_text == ""` in Telethon
+    -- it must reach the pipeline as an empty-text message (safely
+    classified IGNORED downstream, never a signal), not crash the handler
+    or the dispatch loop."""
+    source = TelegramSignalSource(_settings())
+    received = []
+    source.on_message(received.append)
+
+    photo_event = FakeEvent(int(ALLOWED_CHANNEL), FakeMessage(1, datetime.now(UTC)), "")
+    source._handle_event(photo_event, is_edit=False)
+
+    assert len(received) == 1
+    assert received[0].text == ""
+    health = asyncio.run(source.health())
+    assert health.last_error is None
+
+
+def test_photo_with_no_caption_never_creates_a_signal_end_to_end(session):
+    broker = _broker()
+    service = TradingService(session, broker, signal_completion_timeout_seconds=120)
+    data = IncomingMessageData(
+        source="telegram",
+        channel_id=ALLOWED_CHANNEL,
+        message_id="photo-1",
+        text="",
+        sent_at=datetime.now(UTC),
+        received_at=datetime.now(UTC),
+    )
+
+    result = service.process_incoming_message(data)
+
+    assert result.signal is None
+    assert result.parsed is not None
+    assert result.parsed.classification.value == "IGNORED"
+    assert session.exec(select(Signal)).all() == []
+
+
+def test_photo_with_a_valid_caption_still_works_normally(session):
+    """A photo *with* a caption carries the caption text in `raw_text` --
+    this must still be read as a normal command, proving photos aren't
+    blanket-blocked, only ones with no actionable text."""
+    source = TelegramSignalSource(_settings())
+    received = []
+    source.on_message(received.append)
+
+    captioned_event = FakeEvent(int(ALLOWED_CHANNEL), FakeMessage(1, datetime.now(UTC)), "BUY GOLD")
+    source._handle_event(captioned_event, is_edit=False)
+
+    assert len(received) == 1
+    assert received[0].text == "BUY GOLD"
 
 
 def test_wrong_channel_ignored(session):
