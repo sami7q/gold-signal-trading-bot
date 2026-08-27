@@ -9,6 +9,8 @@ broker simply falls back to the Paper Broker (see `app/core/runtime.py`).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -55,6 +57,27 @@ def assert_paper_broker_active_if_telegram_live(settings: Settings) -> None:
             "Safety violation: TELEGRAM_ENABLED=true and TRADING_MODE=SIMULATION but the "
             f"active broker is '{active_name}', not 'paper'. Refusing to start."
         )
+
+
+async def _poll_open_trades(poll_seconds: int) -> None:
+    """Re-runs the same reconciliation the startup path uses, on a timer.
+
+    A real broker closes a position on its own server the instant SL or TP
+    is hit — our database only finds out by asking. Without this loop that
+    only ever happened once, at process startup, so a trade that closed
+    five minutes into a long-running process would sit as OPEN (wrong
+    balance/equity, wrong win/loss stats) until the next restart.
+    """
+    while True:
+        await asyncio.sleep(poll_seconds)
+        try:
+            with Session(get_engine()) as session:
+                broker = get_broker()
+                ReconciliationService(
+                    session, broker, AuditService(session)
+                ).reconcile_open_trades()
+        except Exception:  # noqa: BLE001 - one bad poll must never kill the loop
+            logger.exception("Periodic trade reconciliation failed")
 
 
 def _message_handler(data: IncomingMessageData) -> None:
@@ -142,7 +165,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     assert_paper_broker_active_if_telegram_live(settings)
 
+    poll_task = asyncio.create_task(_poll_open_trades(settings.position_poll_seconds))
+
     yield
+
+    poll_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await poll_task
 
     await mock_source.stop()
 

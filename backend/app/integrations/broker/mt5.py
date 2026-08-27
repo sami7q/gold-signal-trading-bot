@@ -15,6 +15,7 @@ trading engine marks the trade FAILED.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.core.config import Settings
@@ -221,18 +222,64 @@ class MT5Broker(Broker):
     def get_position(self, position_id: str) -> BrokerPosition | None:
         mt5 = self._require_connected()
         positions = mt5.positions_get(ticket=int(position_id))
-        if not positions:
+        if positions:
+            p = positions[0]
+            return BrokerPosition(
+                position_id=str(p.ticket),
+                symbol=p.symbol,
+                side="BUY" if p.type == mt5.ORDER_TYPE_BUY else "SELL",  # type: ignore[arg-type]
+                lot=Decimal(str(p.volume)),
+                entry_price=Decimal(str(p.price_open)),
+                stop_loss=Decimal(str(p.sl)) if p.sl else None,
+                take_profit=Decimal(str(p.tp)) if p.tp else None,
+                is_open=True,
+            )
+
+        # Not in the open-positions list -- MT5 moves a position to history
+        # the instant it closes (server-side SL/TP, a manual close, or a
+        # stop-out), so absence here does NOT mean "unknown". Look it up in
+        # the deal history before ever reporting it as missing.
+        return self._closed_position_from_history(int(position_id))
+
+    def _closed_position_from_history(self, position_id: int) -> BrokerPosition | None:
+        mt5 = self._require_connected()
+        deals = mt5.history_deals_get(position=position_id)
+        if not deals:
+            return None  # genuinely no broker record at all -- truly unknown
+
+        entry_deal = next((d for d in deals if d.entry == mt5.DEAL_ENTRY_IN), None)
+        exit_deal = next((d for d in deals if d.entry == mt5.DEAL_ENTRY_OUT), None)
+        if entry_deal is None or exit_deal is None:
+            # Partially reconstructable (e.g. only the opening leg is in
+            # this history window) -- do not guess a close reason/profit.
             return None
-        p = positions[0]
+
+        reason_map = {
+            mt5.DEAL_REASON_SL: "SL",
+            mt5.DEAL_REASON_TP: "TP",
+        }
+        close_reason = reason_map.get(exit_deal.reason, "MANUAL")
+        total_profit = sum(
+            (
+                Decimal(str(d.profit)) + Decimal(str(d.swap)) + Decimal(str(d.commission))
+                for d in deals
+            ),
+            start=Decimal("0"),
+        )
+
         return BrokerPosition(
-            position_id=str(p.ticket),
-            symbol=p.symbol,
-            side="BUY" if p.type == mt5.ORDER_TYPE_BUY else "SELL",  # type: ignore[arg-type]
-            lot=Decimal(str(p.volume)),
-            entry_price=Decimal(str(p.price_open)),
-            stop_loss=Decimal(str(p.sl)) if p.sl else None,
-            take_profit=Decimal(str(p.tp)) if p.tp else None,
-            is_open=True,
+            position_id=str(position_id),
+            symbol=entry_deal.symbol,
+            side="BUY" if entry_deal.type == mt5.ORDER_TYPE_BUY else "SELL",  # type: ignore[arg-type]
+            lot=Decimal(str(entry_deal.volume)),
+            entry_price=Decimal(str(entry_deal.price)),
+            stop_loss=None,
+            take_profit=None,
+            is_open=False,
+            close_price=Decimal(str(exit_deal.price)),
+            closed_at=datetime.fromtimestamp(exit_deal.time, tz=UTC),
+            profit=total_profit,
+            close_reason=close_reason,
         )
 
     def close_position(self, position_id: str) -> BrokerExecution:

@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     mt5_terminal_path: str = ""
     mt5_symbol: str = "XAUUSD"
 
+    #: How often (seconds) the background loop re-checks every OPEN trade
+    #: against the broker. A real broker (MT5) closes positions on its own
+    #: server the instant SL/TP is hit -- without this poll, that closure
+    #: would only ever be discovered the next time the process restarts
+    #: (reconciliation also runs once at startup, but that alone leaves a
+    #: closed trade looking OPEN for however long the process keeps running).
+    position_poll_seconds: int = 20
+
     dashboard_cors_origins: str = "http://localhost:3000"
 
     #: /docs, /redoc, /openapi.json. Enabled by default for local dev; set
