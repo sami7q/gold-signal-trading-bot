@@ -7,10 +7,12 @@ from sqlmodel import Session, select
 
 from app.analytics.calculations import (
     DailyPerformance,
+    OrderPositionPerformance,
     ProfitCurvePoint,
     TradeStatistics,
     compute_daily_performance,
     compute_profit_curve,
+    compute_trade_order_performance,
     compute_trade_statistics,
 )
 from app.core.constants import MessageClassification, SignalStatus
@@ -94,3 +96,6 @@ class AnalyticsService:
 
     def get_daily_performance(self) -> list[DailyPerformance]:
         return compute_daily_performance(self._all_trades())
+
+    def get_trade_order_performance(self) -> list[OrderPositionPerformance]:
+        return compute_trade_order_performance(self._all_trades())

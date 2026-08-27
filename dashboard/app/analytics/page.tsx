@@ -12,12 +12,12 @@ import {
   Bar,
   Legend,
 } from "recharts";
-import { LineChart as LineChartIcon } from "lucide-react";
+import { CalendarClock, LineChart as LineChartIcon } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { StatCard } from "@/components/ui/stat-card";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { useDashboardSummary } from "@/hooks/use-dashboard";
-import { useDailyPerformance, useProfitCurve } from "@/hooks/use-analytics";
+import { useDailyPerformance, useProfitCurve, useTradeOrderPerformance } from "@/hooks/use-analytics";
 import { formatMoney, formatPercent, formatTime } from "@/lib/format";
 
 const CHART_TEXT = "#8b8f98";
@@ -25,10 +25,23 @@ const GOLD = "#c9a227";
 const WIN = "#4f9d69";
 const LOSS = "#c1554a";
 
+const ORDINAL_LABELS_AR: Record<number, string> = {
+  1: "الصفقة الأولى",
+  2: "الصفقة الثانية",
+  3: "الصفقة الثالثة",
+  4: "الصفقة الرابعة",
+  5: "الصفقة الخامسة",
+};
+
+function ordinalLabel(position: number): string {
+  return ORDINAL_LABELS_AR[position] ?? `الصفقة رقم ${position}`;
+}
+
 export default function AnalyticsPage() {
   const summaryQuery = useDashboardSummary();
   const profitCurveQuery = useProfitCurve();
   const dailyQuery = useDailyPerformance();
+  const orderPerformanceQuery = useTradeOrderPerformance();
 
   const stats = summaryQuery.data?.summary.statistics;
 
@@ -127,6 +140,45 @@ export default function AnalyticsPage() {
             </ResponsiveContainer>
           )}
         </div>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="أداء الصفقة الأولى/الثانية/الثالثة يوميًا"
+          subtitle="نسبة نجاح كل صفقة حسب ترتيبها اليومي، مجمّعة عبر كل الأيام — من الآن فصاعدًا"
+        />
+        {orderPerformanceQuery.isLoading ? (
+          <LoadingState />
+        ) : orderPerformanceQuery.isError ? (
+          <ErrorState message={(orderPerformanceQuery.error as Error).message} />
+        ) : !orderPerformanceQuery.data?.length ? (
+          <EmptyState icon={CalendarClock} title="لا توجد صفقات كافية بعد لهذا التحليل" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-border-soft text-[11px] uppercase tracking-wide text-muted-dim">
+                  <th className="px-4 py-2 font-medium">الترتيب</th>
+                  <th className="px-4 py-2 text-right font-medium">عدد الصفقات</th>
+                  <th className="px-4 py-2 text-right font-medium">رابحة</th>
+                  <th className="px-4 py-2 text-right font-medium">خاسرة</th>
+                  <th className="px-4 py-2 text-right font-medium">نسبة النجاح</th>
+                </tr>
+              </thead>
+              <tbody className="font-data">
+                {orderPerformanceQuery.data.map((row) => (
+                  <tr key={row.position} className="border-b border-border-soft/60 last:border-0">
+                    <td className="px-4 py-2 text-bone">{ordinalLabel(row.position)}</td>
+                    <td className="px-4 py-2 text-right text-bone">{row.trades}</td>
+                    <td className="px-4 py-2 text-right text-win-bright">{row.wins}</td>
+                    <td className="px-4 py-2 text-right text-loss-bright">{row.losses}</td>
+                    <td className="px-4 py-2 text-right text-gold-bright">{formatPercent(row.win_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
     </div>
   );

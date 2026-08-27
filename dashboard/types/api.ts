@@ -186,6 +186,56 @@ export interface DailyPerformance {
   profit: string;
 }
 
+export interface OrderPositionPerformance {
+  position: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate: string;
+}
+
+export type ArchiveClassification = "READY" | "NON_EXECUTABLE_TYPE" | "NO_SL" | "AMBIGUOUS_OR_OTHER";
+export type ArchiveOutcome = "WIN" | "LOSS" | "UNRESOLVED" | "NO_PRICE_DATA";
+
+export interface ArchiveSummary {
+  total_signals: number;
+  ready_signals: number;
+  non_executable_signals: number;
+  no_sl_signals: number;
+  ambiguous_or_other_signals: number;
+  wins: number;
+  losses: number;
+  unresolved: number;
+  no_price_data: number;
+  win_rate: string;
+  net_profit_estimate: string;
+  gross_profit_estimate: string;
+  gross_loss_estimate: string;
+}
+
+export interface ArchivedSignal {
+  id: number;
+  channel_id: string;
+  message_id: string;
+  symbol: string;
+  side: string;
+  signal_type: string;
+  entry_min: string | null;
+  entry_max: string | null;
+  channel_stop_loss: string | null;
+  raw_entry_text: string;
+  raw_sl_text: string | null;
+  signal_posted_at: string;
+  sl_posted_at: string | null;
+  classification: ArchiveClassification;
+  simulated_entry_price: string | null;
+  simulated_take_profit_price: string | null;
+  outcome: ArchiveOutcome | null;
+  outcome_price: string | null;
+  outcome_at: string | null;
+  profit_estimate: string | null;
+}
+
 export interface HealthStatus {
   healthy: boolean;
   detail: string;

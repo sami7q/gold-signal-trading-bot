@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
-from app.analytics.calculations import DailyPerformance, ProfitCurvePoint
+from app.analytics.calculations import DailyPerformance, OrderPositionPerformance, ProfitCurvePoint
 from app.analytics.service import AnalyticsService, DashboardSummary
 from app.api.logs import AuditEventRead
 from app.api.trades import TradeRead
@@ -55,3 +55,10 @@ def get_daily_performance(
     session: Annotated[Session, Depends(get_session)],
 ) -> list[DailyPerformance]:
     return AnalyticsService(session).get_daily_performance()
+
+
+@router.get("/analytics/trade-order-performance")
+def get_trade_order_performance(
+    session: Annotated[Session, Depends(get_session)],
+) -> list[OrderPositionPerformance]:
+    return AnalyticsService(session).get_trade_order_performance()

@@ -10,6 +10,7 @@ import {
   SlidersHorizontal,
   ScrollText,
   FlaskConical,
+  Archive,
 } from "lucide-react";
 import { cn } from "@/lib/format";
 
@@ -18,6 +19,7 @@ const NAV_ITEMS = [
   { href: "/trades", label: "الصفقات", icon: ArrowLeftRight },
   { href: "/signals", label: "الإشارات", icon: Radio },
   { href: "/analytics", label: "التحليلات", icon: LineChart },
+  { href: "/archive", label: "الأرشيف", icon: Archive },
   { href: "/simulation", label: "المحاكاة", icon: FlaskConical },
   { href: "/logs", label: "السجلات", icon: ScrollText },
   { href: "/settings", label: "الإعدادات", icon: SlidersHorizontal },

@@ -132,3 +132,25 @@ const TRADING_MODE_AR: Record<string, string> = {
 export function arTradingMode(mode: string): string {
   return TRADING_MODE_AR[mode] ?? mode;
 }
+
+const ARCHIVE_CLASSIFICATION_AR: Record<string, string> = {
+  READY: "جاهزة للتنفيذ",
+  NON_EXECUTABLE_TYPE: "نوع غير قابل للتنفيذ",
+  NO_SL: "بدون وقف خسارة",
+  AMBIGUOUS_OR_OTHER: "غامضة/أخرى",
+};
+
+const ARCHIVE_OUTCOME_AR: Record<string, string> = {
+  WIN: "ربح",
+  LOSS: "خسارة",
+  UNRESOLVED: "لم تُحسم بعد",
+  NO_PRICE_DATA: "لا توجد بيانات سعر",
+};
+
+export function arArchiveClassification(classification: string): string {
+  return ARCHIVE_CLASSIFICATION_AR[classification] ?? classification;
+}
+
+export function arArchiveOutcome(outcome: string): string {
+  return ARCHIVE_OUTCOME_AR[outcome] ?? outcome;
+}

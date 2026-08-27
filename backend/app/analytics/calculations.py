@@ -134,6 +134,54 @@ class _DailyBucket:
     profit: Decimal = _ZERO
 
 
+@dataclass(frozen=True, slots=True)
+class OrderPositionPerformance:
+    """Win rate of "the Nth trade opened each day", aggregated across every
+    day that had at least N trades. `position=1` is the first trade opened
+    on a given day, `position=2` the second, and so on -- answers "does the
+    first signal of the day perform differently than later ones?"."""
+
+    position: int
+    trades: int
+    wins: int
+    losses: int
+    win_rate: CleanDecimal
+
+
+def compute_trade_order_performance(trades: list[Trade]) -> list[OrderPositionPerformance]:
+    excluded_statuses = (TradeStatus.REJECTED, TradeStatus.FAILED)
+    eligible = [t for t in trades if t.status not in excluded_statuses and t.opened_at]
+
+    by_day: dict[date, list[Trade]] = {}
+    for trade in eligible:
+        assert trade.opened_at is not None
+        by_day.setdefault(trade.opened_at.date(), []).append(trade)
+
+    by_position: dict[int, list[Trade]] = {}
+    for day_trades in by_day.values():
+        day_trades.sort(key=lambda t: t.opened_at)  # type: ignore[arg-type,return-value]
+        for position, trade in enumerate(day_trades, start=1):
+            by_position.setdefault(position, []).append(trade)
+
+    results: list[OrderPositionPerformance] = []
+    for position in sorted(by_position):
+        bucket = by_position[position]
+        closed = [t for t in bucket if t.status in CLOSED_TRADE_STATUSES]
+        wins = [t for t in closed if t.result == TradeResult.WIN]
+        losses = [t for t in closed if t.result == TradeResult.LOSS]
+        win_rate = (Decimal(len(wins)) / Decimal(len(closed)) * 100) if closed else _ZERO
+        results.append(
+            OrderPositionPerformance(
+                position=position,
+                trades=len(bucket),
+                wins=len(wins),
+                losses=len(losses),
+                win_rate=win_rate,
+            )
+        )
+    return results
+
+
 def compute_daily_performance(trades: list[Trade]) -> list[DailyPerformance]:
     buckets: dict[str, _DailyBucket] = {}
     for trade in trades:
