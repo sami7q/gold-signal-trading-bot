@@ -16,11 +16,11 @@ What it does, precisely:
      second reimplementation that could silently drift from the real logic.
   3. For every resulting signal that reached READY as a plain BUY (the only
      kind this bot ever executes), simulates the outcome against real
-     historical MT5 M1 price bars: a simulated fill at the next available
+     historical MT5 M5 price bars: a simulated fill at the next available
      bar after the signal completed, then scans forward bar-by-bar for
      whichever of the channel's own Stop Loss or our $10/100-pip Take
-     Profit was crossed first. A bar that crosses both in the same minute
-     is conservatively counted as the Stop Loss (we cannot know the
+     Profit was crossed first. A bar that crosses both in the same 5
+     minutes is conservatively counted as the Stop Loss (we cannot know the
      intra-bar path, and PROJECT_SPEC.md section 32 rule 13 says ambiguity
      must never default to the favorable outcome). If neither is ever
      crossed in the available history, the outcome is UNRESOLVED -- never
@@ -30,7 +30,7 @@ What it does, precisely:
      it) and skips any message_id already archived, so reruns are cheap.
 
 This is an ESTIMATE, not a real trading record: it uses historical Bid-side
-M1 OHLC bars with no historical spread applied (fills are computed off the
+M5 OHLC bars with no historical spread applied (fills are computed off the
 same price series as SL/TP, unlike live trading where entry uses Ask and
 SL/TP execute off Bid) -- documented here rather than hidden.
 
@@ -79,18 +79,24 @@ class Bar:
 
 
 def _load_price_bars(since: datetime) -> list[Bar]:
-    """Historical M1 bars from `since` to now, fetched in monthly chunks
+    """Historical M5 bars from `since` to now, fetched in monthly chunks
     (a single multi-month request silently returns nothing against this
     broker -- confirmed empirically).
 
-    This broker's M1 history has a much shorter retention window than its
-    daily bars (confirmed empirically: D1 goes back to 2025-02, M1 does
-    not) -- for a chunk entirely before the earliest M1 bar it actually
-    has, `copy_rates_range` doesn't return empty, it returns exactly one
-    bar: the single earliest bar it does have, timestamped outside the
-    requested range entirely. Silently accepting that would attribute a
-    random unrelated price to every signal before the real cutoff (this
-    was caught by exactly that: dozens of unrelated signals all showing
+    Uses M5, not M1: confirmed empirically that this broker's M1 history
+    only goes back to ~2026-05, while M5 goes back to 2025-03 -- comfortably
+    covering the whole archive window with no gap. The requested target is
+    still exactly 100 pips / $10 either way; 5-minute resolution only means
+    an SL/TP crossing is detected to the nearest 5 minutes instead of 1,
+    which never changes which one was crossed first for a signal that
+    takes anywhere from minutes to days to resolve.
+
+    This broker's history for a chunk entirely before its real earliest bar
+    doesn't come back empty -- `copy_rates_range` returns exactly one bar,
+    the single earliest one it has, timestamped outside the requested range
+    entirely. Silently accepting that would attribute a random unrelated
+    price to every signal before the real cutoff (this was caught by
+    exactly that happening with M1: dozens of unrelated signals all showing
     the identical entry price). Any bar outside its own chunk's
     [chunk_start, chunk_end) window is therefore dropped, not trusted.
     """
@@ -108,7 +114,7 @@ def _load_price_bars(since: datetime) -> list[Bar]:
         # silently returns nothing against this broker (confirmed).
         chunk_end = min(chunk_start + timedelta(days=30), now)
         rates = mt5.copy_rates_range(
-            CANONICAL_GOLD_SYMBOL, mt5.TIMEFRAME_M1, chunk_start, chunk_end
+            CANONICAL_GOLD_SYMBOL, mt5.TIMEFRAME_M5, chunk_start, chunk_end
         )
         if rates is not None:
             for r in rates:
@@ -128,11 +134,11 @@ def _load_price_bars(since: datetime) -> list[Bar]:
         chunk_start = chunk_end
     mt5.shutdown()
     bars.sort(key=lambda b: b.time)
-    print(f"Loaded {len(bars)} historical M1 bars from {since} to {now}.")
+    print(f"Loaded {len(bars)} historical M5 bars from {since} to {now}.")
     if dropped_out_of_range:
         print(
             f"Dropped {dropped_out_of_range} bar(s) the broker returned outside their "
-            "requested chunk window (its real M1 history starts later than `since` --  "
+            "requested chunk window (its real M5 history starts later than `since` --  "
             "signals before that point correctly get NO_PRICE_DATA, never a guessed price)."
         )
     return bars
