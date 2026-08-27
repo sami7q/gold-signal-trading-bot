@@ -6,6 +6,15 @@ any `app.*` module is imported, so `app.core.config.get_settings()` and
 overrides needed, tests exercise the exact same code path production does).
 Each test gets a clean set of tables and fresh in-memory singletons
 (Paper Broker, Mock Signal Source) via the autouse `clean_state` fixture.
+
+`Settings` reads `../.env` (the real project env file) by default, so every
+safety-relevant flag a test implicitly relies on the documented default for
+must be force-overridden here too -- otherwise running the suite on a
+machine whose `.env` has been switched to real trading (as happens during
+manual live testing) silently changes what the tests exercise. This bit
+once: TELEGRAM_OBSERVE_ONLY=false in the real `.env` leaked into a test
+that assumed the true default, making it exercise the AUTO_TRADING_DISABLED
+path instead of the one it was named for.
 """
 
 from __future__ import annotations
@@ -19,6 +28,9 @@ _TEST_DB_PATH.unlink(missing_ok=True)
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH.as_posix()}"
 os.environ["TELEGRAM_ENABLED"] = "false"
 os.environ["MT5_ENABLED"] = "false"
+os.environ["TELEGRAM_OBSERVE_ONLY"] = "true"
+os.environ["AUTO_TRADING"] = "false"
+os.environ["TRADING_MODE"] = "SIMULATION"
 
 import pytest  # noqa: E402
 from sqlmodel import Session, SQLModel  # noqa: E402

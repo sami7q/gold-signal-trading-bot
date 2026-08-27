@@ -32,6 +32,13 @@ from app.integrations.broker.base import (
 
 logger = get_logger(__name__)
 
+#: Tags every order this bot places so it's unambiguously distinguishable
+#: from a manual trade placed directly in the terminal or from a mobile
+#: app on the same account (both show up in the same account history with
+#: no other reliable marker -- MT5's deal `reason` field only tells you
+#: *how* an order was placed, e.g. mobile vs. an API/EA, not *by what*).
+BOT_MAGIC_NUMBER = 990321
+
 
 class MT5ConnectionError(RuntimeError):
     pass
@@ -194,6 +201,7 @@ class MT5Broker(Broker):
             "sl": float(request.stop_loss) if request.stop_loss is not None else 0.0,
             "tp": float(request.take_profit),
             "comment": request.client_reference[:31],
+            "magic": BOT_MAGIC_NUMBER,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
