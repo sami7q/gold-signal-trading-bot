@@ -46,39 +46,39 @@ function PipPreviewPanel({ targetPips }: { targetPips: string }) {
   return (
     <div className="rounded border border-border-soft bg-ink/40 px-3 py-2.5 text-xs">
       <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted">
-        Pip Preview — same math the Trading Engine uses, not recomputed here
+        معاينة النقاط — نفس حساب محرك التداول، غير محسوبة هنا
       </p>
       {previewQuery.isLoading ? (
-        <p className="text-muted-dim">Calculating…</p>
+        <p className="text-muted-dim">جارٍ الحساب…</p>
       ) : !preview || !preview.broker_healthy || preview.pip_size === null ? (
-        <p className="text-muted-dim">Broker unavailable — preview requires a connected broker.</p>
+        <p className="text-muted-dim">الوسيط غير متاح — المعاينة تحتاج وسيط متصل.</p>
       ) : (
         <dl className="font-data grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-3">
           <div className="flex justify-between gap-2 sm:block">
-            <dt className="text-muted-dim">Target</dt>
-            <dd className="text-bone">{formatPrice(preview.target_pips)} pips</dd>
+            <dt className="text-muted-dim">الهدف</dt>
+            <dd className="text-bone">{formatPrice(preview.target_pips)} نقطة</dd>
           </div>
           <div className="flex justify-between gap-2 sm:block">
-            <dt className="text-muted-dim">Symbol Point</dt>
+            <dt className="text-muted-dim">نقطة الرمز</dt>
             <dd className="text-bone">{preview.point}</dd>
           </div>
           <div className="flex justify-between gap-2 sm:block">
-            <dt className="text-muted-dim">Pip Size</dt>
+            <dt className="text-muted-dim">حجم النقطة</dt>
             <dd className="text-bone">{preview.pip_size}</dd>
           </div>
           <div className="flex justify-between gap-2 sm:block">
-            <dt className="text-muted-dim">Price Distance</dt>
+            <dt className="text-muted-dim">مسافة السعر</dt>
             <dd className="text-gold-bright">{preview.price_distance}</dd>
           </div>
           {preview.example_entry && (
             <div className="flex justify-between gap-2 sm:block">
-              <dt className="text-muted-dim">Example Entry</dt>
+              <dt className="text-muted-dim">مثال دخول</dt>
               <dd className="text-bone">{formatPrice(preview.example_entry)}</dd>
             </div>
           )}
           {preview.calculated_take_profit && (
             <div className="flex justify-between gap-2 sm:block">
-              <dt className="text-muted-dim">Calculated TP</dt>
+              <dt className="text-muted-dim">هدف الربح المحسوب</dt>
               <dd className="text-win-bright">{formatPrice(preview.calculated_take_profit)}</dd>
             </div>
           )}
@@ -136,36 +136,36 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-bone">Trading Settings</h1>
+        <h1 className="text-xl font-semibold text-bone">إعدادات التداول</h1>
         <p className="mt-1 text-sm text-muted">
-          Every change here is written to the audit log. These are the only knobs the bot obeys —
-          Telegram&apos;s own take-profit targets are never used for execution.
+          كل تغيير هنا يُسجَّل في سجل التدقيق. هذي هي الإعدادات الوحيدة اللي يلتزم بها البوت —
+          أهداف الربح المرسلة من تيليكرام لا تُستخدم أبدًا للتنفيذ.
         </p>
       </div>
 
       <Card>
-        <CardHeader title="Execution" subtitle="What the bot is allowed to do right now" />
+        <CardHeader title="التنفيذ" subtitle="ما المسموح للبوت فعله الآن" />
         <CardBody className="p-0 px-4">
-          <Row label="Auto Trading" description="Master switch. Off means no trade is ever opened, no matter what else is configured.">
-            <Switch checked={!!form.auto_trading} onChange={(v) => set("auto_trading", v)} label="Auto trading" />
+          <Row label="التداول التلقائي" description="المفتاح الرئيسي. إيقافه يعني عدم فتح أي صفقة مهما كانت باقي الإعدادات.">
+            <Switch checked={!!form.auto_trading} onChange={(v) => set("auto_trading", v)} label="التداول التلقائي" />
           </Row>
-          <Row label="BUY Signals" description="Allow the bot to act on BUY GOLD signals.">
-            <Switch checked={!!form.buy_enabled} onChange={(v) => set("buy_enabled", v)} label="Buy enabled" />
+          <Row label="إشارات الشراء" description="السماح للبوت بالتصرف بناءً على إشارات BUY GOLD.">
+            <Switch checked={!!form.buy_enabled} onChange={(v) => set("buy_enabled", v)} label="الشراء مفعّل" />
           </Row>
-          <Row label="Require Stop Loss" description="Reject any signal missing a channel Stop Loss instead of trading unprotected.">
+          <Row label="إلزامية وقف الخسارة" description="رفض أي إشارة بدون وقف خسارة من القناة بدل التداول بدون حماية.">
             <Switch
               checked={!!form.require_stop_loss}
               onChange={(v) => set("require_stop_loss", v)}
-              label="Require stop loss"
+              label="إلزامية وقف الخسارة"
             />
           </Row>
         </CardBody>
       </Card>
 
       <Card>
-        <CardHeader title="Risk" subtitle="Applied to every trade, regardless of what Telegram suggests" />
+        <CardHeader title="المخاطرة" subtitle="يُطبَّق على كل صفقة، بغض النظر عمّا تقترحه تيليكرام" />
         <CardBody className="p-0 px-4">
-          <Row label="Lot Size" description="Fixed size for every BUY order.">
+          <Row label="حجم اللوت" description="حجم ثابت لكل أمر شراء.">
             <Input
               type="number"
               step="0.01"
@@ -175,7 +175,7 @@ export default function SettingsPage() {
               onChange={(e) => set("lot_size", e.target.value)}
             />
           </Row>
-          <Row label="Take Profit (pips)" description="Our own target — Telegram's TP1/TP2/TP3 messages are stored but ignored.">
+          <Row label="هدف الربح (نقاط)" description="هدفنا الخاص — رسائل TP1/TP2/TP3 من تيليكرام تُخزَّن لكن تُتجاهل.">
             <Input
               type="number"
               step="1"
@@ -188,7 +188,7 @@ export default function SettingsPage() {
           <div className="py-3">
             <PipPreviewPanel targetPips={form.target_pips ?? ""} />
           </div>
-          <Row label="Maximum Open Trades" description="Blocks a new BUY while this many are already open.">
+          <Row label="أقصى عدد صفقات مفتوحة" description="يمنع أي شراء جديد طالما هذا العدد مفتوح فعلاً.">
             <Input
               type="number"
               step="1"
@@ -198,7 +198,7 @@ export default function SettingsPage() {
               onChange={(e) => set("max_open_trades", Number(e.target.value))}
             />
           </Row>
-          <Row label="Signal Completion Timeout" description="Seconds to wait for a Stop Loss before a signal expires unexecuted.">
+          <Row label="مهلة اكتمال الإشارة" description="عدد الثواني للانتظار لوقف الخسارة قبل انتهاء صلاحية الإشارة بدون تنفيذ.">
             <Input
               type="number"
               step="1"
@@ -212,13 +212,13 @@ export default function SettingsPage() {
       </Card>
 
       <Card>
-        <CardHeader title="Trading Mode" subtitle="SIMULATION → DEMO → LIVE" />
+        <CardHeader title="وضع التداول" subtitle="محاكاة ← تجريبي ← حقيقي" />
         <CardBody className="flex flex-col gap-4 px-4">
-          <Row label="Mode" description="Controls which broker adapter receives orders.">
+          <Row label="الوضع" description="يتحكم بأي وسيط يستقبل الأوامر.">
             <Select value={form.mode} onChange={(e) => set("mode", e.target.value as TradingMode)}>
-              <option value="SIMULATION">SIMULATION</option>
-              <option value="DEMO">DEMO</option>
-              <option value="LIVE">LIVE</option>
+              <option value="SIMULATION">محاكاة</option>
+              <option value="DEMO">تجريبي</option>
+              <option value="LIVE">حقيقي</option>
             </Select>
           </Row>
 
@@ -226,11 +226,11 @@ export default function SettingsPage() {
             <div className="rounded border border-loss/40 bg-loss/10 p-3">
               <div className="flex items-center gap-2 text-sm font-medium text-loss-bright">
                 <AlertTriangle className="h-4 w-4" />
-                This enables real-money trading
+                هذا يُفعّل التداول بأموال حقيقية
               </div>
               <p className="mt-1 text-xs text-muted">
-                Simulation endpoints will be disabled immediately. Type{" "}
-                <span className="font-data text-bone">{LIVE_PHRASE}</span> to confirm.
+                ستُعطَّل نقاط المحاكاة فورًا. اكتب{" "}
+                <span className="font-data text-bone">{LIVE_PHRASE}</span> للتأكيد.
               </p>
               <Input
                 className="mt-2 font-data"
@@ -249,11 +249,11 @@ export default function SettingsPage() {
 
       <div className="flex items-center gap-3">
         <Button variant="primary" onClick={handleSave} disabled={!canSave || updateSettings.isPending}>
-          {updateSettings.isPending ? "Saving…" : "Save changes"}
+          {updateSettings.isPending ? "جارٍ الحفظ…" : "حفظ التغييرات"}
         </Button>
         {savedFlash && (
           <span className="flex items-center gap-1 text-sm text-win-bright">
-            <Check className="h-4 w-4" /> Saved
+            <Check className="h-4 w-4" /> تم الحفظ
           </span>
         )}
       </div>

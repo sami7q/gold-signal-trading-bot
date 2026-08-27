@@ -14,13 +14,13 @@ import {
 import { cn } from "@/lib/format";
 
 const NAV_ITEMS = [
-  { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/trades", label: "Trades", icon: ArrowLeftRight },
-  { href: "/signals", label: "Signals", icon: Radio },
-  { href: "/analytics", label: "Analytics", icon: LineChart },
-  { href: "/simulation", label: "Simulation", icon: FlaskConical },
-  { href: "/logs", label: "Logs", icon: ScrollText },
-  { href: "/settings", label: "Settings", icon: SlidersHorizontal },
+  { href: "/", label: "نظرة عامة", icon: LayoutDashboard },
+  { href: "/trades", label: "الصفقات", icon: ArrowLeftRight },
+  { href: "/signals", label: "الإشارات", icon: Radio },
+  { href: "/analytics", label: "التحليلات", icon: LineChart },
+  { href: "/simulation", label: "المحاكاة", icon: FlaskConical },
+  { href: "/logs", label: "السجلات", icon: ScrollText },
+  { href: "/settings", label: "الإعدادات", icon: SlidersHorizontal },
 ] as const;
 
 export function Sidebar() {
@@ -32,7 +32,7 @@ export function Sidebar() {
         <span className="font-data text-lg font-semibold tracking-tight text-gold-bright">
           XAU
         </span>
-        <span className="text-sm font-medium text-muted">Signal Bot</span>
+        <span className="text-sm font-medium text-muted">بوت الإشارات</span>
       </div>
 
       <nav className="flex-1 space-y-0.5 px-2 py-3">
@@ -58,7 +58,7 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-border-soft px-4 py-3 text-[11px] leading-relaxed text-muted-dim">
-        Simulation-first build. No real Telegram or MT5 connection until explicitly enabled.
+        بوت تداول الذهب — إشارات تيليكرام حقيقية تُنفَّذ عبر MT5، حسب الأوضاع والإعدادات المفعّلة أدناه.
       </div>
     </aside>
   );

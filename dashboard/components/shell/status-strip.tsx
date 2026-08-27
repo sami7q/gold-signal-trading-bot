@@ -1,6 +1,6 @@
 "use client";
 
-import { cn } from "@/lib/format";
+import { arTradingMode, cn } from "@/lib/format";
 import { useDashboardSummary, useBrokerHealth, useSignalSourceHealth } from "@/hooks/use-dashboard";
 
 function Dot({ tone, pulse }: { tone: "win" | "loss" | "muted" | "gold"; pulse?: boolean }) {
@@ -35,42 +35,42 @@ export function StatusStrip() {
 
   return (
     <div className="flex h-9 items-center gap-5 overflow-x-auto border-b border-border-soft bg-ink/60 px-4 text-xs">
-      <StripItem label={isTelegram ? "Telegram" : "Signal Source"}>
+      <StripItem label={isTelegram ? "تيليكرام" : "مصدر الإشارة"}>
         <span title={source?.detail ?? source?.last_error ?? undefined}>
           <Dot tone={source?.connected ? "win" : "loss"} />
         </span>
-        {source?.connected ? "Connected" : "Disconnected"}
+        {source?.connected ? "متصل" : "غير متصل"}
       </StripItem>
 
-      <StripItem label="Source">
+      <StripItem label="المصدر">
         <span className="font-data">
-          {isTelegram ? "Real Telegram" : source?.source === "mock" ? "Mock" : (source?.source ?? "—")}
+          {isTelegram ? "تيليكرام حقيقي" : source?.source === "mock" ? "تجريبي" : (source?.source ?? "—")}
         </span>
       </StripItem>
 
-      <StripItem label="Broker">
+      <StripItem label="الوسيط">
         <Dot tone={broker?.healthy ? "win" : "loss"} />
         <span className="font-data">{broker?.broker ?? "—"}</span>
       </StripItem>
 
-      <StripItem label="Mode">
+      <StripItem label="الوضع">
         <span
           className={cn(
             "font-data font-medium",
             settings?.mode === "LIVE" ? "text-loss-bright" : "text-gold-bright",
           )}
         >
-          {settings?.mode ?? "—"}
+          {settings?.mode ? arTradingMode(settings.mode) : "—"}
         </span>
       </StripItem>
 
-      <StripItem label="Auto Trading">
+      <StripItem label="التداول التلقائي">
         <Dot tone={autoTrading ? "gold" : "muted"} pulse={autoTrading} />
-        {autoTrading ? "ON" : "OFF"}
+        {autoTrading ? "يعمل" : "متوقف"}
       </StripItem>
 
       {summaryData ? (
-        <StripItem label="Balance">
+        <StripItem label="الرصيد">
           <span className="font-data text-gold-bright">
             ${Number(summaryData.summary.balance ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}
           </span>

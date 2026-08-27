@@ -1,4 +1,4 @@
-import { cn } from "@/lib/format";
+import { arResult, arSeverity, arTradeStatus, arSignalStatus, cn } from "@/lib/format";
 
 type Tone = "neutral" | "gold" | "win" | "loss" | "warn" | "info";
 
@@ -74,18 +74,18 @@ const SEVERITY_TONE: Record<string, Tone> = {
 };
 
 export function StatusBadge({ status }: { status: string }) {
-  return <Badge tone={SIGNAL_STATUS_TONE[status] ?? "neutral"}>{status.replaceAll("_", " ")}</Badge>;
+  return <Badge tone={SIGNAL_STATUS_TONE[status] ?? "neutral"}>{arSignalStatus(status)}</Badge>;
 }
 
 export function TradeStatusBadge({ status }: { status: string }) {
-  return <Badge tone={TRADE_STATUS_TONE[status] ?? "neutral"}>{status.replaceAll("_", " ")}</Badge>;
+  return <Badge tone={TRADE_STATUS_TONE[status] ?? "neutral"}>{arTradeStatus(status)}</Badge>;
 }
 
 export function ResultBadge({ result }: { result: string | null }) {
   if (!result) return <span className="text-muted">—</span>;
-  return <Badge tone={RESULT_TONE[result] ?? "neutral"}>{result}</Badge>;
+  return <Badge tone={RESULT_TONE[result] ?? "neutral"}>{arResult(result)}</Badge>;
 }
 
 export function SeverityBadge({ severity }: { severity: string }) {
-  return <Badge tone={SEVERITY_TONE[severity] ?? "neutral"}>{severity}</Badge>;
+  return <Badge tone={SEVERITY_TONE[severity] ?? "neutral"}>{arSeverity(severity)}</Badge>;
 }

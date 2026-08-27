@@ -7,24 +7,24 @@ import { Select, Input, Label } from "@/components/ui/input";
 import { ResultBadge, TradeStatusBadge } from "@/components/ui/badge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { useTrades, type TradeFilters } from "@/hooks/use-trades";
-import { formatDateTime, formatMoney, formatPrice } from "@/lib/format";
+import { arSide, formatDateTime, formatMoney, formatPrice } from "@/lib/format";
 import type { TradeResult, TradeStatus } from "@/types/api";
 
 const STATUS_OPTIONS: Array<{ value: TradeStatus | "ALL"; label: string }> = [
-  { value: "ALL", label: "All statuses" },
-  { value: "OPEN", label: "Open" },
-  { value: "CLOSED_TP", label: "Closed — TP" },
-  { value: "CLOSED_SL", label: "Closed — SL" },
-  { value: "CLOSED_MANUAL", label: "Closed — Manual" },
-  { value: "REJECTED", label: "Rejected" },
-  { value: "FAILED", label: "Failed" },
+  { value: "ALL", label: "كل الحالات" },
+  { value: "OPEN", label: "مفتوحة" },
+  { value: "CLOSED_TP", label: "مغلقة — هدف ربح" },
+  { value: "CLOSED_SL", label: "مغلقة — وقف خسارة" },
+  { value: "CLOSED_MANUAL", label: "مغلقة — يدويًا" },
+  { value: "REJECTED", label: "مرفوضة" },
+  { value: "FAILED", label: "فشلت" },
 ];
 
 const RESULT_OPTIONS: Array<{ value: TradeResult | "ALL"; label: string }> = [
-  { value: "ALL", label: "Any result" },
-  { value: "WIN", label: "Win" },
-  { value: "LOSS", label: "Loss" },
-  { value: "BREAKEVEN", label: "Breakeven" },
+  { value: "ALL", label: "أي نتيجة" },
+  { value: "WIN", label: "ربح" },
+  { value: "LOSS", label: "خسارة" },
+  { value: "BREAKEVEN", label: "تعادل" },
 ];
 
 export default function TradesPage() {
@@ -48,14 +48,14 @@ export default function TradesPage() {
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-5">
       <div>
-        <h1 className="text-xl font-semibold text-bone">Trades</h1>
-        <p className="mt-1 text-sm text-muted">Every trade the engine created, including rejected attempts.</p>
+        <h1 className="text-xl font-semibold text-bone">الصفقات</h1>
+        <p className="mt-1 text-sm text-muted">كل صفقة أنشأها المحرك، بما فيها المحاولات المرفوضة.</p>
       </div>
 
       <Card>
         <div className="flex flex-wrap items-end gap-4 border-b border-border-soft px-4 py-3">
           <div>
-            <Label>Status</Label>
+            <Label>الحالة</Label>
             <Select value={status} onChange={(e) => setStatus(e.target.value as TradeStatus | "ALL")}>
               {STATUS_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -65,7 +65,7 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <Label>Result</Label>
+            <Label>النتيجة</Label>
             <Select value={result} onChange={(e) => setResult(e.target.value as TradeResult | "ALL")}>
               {RESULT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -75,11 +75,11 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <Label>From</Label>
+            <Label>من</Label>
             <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-40" />
           </div>
           <div>
-            <Label>To</Label>
+            <Label>إلى</Label>
             <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-40" />
           </div>
         </div>
@@ -89,26 +89,26 @@ export default function TradesPage() {
         ) : tradesQuery.isError ? (
           <ErrorState message={(tradesQuery.error as Error).message} />
         ) : !tradesQuery.data?.length ? (
-          <EmptyState icon={Inbox} title="No trades match these filters" />
+          <EmptyState icon={Inbox} title="لا توجد صفقات تطابق هذه الفلاتر" />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1100px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border-soft text-[11px] uppercase tracking-wide text-muted-dim">
-                  <th className="px-3 py-2 font-medium">ID</th>
-                  <th className="px-3 py-2 font-medium">Opened</th>
-                  <th className="px-3 py-2 font-medium">Closed</th>
-                  <th className="px-3 py-2 font-medium">Symbol</th>
-                  <th className="px-3 py-2 font-medium">Side</th>
-                  <th className="px-3 py-2 text-right font-medium">Lot</th>
-                  <th className="px-3 py-2 text-right font-medium">Entry</th>
-                  <th className="px-3 py-2 text-right font-medium">SL</th>
-                  <th className="px-3 py-2 text-right font-medium">TP</th>
-                  <th className="px-3 py-2 text-right font-medium">Target Pips</th>
-                  <th className="px-3 py-2 text-right font-medium">Exit</th>
-                  <th className="px-3 py-2 text-right font-medium">Profit</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Result</th>
+                  <th className="px-3 py-2 font-medium">الرقم</th>
+                  <th className="px-3 py-2 font-medium">الفتح</th>
+                  <th className="px-3 py-2 font-medium">الإغلاق</th>
+                  <th className="px-3 py-2 font-medium">الرمز</th>
+                  <th className="px-3 py-2 font-medium">الاتجاه</th>
+                  <th className="px-3 py-2 text-right font-medium">اللوت</th>
+                  <th className="px-3 py-2 text-right font-medium">الدخول</th>
+                  <th className="px-3 py-2 text-right font-medium">وقف الخسارة</th>
+                  <th className="px-3 py-2 text-right font-medium">هدف الربح</th>
+                  <th className="px-3 py-2 text-right font-medium">النقاط المستهدفة</th>
+                  <th className="px-3 py-2 text-right font-medium">الخروج</th>
+                  <th className="px-3 py-2 text-right font-medium">الربح</th>
+                  <th className="px-3 py-2 font-medium">الحالة</th>
+                  <th className="px-3 py-2 font-medium">النتيجة</th>
                 </tr>
               </thead>
               <tbody className="font-data">
@@ -118,7 +118,7 @@ export default function TradesPage() {
                     <td className="px-3 py-2 text-muted">{formatDateTime(trade.opened_at)}</td>
                     <td className="px-3 py-2 text-muted">{formatDateTime(trade.closed_at)}</td>
                     <td className="px-3 py-2 text-bone">{trade.symbol}</td>
-                    <td className="px-3 py-2 text-bone">{trade.side}</td>
+                    <td className="px-3 py-2 text-bone">{arSide(trade.side)}</td>
                     <td className="px-3 py-2 text-right text-bone">{formatPrice(trade.executed_lot ?? trade.requested_lot)}</td>
                     <td className="px-3 py-2 text-right text-bone">{formatPrice(trade.entry_price)}</td>
                     <td className="px-3 py-2 text-right text-loss-bright">{formatPrice(trade.stop_loss)}</td>

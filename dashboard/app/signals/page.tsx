@@ -7,18 +7,18 @@ import { Select, Label } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/badge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { useSignals } from "@/hooks/use-signals";
-import { formatDateTime, formatPrice, cn } from "@/lib/format";
+import { arSide, arSignalType, formatDateTime, formatPrice, cn } from "@/lib/format";
 import type { SignalStatus } from "@/types/api";
 
 const STATUS_OPTIONS: Array<{ value: SignalStatus | "ALL"; label: string }> = [
-  { value: "ALL", label: "All statuses" },
-  { value: "WAITING_FOR_DETAILS", label: "Waiting for details" },
-  { value: "READY", label: "Ready" },
-  { value: "EXECUTED", label: "Executed" },
-  { value: "REJECTED", label: "Rejected" },
-  { value: "EXPIRED", label: "Expired" },
-  { value: "DUPLICATE", label: "Duplicate" },
-  { value: "IGNORED", label: "Ignored" },
+  { value: "ALL", label: "كل الحالات" },
+  { value: "WAITING_FOR_DETAILS", label: "بانتظار التفاصيل" },
+  { value: "READY", label: "جاهزة" },
+  { value: "EXECUTED", label: "منفذة" },
+  { value: "REJECTED", label: "مرفوضة" },
+  { value: "EXPIRED", label: "منتهية" },
+  { value: "DUPLICATE", label: "مكررة" },
+  { value: "IGNORED", label: "متجاهلة" },
 ];
 
 export default function SignalsPage() {
@@ -39,17 +39,16 @@ export default function SignalsPage() {
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-5">
       <div>
-        <h1 className="text-xl font-semibold text-bone">Signals</h1>
+        <h1 className="text-xl font-semibold text-bone">الإشارات</h1>
         <p className="mt-1 text-sm text-muted">
-          Every parsed message and what the state machine decided. Expand a row to see the exact
-          source text the parser saw.
+          كل رسالة تم تحليلها وما قررته آلة الحالات. وسّع أي صف لرؤية النص الأصلي الذي رآه المحلل.
         </p>
       </div>
 
       <Card>
         <div className="flex flex-wrap items-end gap-4 border-b border-border-soft px-4 py-3">
           <div>
-            <Label>Status</Label>
+            <Label>الحالة</Label>
             <Select value={status} onChange={(e) => setStatus(e.target.value as SignalStatus | "ALL")}>
               {STATUS_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -67,8 +66,8 @@ export default function SignalsPage() {
         ) : !signalsQuery.data?.length ? (
           <EmptyState
             icon={Radio}
-            title="No signals yet"
-            description="Send a mock BUY GOLD message from the Simulation page to see the parser in action."
+            title="لا توجد إشارات بعد"
+            description="أرسل رسالة BUY GOLD تجريبية من صفحة المحاكاة لرؤية المحلل يعمل."
           />
         ) : (
           <div className="overflow-x-auto">
@@ -76,14 +75,14 @@ export default function SignalsPage() {
               <thead>
                 <tr className="border-b border-border-soft text-[11px] uppercase tracking-wide text-muted-dim">
                   <th className="w-8 px-3 py-2" />
-                  <th className="px-3 py-2 font-medium">ID</th>
-                  <th className="px-3 py-2 font-medium">Received</th>
-                  <th className="px-3 py-2 font-medium">Action</th>
-                  <th className="px-3 py-2 font-medium">Symbol</th>
-                  <th className="px-3 py-2 text-right font-medium">Stop Loss</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Rejection</th>
-                  <th className="px-3 py-2 font-medium">Trade</th>
+                  <th className="px-3 py-2 font-medium">الرقم</th>
+                  <th className="px-3 py-2 font-medium">الاستلام</th>
+                  <th className="px-3 py-2 font-medium">الإجراء</th>
+                  <th className="px-3 py-2 font-medium">الرمز</th>
+                  <th className="px-3 py-2 text-right font-medium">وقف الخسارة</th>
+                  <th className="px-3 py-2 font-medium">الحالة</th>
+                  <th className="px-3 py-2 font-medium">سبب الرفض</th>
+                  <th className="px-3 py-2 font-medium">الصفقة</th>
                 </tr>
               </thead>
               <tbody className="font-data">
@@ -101,7 +100,7 @@ export default function SignalsPage() {
                         <td className="px-3 py-2 text-muted">#{signal.id}</td>
                         <td className="px-3 py-2 text-muted">{formatDateTime(signal.first_message_at)}</td>
                         <td className="px-3 py-2 text-bone">
-                          {signal.side} {signal.signal_type !== "MARKET" ? signal.signal_type : ""}
+                          {arSide(signal.side)} {signal.signal_type !== "MARKET" ? arSignalType(signal.signal_type) : ""}
                         </td>
                         <td className="px-3 py-2 text-bone">{signal.symbol}</td>
                         <td className="px-3 py-2 text-right text-bone">{formatPrice(signal.channel_stop_loss)}</td>
@@ -116,7 +115,7 @@ export default function SignalsPage() {
                           <td />
                           <td colSpan={8} className="px-3 py-3">
                             {signal.messages.length === 0 ? (
-                              <p className="text-xs text-muted-dim">No linked source messages.</p>
+                              <p className="text-xs text-muted-dim">لا توجد رسائل مصدر مرتبطة.</p>
                             ) : (
                               <ul className="flex flex-col gap-2">
                                 {signal.messages.map((m, i) => (

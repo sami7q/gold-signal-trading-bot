@@ -7,7 +7,7 @@ import { Select, Label } from "@/components/ui/input";
 import { SeverityBadge } from "@/components/ui/badge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { useLogs } from "@/hooks/use-logs";
-import { formatDateTime } from "@/lib/format";
+import { arSeverity, formatDateTime } from "@/lib/format";
 import type { AuditSeverity } from "@/types/api";
 
 const SEVERITIES: Array<AuditSeverity | "ALL"> = ["ALL", "INFO", "WARNING", "ERROR", "CRITICAL"];
@@ -21,18 +21,18 @@ export default function LogsPage() {
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-5">
       <div>
-        <h1 className="text-xl font-semibold text-bone">Logs</h1>
-        <p className="mt-1 text-sm text-muted">The full audit trail — every signal, trade, and settings change.</p>
+        <h1 className="text-xl font-semibold text-bone">السجلات</h1>
+        <p className="mt-1 text-sm text-muted">سجل التدقيق الكامل — كل إشارة وصفقة وتغيير إعدادات.</p>
       </div>
 
       <Card>
         <div className="flex items-end gap-4 border-b border-border-soft px-4 py-3">
           <div>
-            <Label>Severity</Label>
+            <Label>الخطورة</Label>
             <Select value={severity} onChange={(e) => setSeverity(e.target.value as AuditSeverity | "ALL")}>
               {SEVERITIES.map((s) => (
                 <option key={s} value={s}>
-                  {s}
+                  {s === "ALL" ? "الكل" : arSeverity(s)}
                 </option>
               ))}
             </Select>
@@ -44,7 +44,7 @@ export default function LogsPage() {
         ) : logsQuery.isError ? (
           <ErrorState message={(logsQuery.error as Error).message} />
         ) : !events.length ? (
-          <EmptyState icon={ScrollText} title="No events" />
+          <EmptyState icon={ScrollText} title="لا توجد أحداث" />
         ) : (
           <ul className="divide-y divide-border-soft/60 font-data text-sm">
             {events.map((event) => (

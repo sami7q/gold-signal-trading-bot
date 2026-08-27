@@ -35,16 +35,16 @@ export default function AnalyticsPage() {
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-bone">Analytics</h1>
-        <p className="mt-1 text-sm text-muted">Performance derived entirely from closed trades.</p>
+        <h1 className="text-xl font-semibold text-bone">التحليلات</h1>
+        <p className="mt-1 text-sm text-muted">الأداء مستمد بالكامل من الصفقات المغلقة.</p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Win Rate" value={formatPercent(stats?.win_rate)} tone="gold" />
-        <StatCard label="Average Win" value={formatMoney(stats?.average_win)} tone="win" />
-        <StatCard label="Average Loss" value={formatMoney(stats?.average_loss)} tone="loss" />
+        <StatCard label="نسبة الربح" value={formatPercent(stats?.win_rate)} tone="gold" />
+        <StatCard label="متوسط الربح" value={formatMoney(stats?.average_win)} tone="win" />
+        <StatCard label="متوسط الخسارة" value={formatMoney(stats?.average_loss)} tone="loss" />
         <StatCard
-          label="Best / Worst"
+          label="الأفضل / الأسوأ"
           value={
             <span className="text-base">
               <span className="text-win-bright">{formatMoney(stats?.best_trade)}</span>
@@ -56,14 +56,14 @@ export default function AnalyticsPage() {
       </div>
 
       <Card>
-        <CardHeader title="Profit Curve" subtitle="Cumulative profit across closed trades" />
+        <CardHeader title="منحنى الربح" subtitle="الربح التراكمي عبر الصفقات المغلقة" />
         <div className="h-72 p-4 pl-0">
           {profitCurveQuery.isLoading ? (
             <LoadingState />
           ) : profitCurveQuery.isError ? (
             <ErrorState message={(profitCurveQuery.error as Error).message} />
           ) : !profitCurveQuery.data?.length ? (
-            <EmptyState icon={LineChartIcon} title="No closed trades yet" />
+            <EmptyState icon={LineChartIcon} title="لا توجد صفقات مغلقة بعد" />
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={profitCurveQuery.data} margin={{ top: 10, right: 20, left: 10, bottom: 0 }}>
@@ -86,7 +86,7 @@ export default function AnalyticsPage() {
                   contentStyle={{ background: "#1b1f26", border: "1px solid #262b33", borderRadius: 6 }}
                   labelStyle={{ color: "#8b8f98" }}
                   labelFormatter={(v) => formatTime(v as string)}
-                  formatter={(value) => [formatMoney(value as number), "Cumulative"]}
+                  formatter={(value) => [formatMoney(value as number), "تراكمي"]}
                 />
                 <Area
                   type="monotone"
@@ -102,14 +102,14 @@ export default function AnalyticsPage() {
       </Card>
 
       <Card>
-        <CardHeader title="Wins vs Losses" subtitle="Grouped by the day a trade closed" />
+        <CardHeader title="الأرباح مقابل الخسائر" subtitle="مجمّعة حسب يوم إغلاق الصفقة" />
         <div className="h-64 p-4 pl-0">
           {dailyQuery.isLoading ? (
             <LoadingState />
           ) : dailyQuery.isError ? (
             <ErrorState message={(dailyQuery.error as Error).message} />
           ) : !dailyQuery.data?.length ? (
-            <EmptyState icon={LineChartIcon} title="No closed trades yet" />
+            <EmptyState icon={LineChartIcon} title="لا توجد صفقات مغلقة بعد" />
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={dailyQuery.data} margin={{ top: 10, right: 20, left: 10, bottom: 0 }}>
@@ -121,8 +121,8 @@ export default function AnalyticsPage() {
                   labelStyle={{ color: "#8b8f98" }}
                 />
                 <Legend wrapperStyle={{ fontSize: 12, color: CHART_TEXT }} />
-                <Bar dataKey="wins" name="Wins" fill={WIN} radius={[2, 2, 0, 0]} />
-                <Bar dataKey="losses" name="Losses" fill={LOSS} radius={[2, 2, 0, 0]} />
+                <Bar dataKey="wins" name="أرباح" fill={WIN} radius={[2, 2, 0, 0]} />
+                <Bar dataKey="losses" name="خسائر" fill={LOSS} radius={[2, 2, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}

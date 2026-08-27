@@ -17,14 +17,14 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Gold Signal Bot",
-  description: "Operations dashboard for the Gold (XAUUSD) signal trading bot.",
+  title: "بوت إشارات الذهب",
+  description: "لوحة تحكم تشغيل بوت تداول الذهب (XAUUSD) عبر إشارات تيليكرام.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
-      lang="en"
+      lang="ar"
       className={`${spaceGrotesk.variable} ${plexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full">

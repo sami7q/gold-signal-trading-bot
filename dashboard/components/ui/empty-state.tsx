@@ -29,7 +29,7 @@ export function LoadingState() {
 export function ErrorState({ message }: { message: string }) {
   return (
     <div className="flex flex-col items-center justify-center gap-1 py-12 text-center">
-      <p className="text-sm font-medium text-loss-bright">Couldn&apos;t load this data</p>
+      <p className="text-sm font-medium text-loss-bright">تعذّر تحميل هذه البيانات</p>
       <p className="max-w-sm text-xs text-muted-dim">{message}</p>
     </div>
   );

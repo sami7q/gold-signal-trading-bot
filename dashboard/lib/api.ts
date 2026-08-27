@@ -34,7 +34,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const message =
       (typeof detail === "object" && detail !== null && "detail" in detail
         ? String((detail as { detail: unknown }).detail)
-        : undefined) ?? `Request to ${path} failed with status ${response.status}`;
+        : undefined) ?? `فشل الطلب إلى ${path} برمز الحالة ${response.status}`;
     throw new ApiError(response.status, message, detail);
   }
 
