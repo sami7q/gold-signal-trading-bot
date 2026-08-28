@@ -27,6 +27,9 @@ dashboard/next-env.d.ts
 *.sqlite3
 *.db
 
+# Generated reports/exports
+*.xlsx
+
 # OS
 .DS_Store
 Thumbs.db
