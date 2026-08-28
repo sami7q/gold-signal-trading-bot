@@ -206,6 +206,11 @@ class AuditEventType(StrEnum):
     #: TELEGRAM_OBSERVE_ONLY=true — deliberately not sent to the trading
     #: engine (PROJECT_SPEC.md Phase 11 section 17).
     SIGNAL_OBSERVED_ONLY = "SIGNAL_OBSERVED_ONLY"
+    #: The channel never sent a Stop Loss before the completion timeout, and
+    #: TradingSettings.auto_sl_fallback_pips was set -- a fallback Stop Loss
+    #: was computed from the live quote and the signal proceeded to
+    #: execution instead of expiring. See app/trading/service.py.
+    AUTO_STOP_LOSS_APPLIED = "AUTO_STOP_LOSS_APPLIED"
 
 
 class AuditSeverity(StrEnum):

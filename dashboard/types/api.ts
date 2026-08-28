@@ -43,6 +43,7 @@ export interface TradingSettings {
   max_open_trades: number;
   max_channel_stop_pips: string | null;
   signal_completion_timeout_seconds: number;
+  auto_sl_fallback_pips: string | null;
 }
 
 export interface PipPreview {
@@ -69,6 +70,7 @@ export interface TradingSettingsUpdate {
   max_open_trades?: number;
   max_channel_stop_pips?: string | null;
   signal_completion_timeout_seconds?: number;
+  auto_sl_fallback_pips?: string | null;
   confirm_live_phrase?: string;
 }
 

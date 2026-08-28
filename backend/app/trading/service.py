@@ -15,14 +15,22 @@ from sqlmodel import Session, select
 
 from app.audit.service import AuditService
 from app.core.config import get_settings
-from app.core.constants import AuditEventType, AuditSeverity, TradeResult, TradeStatus
+from app.core.constants import (
+    AuditEventType,
+    AuditSeverity,
+    SignalStatus,
+    TradeResult,
+    TradeStatus,
+)
 from app.core.decimals import fmt
 from app.database.models.signal import Signal
 from app.database.models.trade import Trade
+from app.database.models.trading_settings import TradingSettings
 from app.integrations.broker.base import Broker, BrokerPosition
 from app.settings.service import SettingsService
 from app.signals.models import IncomingMessageData
 from app.signals.service import IngestResult, SignalService
+from app.trading import pips
 from app.trading.engine import TradingEngine
 
 
@@ -54,7 +62,7 @@ class TradingService:
     def process_incoming_message(self, data: IncomingMessageData) -> IngestResult:
         result = self._signal_service.ingest_message(data)
         if result.became_ready and result.signal is not None:
-            if self._is_observed_only(data):
+            if self._is_observed_only(data.source):
                 self._audit.log(
                     AuditEventType.SIGNAL_OBSERVED_ONLY,
                     f"Signal {result.signal.id} reached READY from a real Telegram message "
@@ -69,17 +77,108 @@ class TradingService:
         return result
 
     @staticmethod
-    def _is_observed_only(data: IncomingMessageData) -> bool:
+    def _is_observed_only(source: str) -> bool:
         """Phase 11 safety gate (PROJECT_SPEC.md section 17): real Telegram
         messages still flow through the parser and state machine so the
         channel's actual grammar can be validated, but never reach
         `TradingEngine.execute` while this is on. Mock/simulation messages
         are unaffected — an operator testing via the dashboard always wants
         full execution."""
-        return data.source == "telegram" and get_settings().telegram_observe_only
+        return source == "telegram" and get_settings().telegram_observe_only
 
     def sweep_expired_signals(self) -> list[Signal]:
-        return self._signal_service.expire_stale_signals()
+        """Runs on a timer (see app/lifecycle.py's `_poll_expired_signals`).
+
+        For each signal past its completion timeout with no Stop Loss yet:
+        if `TradingSettings.auto_sl_fallback_pips` is set, compute a Stop
+        Loss that many pips behind the live quote, attach it, and execute
+        the signal immediately -- instead of letting it expire unexecuted.
+        `None` (or a broker that isn't currently reachable) falls back to
+        the original behavior: expire it, no trade.
+        """
+        now = datetime.now(UTC)
+        stale = self._signal_service.find_stale_signals(now=now)
+        if not stale:
+            return []
+
+        settings = self._settings_service.get_active()
+        processed: list[Signal] = []
+        for signal in stale:
+            if settings.auto_sl_fallback_pips is not None:
+                processed.append(self._apply_auto_stop_loss_fallback(signal, settings, now=now))
+            else:
+                processed.append(self._signal_service.expire_one(signal, now=now))
+        return processed
+
+    def _apply_auto_stop_loss_fallback(
+        self, signal: Signal, settings: TradingSettings, *, now: datetime
+    ) -> Signal:
+        assert settings.auto_sl_fallback_pips is not None
+        try:
+            broker_health = self._broker.health()
+            symbol_info = self._broker.get_symbol(signal.symbol) if broker_health.healthy else None
+            quote = self._broker.get_quote(signal.symbol) if broker_health.healthy else None
+        except Exception:  # noqa: BLE001 - a broker fault must never block the sweep
+            symbol_info = None
+            quote = None
+
+        if symbol_info is None or quote is None:
+            # Broker unreachable right now -- never guess a price. Falls
+            # back to the safe pre-v1.2 behavior for this signal only; the
+            # next sweep tick will retry the fallback for any signal still
+            # open (this one is now EXPIRED, so it won't be retried, but a
+            # broker outage at exactly the timeout instant is rare and the
+            # existing REJECTED/FAILED-on-BROKER_UNAVAILABLE path already
+            # covers "broker down" everywhere else in the pipeline).
+            self._audit.log(
+                AuditEventType.BROKER_ERROR,
+                f"Signal {signal.id} timed out waiting for a Stop Loss and the broker was "
+                "unavailable to price an auto fallback -- expiring instead.",
+                severity=AuditSeverity.ERROR,
+                metadata={"signal_id": signal.id},
+            )
+            return self._signal_service.expire_one(signal, now=now)
+
+        stop_loss = pips.compute_stop_loss(
+            entry_price=quote.ask,
+            pips=settings.auto_sl_fallback_pips,
+            symbol_info=symbol_info,
+            side=signal.side,
+        )
+        self._audit.log(
+            AuditEventType.AUTO_STOP_LOSS_APPLIED,
+            f"Signal {signal.id} had no Stop Loss after "
+            f"{settings.signal_completion_timeout_seconds}s -- applying auto fallback of "
+            f"{fmt(settings.auto_sl_fallback_pips)} pips ({fmt(stop_loss)}) and executing.",
+            metadata={
+                "signal_id": signal.id,
+                "auto_sl_fallback_pips": str(settings.auto_sl_fallback_pips),
+                "stop_loss": str(stop_loss),
+                "quote_ask": str(quote.ask),
+            },
+        )
+        # `find_stale_signals` only ever returns open-status signals, and
+        # `apply_stop_loss_and_ready` always advances an open signal to
+        # READY once it has a Stop Loss -- so this is unconditionally READY
+        # here, same as the has_sl-in-one-message path in
+        # `process_incoming_message` right above.
+        signal = self._signal_service.apply_stop_loss_and_ready(
+            signal, stop_loss=stop_loss, now=now
+        )
+        assert signal.status == SignalStatus.READY
+
+        if self._is_observed_only(signal.source):
+            self._audit.log(
+                AuditEventType.SIGNAL_OBSERVED_ONLY,
+                f"Signal {signal.id} reached READY via auto Stop Loss fallback but "
+                "TELEGRAM_OBSERVE_ONLY=true — not sent to the trading engine.",
+                severity=AuditSeverity.INFO,
+                metadata={"signal_id": signal.id, "source": signal.source},
+            )
+        else:
+            self._engine.execute(signal, settings)
+            self._session.refresh(signal)
+        return signal
 
     # -- price ticks -> trade closure -----------------------------------------
 

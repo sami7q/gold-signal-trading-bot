@@ -80,6 +80,26 @@ async def _poll_open_trades(poll_seconds: int) -> None:
             logger.exception("Periodic trade reconciliation failed")
 
 
+async def _poll_expired_signals(poll_seconds: int) -> None:
+    """Sweeps signals stuck waiting for a channel Stop Loss, on a timer.
+
+    `TradingService.sweep_expired_signals` is only useful if something
+    actually calls it on a schedule -- without this loop a signal that
+    never got a follow-up Stop Loss message just sat in
+    WAITING_FOR_DETAILS forever (no auto Stop Loss fallback, no expiry,
+    no execution). A short interval keeps the gap between "timeout
+    elapses" and "fallback Stop Loss applied / signal expired" tight.
+    """
+    while True:
+        await asyncio.sleep(poll_seconds)
+        try:
+            with Session(get_engine()) as session:
+                broker = get_broker()
+                TradingService(session, broker, AuditService(session)).sweep_expired_signals()
+        except Exception:  # noqa: BLE001 - one bad sweep must never kill the loop
+            logger.exception("Periodic signal expiry sweep failed")
+
+
 def _message_handler(data: IncomingMessageData) -> None:
     """Entry point for any long-running async source (currently: Telegram).
 
@@ -166,12 +186,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     assert_paper_broker_active_if_telegram_live(settings)
 
     poll_task = asyncio.create_task(_poll_open_trades(settings.position_poll_seconds))
+    expiry_poll_task = asyncio.create_task(
+        _poll_expired_signals(settings.signal_expiry_poll_seconds)
+    )
 
     yield
 
-    poll_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await poll_task
+    for task in (poll_task, expiry_poll_task):
+        task.cancel()
+    for task in (poll_task, expiry_poll_task):
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     await mock_source.stop()
 

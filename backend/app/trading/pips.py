@@ -56,3 +56,16 @@ def compute_take_profit(
     distance = pip_distance_to_price(symbol_info, pips)
     raw = entry_price + distance if side == Side.BUY else entry_price - distance
     return round_to_symbol(raw, symbol_info)
+
+
+def compute_stop_loss(
+    *, entry_price: Decimal, pips: Decimal, symbol_info: SymbolInfo, side: Side = Side.BUY
+) -> Decimal:
+    """Stop Loss `pips` behind entry, in the direction that protects the
+    trade (below entry for BUY, above for SELL) -- the mirror of
+    `compute_take_profit`. Used for the auto-applied fallback Stop Loss
+    (TradingSettings.auto_sl_fallback_pips) when a channel never sends its
+    own SL before the signal's completion timeout."""
+    distance = pip_distance_to_price(symbol_info, pips)
+    raw = entry_price - distance if side == Side.BUY else entry_price + distance
+    return round_to_symbol(raw, symbol_info)

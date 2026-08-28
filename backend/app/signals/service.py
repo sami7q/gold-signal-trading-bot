@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlmodel import Session, select
 
@@ -324,32 +325,64 @@ class SignalService:
 
     # -- expiry sweep ---------------------------------------------------------
 
-    def expire_stale_signals(self, *, now: datetime | None = None) -> list[Signal]:
+    def _is_stale(self, signal: Signal, *, now: datetime) -> bool:
+        timeout = signal.expires_at
+        if timeout is not None:
+            return now >= timeout
+        return SignalStateMachine.is_expired(
+            signal.status,
+            first_message_at=signal.first_message_at,
+            timeout_seconds=self._default_timeout_seconds,
+            now=now,
+        )
+
+    def find_stale_signals(self, *, now: datetime | None = None) -> list[Signal]:
+        """Read-only: which open (RECEIVED/CLASSIFIED/WAITING_FOR_DETAILS)
+        signals have passed their completion timeout, without changing
+        anything. `TradingService.sweep_expired_signals` uses this to decide,
+        per signal, whether to expire it outright or apply an auto Stop Loss
+        fallback -- a decision that needs settings/broker access this
+        trading-unaware module deliberately does not have."""
         now = now or datetime.now(UTC)
         statement = select(Signal).where(Signal.status.in_(OPEN_STATUSES))  # type: ignore[attr-defined]
-        expired: list[Signal] = []
-        for signal in self._session.exec(statement):
-            timeout = signal.expires_at
-            if timeout is not None:
-                is_stale = now >= timeout
-            else:
-                is_stale = SignalStateMachine.is_expired(
-                    signal.status,
-                    first_message_at=signal.first_message_at,
-                    timeout_seconds=self._default_timeout_seconds,
-                    now=now,
-                )
-            if is_stale:
-                signal.status = SignalStateMachine.expire(signal.status)
-                signal.updated_at = now
-                self._session.add(signal)
-                self._session.commit()
-                self._session.refresh(signal)
-                self._audit.log(
-                    AuditEventType.SIGNAL_EXPIRED,
-                    f"Signal {signal.id} expired waiting for Stop Loss",
-                    severity=AuditSeverity.WARNING,
-                    metadata={"signal_id": signal.id},
-                )
-                expired.append(signal)
-        return expired
+        candidates = self._session.exec(statement)
+        return [signal for signal in candidates if self._is_stale(signal, now=now)]
+
+    def expire_one(self, signal: Signal, *, now: datetime | None = None) -> Signal:
+        now = now or datetime.now(UTC)
+        signal.status = SignalStateMachine.expire(signal.status)
+        signal.updated_at = now
+        self._session.add(signal)
+        self._session.commit()
+        self._session.refresh(signal)
+        self._audit.log(
+            AuditEventType.SIGNAL_EXPIRED,
+            f"Signal {signal.id} expired waiting for Stop Loss",
+            severity=AuditSeverity.WARNING,
+            metadata={"signal_id": signal.id},
+        )
+        return signal
+
+    def expire_stale_signals(self, *, now: datetime | None = None) -> list[Signal]:
+        now = now or datetime.now(UTC)
+        return [self.expire_one(signal, now=now) for signal in self.find_stale_signals(now=now)]
+
+    def apply_stop_loss_and_ready(
+        self, signal: Signal, *, stop_loss: Decimal, now: datetime | None = None
+    ) -> Signal:
+        """Backs the auto Stop Loss fallback (TradingService): attaches a
+        broker-computed Stop Loss price to a signal that timed out with none,
+        and advances it to READY exactly as if the channel had sent that
+        price itself. Never called for a signal that already has a Stop
+        Loss -- `TradingService` only reaches this via `find_stale_signals`,
+        which by construction only returns still-open signals."""
+        now = now or datetime.now(UTC)
+        signal.channel_stop_loss = stop_loss
+        signal.status = SignalStateMachine.apply_details(signal.status, has_stop_loss=True)
+        signal.updated_at = now
+        if signal.status == SignalStatus.READY and signal.completed_at is None:
+            signal.completed_at = now
+        self._session.add(signal)
+        self._session.commit()
+        self._session.refresh(signal)
+        return signal

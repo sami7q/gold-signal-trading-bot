@@ -22,6 +22,7 @@ class TradingSettingsRead(BaseModel):
     max_open_trades: int
     max_channel_stop_pips: CleanDecimal | None
     signal_completion_timeout_seconds: int
+    auto_sl_fallback_pips: CleanDecimal | None
 
     model_config = {"from_attributes": True}
 
@@ -42,12 +43,14 @@ class TradingSettingsUpdate(BaseModel):
     #: leaves the current value untouched.
     max_channel_stop_pips: Decimal | None = None
     signal_completion_timeout_seconds: int | None = Field(default=None, ge=1)
+    #: Same `None`-is-meaningful semantics as `max_channel_stop_pips` above.
+    auto_sl_fallback_pips: Decimal | None = None
 
     #: Required to equal `LIVE_CONFIRMATION_PHRASE` when `mode` is being set
     #: to LIVE (PROJECT_SPEC.md section 28).
     confirm_live_phrase: str | None = None
 
-    @field_validator("lot_size", "target_pips", "max_channel_stop_pips")
+    @field_validator("lot_size", "target_pips", "max_channel_stop_pips", "auto_sl_fallback_pips")
     @classmethod
     def _must_be_positive(cls, value: Decimal | None) -> Decimal | None:
         if value is not None and value <= 0:

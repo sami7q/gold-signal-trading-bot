@@ -57,7 +57,7 @@ _HEALTHY = BrokerHealth(healthy=True)
 _UNHEALTHY = BrokerHealth(healthy=False, detail="disconnected")
 # ask is 70 pips above the default signal's channel_stop_loss (4623) --
 # pip_size for a 2-digit-gold symbol is 0.1 (point * 10), so (4630-4623)/0.1
-# = 70 pips, comfortably inside the default max_channel_stop_pips (200).
+# = 70 pips, comfortably inside the default max_channel_stop_pips (180).
 _QUOTE = Quote(bid=Decimal("4629"), ask=Decimal("4630"))
 
 

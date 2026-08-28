@@ -202,6 +202,20 @@ export default function SettingsPage() {
               onChange={(e) => set("max_channel_stop_pips", e.target.value === "" ? null : e.target.value)}
             />
           </Row>
+          <Row
+            label="وقف خسارة تلقائي عند انتهاء المهلة (نقاط)"
+            description="لو القناة ما أرسلت وقف خسارة قبل انتهاء مهلة اكتمال الإشارة أعلاه، يضع البوت هذا الوقف تلقائيًا (بالمسافة عن السعر الحالي وقتها) وينفّذ الصفقة بدل ما تنتهي صلاحيتها بدون تنفيذ. أفرغ الحقل للرجوع للسلوك القديم (انتهاء الصلاحية بدون تنفيذ)."
+          >
+            <Input
+              type="number"
+              step="1"
+              min="0"
+              placeholder="بدون تفعيل"
+              className="w-28 text-right font-data"
+              value={form.auto_sl_fallback_pips ?? ""}
+              onChange={(e) => set("auto_sl_fallback_pips", e.target.value === "" ? null : e.target.value)}
+            />
+          </Row>
           <Row label="أقصى عدد صفقات مفتوحة" description="يمنع أي شراء جديد طالما هذا العدد مفتوح فعلاً.">
             <Input
               type="number"

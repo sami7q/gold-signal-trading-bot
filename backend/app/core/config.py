@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     #: closed trade looking OPEN for however long the process keeps running).
     position_poll_seconds: int = 20
 
+    #: How often (seconds) the background loop checks for signals stuck
+    #: waiting for a channel Stop Loss past their completion timeout
+    #: (TradingSettings.signal_completion_timeout_seconds). Kept short --
+    #: unlike position polling, this directly gates execution latency: a
+    #: signal that qualifies for the fallback Stop Loss (or expires, if
+    #: the fallback is disabled) sits idle for up to this long past its
+    #: timeout before the sweep notices.
+    signal_expiry_poll_seconds: int = 5
+
     dashboard_cors_origins: str = "http://localhost:3000"
 
     #: /docs, /redoc, /openapi.json. Enabled by default for local dev; set
