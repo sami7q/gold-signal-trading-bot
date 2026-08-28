@@ -48,10 +48,15 @@ export default function LogsPage() {
         ) : (
           <ul className="divide-y divide-border-soft/60 font-data text-sm">
             {events.map((event) => (
-              <li key={event.id} className="flex items-start gap-3 px-4 py-2.5">
-                <span className="shrink-0 text-muted-dim">{formatDateTime(event.created_at)}</span>
-                <SeverityBadge severity={event.severity} />
-                <span className="shrink-0 text-gold-dim">{event.event_type}</span>
+              <li
+                key={event.id}
+                className="flex flex-col gap-1.5 px-4 py-2.5 sm:flex-row sm:items-start sm:gap-3"
+              >
+                <div className="flex flex-wrap items-center gap-2 sm:contents">
+                  <span className="shrink-0 text-muted-dim">{formatDateTime(event.created_at)}</span>
+                  <SeverityBadge severity={event.severity} />
+                  <span className="shrink-0 text-gold-dim">{event.event_type}</span>
+                </div>
                 <span className="min-w-0 flex-1 text-bone">{event.message}</span>
               </li>
             ))}

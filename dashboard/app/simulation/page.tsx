@@ -112,7 +112,7 @@ export default function SimulationPage() {
               <LoadingState />
             ) : (
               <>
-                <div className="flex items-end gap-6">
+                <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
                   <div>
                     <div className="text-[11px] uppercase tracking-wide text-muted">سعر البيع</div>
                     <div className="font-data text-xl text-bone">{formatPrice(state.bid)}</div>
