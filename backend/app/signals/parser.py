@@ -28,6 +28,22 @@ _GOLD_ALIAS_PATTERN = re.compile(
 # Order matters: compound kinds (BUY LIMIT / SELL STOP / ...) must be tried
 # before the bare BUY / SELL patterns, otherwise "BUY LIMIT GOLD" would be
 # misread as a plain BUY.
+#
+# The Arabic patterns are deliberately narrower than their English
+# counterparts: they require "شراء"/"بيع" (buy/sell) directly adjacent to
+# "الذهب" (gold), not just present anywhere in the message. Confirmed
+# against real channel history: every genuine Arabic entry signal uses this
+# exact adjacent phrase ("شراء الذهب 4463", "بيع الذهب 4685 ..."), while
+# Arabic market commentary routinely uses "شراء"/"بيع" as bare vocabulary
+# words describing price zones ("الذهب وصل لمناطق الشراء ولا نفضل الدخول")
+# without "الذهب" directly next to them, or uses "الشراء" (with the
+# attached definite article, a different token to \bشراء\b) as a noun. A
+# bare \bشراء\b/\bبيع\b pattern (matching the English BUY/SELL precedent)
+# would misfire on that commentary; requiring the adjacent noun does not,
+# checked against every non-signal Arabic message found during the audit.
+# No Arabic LIMIT/STOP phrasing has been observed in the channel's history,
+# so (unlike English) there is no Arabic compound-kind pattern here --
+# adding one would be guessing an unconfirmed format.
 _KIND_PATTERNS: list[tuple[re.Pattern[str], SignalKind]] = [
     (re.compile(r"\bBUY\s+LIMIT\b"), SignalKind.BUY_LIMIT),
     (re.compile(r"\bSELL\s+LIMIT\b"), SignalKind.SELL_LIMIT),
@@ -35,9 +51,13 @@ _KIND_PATTERNS: list[tuple[re.Pattern[str], SignalKind]] = [
     (re.compile(r"\bSELL\s+STOP\b"), SignalKind.SELL_STOP),
     (re.compile(r"\bBUY\b"), SignalKind.BUY),
     (re.compile(r"\bSELL\b"), SignalKind.SELL),
+    (re.compile(r"\bشراء\s+الذهب\b"), SignalKind.BUY),
+    (re.compile(r"\bبيع\s+الذهب\b"), SignalKind.SELL),
 ]
 
-_STOP_LOSS_PATTERN = re.compile(r"\b(?:SL|STOP\s*LOSS|STOPLOSS)\s*[:\-]?\s*(" + _NUMBER + r")\b")
+_STOP_LOSS_PATTERN = re.compile(
+    r"\b(?:SL|STOP\s*LOSS|STOPLOSS|ستوب)\s*[:\-]?\s*(" + _NUMBER + r")\b"
+)
 
 _ENTRY_RANGE_PATTERN = re.compile(r"\b(" + _NUMBER + r")\s*-\s*(" + _NUMBER + r")\b")
 

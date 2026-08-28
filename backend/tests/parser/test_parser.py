@@ -96,3 +96,85 @@ def test_buy_limit_and_stop_variants_detected():
     assert parse_message("BUY STOP GOLD 4633").kind == SignalKind.BUY_STOP
     assert parse_message("SELL STOP GOLD 4633").kind == SignalKind.SELL_STOP
     assert parse_message("SELL GOLD 4633").kind == SignalKind.SELL
+
+
+# -- Arabic entry signals (found missing during a live-data audit: the
+# channel posts some signals as "شراء الذهب"/"بيع الذهب" instead of
+# "BUY GOLD"/"SELL GOLD", which the parser silently ignored) -------------
+
+
+def test_arabic_buy_gold_detected():
+    # A single bare number (no "-" range) never populates entry_min --
+    # true for the English patterns too (see test_buy_gold_with_entry_range
+    # below for the range case); market orders don't need it, only the
+    # simulated/live fill price does.
+    parsed = parse_message("شراء الذهب 4463")
+    assert parsed.kind == SignalKind.BUY
+    assert parsed.is_gold is True
+    assert parsed.classification == MessageClassification.ENTRY_SIGNAL
+    assert parsed.entry_min is None
+
+
+def test_arabic_buy_gold_with_entry_range():
+    parsed = parse_message("شراء الذهب 4413-4411")
+    assert parsed.kind == SignalKind.BUY
+    assert parsed.entry_min == Decimal("4411")
+    assert parsed.entry_max == Decimal("4413")
+
+
+def test_arabic_sell_gold_detected():
+    parsed = parse_message("بيع الذهب 4685")
+    assert parsed.kind == SignalKind.SELL
+    assert parsed.classification == MessageClassification.ENTRY_SIGNAL
+
+
+def test_arabic_buy_gold_with_entry_range_and_stop_same_message():
+    parsed = parse_message("شراء الذهب 4449-4438\nستوب 4420")
+    assert parsed.kind == SignalKind.BUY
+    assert parsed.entry_min == Decimal("4438")
+    assert parsed.entry_max == Decimal("4449")
+    assert parsed.stop_loss == Decimal("4420")
+    assert parsed.classification == MessageClassification.ENTRY_SIGNAL
+
+
+def test_arabic_stop_loss_word_extracted_standalone():
+    parsed = parse_message("ستوب 4392")
+    assert parsed.stop_loss == Decimal("4392")
+    assert parsed.classification == MessageClassification.SIGNAL_DETAILS
+
+
+def test_arabic_stop_loss_word_extracted_with_no_space_before_number():
+    assert parse_message("ستوب4693").stop_loss == Decimal("4693")
+
+
+def test_arabic_buy_gold_with_no_price_waits_for_details_like_english():
+    parsed = parse_message("اقل لوت شراء الذهب")
+    assert parsed.kind == SignalKind.BUY
+    assert parsed.entry_min is None
+    assert parsed.classification == MessageClassification.ENTRY_SIGNAL
+
+
+def test_arabic_market_commentary_is_not_misread_as_a_signal():
+    """Real, non-signal messages from the channel that mention gold and
+    "buy"/"sell" vocabulary without "شراء"/"بيع" directly adjacent to
+    "الذهب" -- must never become ENTRY_SIGNAL. Every case here is a
+    verbatim (trimmed) message pulled from the live channel archive."""
+    commentary = [
+        "الذهب وصل إلى مناطق قصوى في الشراء وبالتالي لا نُفضّل الدخول في صفقات شراء",
+        "السعر لي فيه حاليا الذهب هي منطقة المشترين لكن نريد تباث واضح حتى ندخل معو شراء",
+        "منتظرين الذهب يطلع من تجميع لانو اي دخول حاليا سواء البيع اوشراء ما رح يعطينا",
+        "الذهب في مناطق الشراء لكن دخولنا من السعر الحالي راح يفرض علينا ستوب كبير",
+        "كنا نقدر نحط امر معلق لشراء من المنطقة لي حددنا تحت لكن بما انو الذهب طول بتجميع",
+    ]
+    for text in commentary:
+        parsed = parse_message(text)
+        assert parsed.kind is None, f"false positive kind on: {text!r}"
+        assert parsed.classification != MessageClassification.ENTRY_SIGNAL, (
+            f"false positive ENTRY_SIGNAL on: {text!r}"
+        )
+
+
+def test_arabic_stop_word_inside_a_longer_word_is_not_matched_as_a_price():
+    # "ستوبها" ("its stop") has no number attached -- must not match.
+    parsed = parse_message("صفقة ستوبها كبير واهدافها اكبر")
+    assert parsed.stop_loss is None

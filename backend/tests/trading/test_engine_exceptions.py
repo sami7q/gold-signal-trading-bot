@@ -166,12 +166,17 @@ def test_retrying_the_same_signal_after_broker_exception_does_not_duplicate(sess
     assert all_trades[0].status == TradeStatus.FAILED
 
 
-def test_exception_during_quote_fetch_before_trade_row_exists_still_produces_a_failed_trade(
+def test_exception_during_quote_fetch_before_trade_row_exists_is_rejected_not_stuck(
     session,
 ):
-    """The exception can happen before any Trade row was ever created
-    (e.g. get_quote() itself raises) -- must still end in exactly one
-    FAILED trade, not zero rows and not a crash."""
+    """`get_quote()` is now called early (rule 7b needs a current price to
+    screen the channel's Stop Loss width), alongside get_account()/
+    get_symbol() -- so a quote-fetch failure is caught there and classified
+    as BROKER_UNAVAILABLE (a REJECTED trade), the same as those other two
+    failing. It never reaches the later execution-path quote fetch, so it
+    can no longer surface as FAILED. Either way the safety property this
+    test guards holds: exactly one definitive terminal-state trade row,
+    never zero rows, never a crash, never a phantom OPEN."""
 
     class _RaisingOnQuote(_RaisingBroker):
         def get_quote(self, symbol: str):  # noqa: ANN001
@@ -188,8 +193,9 @@ def test_exception_during_quote_fetch_before_trade_row_exists_still_produces_a_f
 
     trade = engine.execute(signal, settings)
 
-    assert trade.status == TradeStatus.FAILED
+    assert trade.status == TradeStatus.REJECTED
+    assert trade.failure_reason == "BROKER_UNAVAILABLE"
     session.refresh(signal)
-    assert signal.status == SignalStatus.FAILED
+    assert signal.status == SignalStatus.REJECTED
     all_trades = list(session.exec(select(Trade).where(Trade.signal_id == signal.id)))
     assert len(all_trades) == 1

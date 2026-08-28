@@ -18,8 +18,8 @@ from app.core.constants import (
 )
 from app.database.models.signal import Signal
 from app.database.models.trading_settings import TradingSettings
-from app.integrations.broker.base import BrokerAccount, BrokerHealth, SymbolInfo
-from app.trading import risk
+from app.integrations.broker.base import BrokerAccount, BrokerHealth, Quote, SymbolInfo
+from app.trading import pips, risk
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +46,7 @@ class TradingRulesEngine:
         open_trades_count: int,
         broker_health: BrokerHealth | None,
         symbol_info: SymbolInfo | None,
+        quote: Quote | None,
         already_executed: bool,
     ) -> TradingDecision:
         # 1. Auto Trading must be enabled.
@@ -96,8 +97,27 @@ class TradingRulesEngine:
             or not broker_health.healthy
             or account is None
             or symbol_info is None
+            or quote is None
         ):
             return _decision(RejectionReason.BROKER_UNAVAILABLE, "Broker is not available.")
+
+        # 7b. (v1.1) The channel's own Stop Loss must not be unreasonably
+        # far from the current market price. This is a signal-quality
+        # filter, not a risk cap -- the SL actually sent to the broker
+        # stays the channel's own number either way (see engine.py).
+        # Validated via historical backtesting: signals with an unusually
+        # wide channel Stop Loss are both lower win-rate AND carry
+        # outsized losses when wrong (VIP_FOREX_ANALYSIS.md section 4).
+        if settings.max_channel_stop_pips is not None and signal.channel_stop_loss is not None:
+            distance_pips = pips.price_distance_to_pips(
+                symbol_info, quote.ask - signal.channel_stop_loss
+            )
+            if distance_pips > settings.max_channel_stop_pips:
+                return _decision(
+                    RejectionReason.STOP_LOSS_TOO_WIDE,
+                    f"Channel Stop Loss is {distance_pips:.0f} pips away "
+                    f"(max allowed: {settings.max_channel_stop_pips:.0f}).",
+                )
 
         # 8. Maximum open trade rules must allow another position.
         if open_trades_count >= settings.max_open_trades:

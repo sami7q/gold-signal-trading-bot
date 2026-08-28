@@ -395,6 +395,12 @@ def test_flow_scenario(session, scenario: FlowScenario):
             # capacity mask the outcome under test
             max_open_trades=10,
             require_stop_loss=True,
+            # these scenarios test signal assembly/flow (ambiguity, reply
+            # threading, expiry), not the Stop Loss quality filter -- fixture
+            # SL values are picked for flow behavior, not pip distance from
+            # PaperBroker's starting price, so the filter is disabled here
+            # (it has its own dedicated tests in tests/trading/test_rules.py).
+            max_channel_stop_pips=None,
             signal_completion_timeout_seconds=scenario.timeout_seconds,
         )
     )

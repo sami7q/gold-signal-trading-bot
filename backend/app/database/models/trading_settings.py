@@ -33,6 +33,13 @@ class TradingSettings(Base, table=True):
     require_stop_loss: bool = True
     max_open_trades: int = 1
 
+    #: Reject a signal whose channel-stated Stop Loss is farther from the
+    #: current market price than this many pips. `None` disables the
+    #: filter (every signal with a positive Stop Loss is accepted, the
+    #: pre-v1.1 behavior). Default 200 pips is the best-validated setting
+    #: from historical backtesting -- see VIP_FOREX_ANALYSIS.md section 4.
+    max_channel_stop_pips: Decimal | None = Decimal("200")
+
     signal_completion_timeout_seconds: int = 120
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-GOLD_ALIASES: frozenset[str] = frozenset({"GOLD", "XAU", "XAUUSD", "XAU/USD", "XAU-USD"})
+GOLD_ALIASES: frozenset[str] = frozenset(
+    {"GOLD", "XAU", "XAUUSD", "XAU/USD", "XAU-USD", "الذهب"}
+)
 CANONICAL_GOLD_SYMBOL = "XAUUSD"
 
 STRATEGY_VERSION = "v1"
@@ -149,6 +151,15 @@ class RejectionReason(StrEnum):
     BUY_DISABLED = "BUY_DISABLED"
     STOP_LOSS_REQUIRED = "STOP_LOSS_REQUIRED"
     STOP_LOSS_INVALID = "STOP_LOSS_INVALID"
+    #: The channel's own stated Stop Loss is farther from the current
+    #: market price than `TradingSettings.max_channel_stop_pips` allows.
+    #: Added after historical backtesting (see VIP_FOREX_ANALYSIS.md)
+    #: showed signals with an unusually wide channel Stop Loss are both
+    #: lower win-rate AND carry outsized losses when wrong -- filtering
+    #: them out turns the strategy's historical net result strongly
+    #: positive. Purely a signal-quality filter, not a risk cap: the SL
+    #: actually sent to the broker is still the channel's own number.
+    STOP_LOSS_TOO_WIDE = "STOP_LOSS_TOO_WIDE"
     DUPLICATE_SIGNAL = "DUPLICATE_SIGNAL"
     MAX_OPEN_TRADES_REACHED = "MAX_OPEN_TRADES_REACHED"
     BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"

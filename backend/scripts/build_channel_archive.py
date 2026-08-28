@@ -14,20 +14,43 @@ What it does, precisely:
      guarantees the archive's entry/SL pairing, ambiguity handling, and
      expiry rules are identical to what would have happened live, not a
      second reimplementation that could silently drift from the real logic.
-  3. For every resulting signal that reached READY as a plain BUY (the only
-     kind this bot ever executes), simulates the outcome against real
-     historical MT5 M5 price bars: a simulated fill at the next available
-     bar after the signal completed, then scans forward bar-by-bar for
-     whichever of the channel's own Stop Loss or our $10/100-pip Take
-     Profit was crossed first. A bar that crosses both in the same 5
-     minutes is conservatively counted as the Stop Loss (we cannot know the
-     intra-bar path, and PROJECT_SPEC.md section 32 rule 13 says ambiguity
-     must never default to the favorable outcome). If neither is ever
-     crossed in the available history, the outcome is UNRESOLVED -- never
-     guessed.
+     Expiry is swept incrementally using each message's own real historical
+     timestamp (`service.expire_stale_signals(now=data.sent_at)`) *before*
+     that message is ingested -- without this, a signal missing a Stop Loss
+     never actually flips to EXPIRED mid-replay (only one batch sweep ran,
+     at the very end, using today's date), so an arbitrarily late SL
+     message could still attach to it even though a live system -- which
+     sweeps continuously against wall-clock time -- would already have
+     expired that signal and refused the late attachment.
+  3. Every signal that reached READY -- classified BUY MARKET, or any other
+     side/order-type (SELL, BUY LIMIT, SELL LIMIT) -- gets a simulated
+     outcome against real historical MT5 M5 price bars. `classification`
+     still distinguishes READY (BUY MARKET -- the only kind this bot
+     actually executes live) from NON_EXECUTABLE_TYPE (everything else),
+     matching `EXECUTABLE_KINDS` in app/core/constants.py, but both are now
+     simulated so the channel's SELL/LIMIT track record can be analyzed
+     too:
+       - MARKET (BUY/SELL): fills at the next available bar's close after
+         the signal completed.
+       - LIMIT (BUY_LIMIT/SELL_LIMIT): a pending order at the channel's own
+         stated price -- waits (up to 14 days) for a bar that actually
+         touches that level; never fabricates a fill the market never
+         reached (outcome NEVER_TRIGGERED if it doesn't).
+     From the fill, scans forward bar-by-bar for whichever of the channel's
+     own Stop Loss or our $10/100-pip Take Profit was crossed first (mirror
+     image for SELL: profit on a $10 fall, loss on a rise to the Stop
+     Loss). A bar that crosses both in the same 5 minutes is conservatively
+     counted as the Stop Loss (we cannot know the intra-bar path, and
+     PROJECT_SPEC.md section 32 rule 13 says ambiguity must never default
+     to the favorable outcome). If neither is ever crossed in the available
+     history, the outcome is UNRESOLVED -- never guessed.
   4. Writes results to the `archived_signals` table (separate from the
      live `signals`/`trades` tables, so resetting live trades never touches
-     it) and skips any message_id already archived, so reruns are cheap.
+     it) and skips any message_id already archived. Pass `--reset` to wipe
+     and fully rebuild this channel's rows instead -- required whenever the
+     replay/simulation logic itself changes, since skip-existing would
+     otherwise keep old rows computed under the previous (possibly fixed)
+     logic forever.
 
 This is an ESTIMATE, not a real trading record: it uses historical Bid-side
 M5 OHLC bars with no historical spread applied (fills are computed off the
@@ -35,7 +58,7 @@ same price series as SL/TP, unlike live trading where entry uses Ask and
 SL/TP execute off Bid) -- documented here rather than hidden.
 
 Usage (from the backend/ directory):
-    python scripts/build_channel_archive.py [--since 2026-01-01] [--channel-id ID]
+    python scripts/build_channel_archive.py [--since 2026-01-01] [--channel-id ID] [--reset]
 """
 
 from __future__ import annotations
@@ -154,26 +177,88 @@ def _load_price_bars(since: datetime) -> list[Bar]:
 _MAX_FILL_GAP = timedelta(days=3)
 
 
+#: How long a pending LIMIT order is allowed to wait for price to reach its
+#: stated trigger level before we give up and call it NEVER_TRIGGERED. Gold
+#: trends for weeks; an unbounded wait would eventually "fill" almost every
+#: limit order regardless of whether the channel's setup was ever realistic,
+#: which would overstate how often these signals were actually tradeable.
+#: 14 days is generous (most channel setups reference nearby levels) while
+#: still refusing to guess a fill on a level the market never approached.
+_MAX_LIMIT_WAIT = timedelta(days=14)
+
+
 def _simulate_outcome(
-    bars: list[Bar], bar_times: list[datetime], signal_ready_at: datetime, stop_loss: Decimal
+    bars: list[Bar],
+    bar_times: list[datetime],
+    signal_ready_at: datetime,
+    stop_loss: Decimal,
+    *,
+    side: Side,
+    signal_type: OrderType,
+    entry_min: Decimal | None,
+    entry_max: Decimal | None,
 ) -> tuple[Decimal, Decimal, str, Decimal | None, datetime | None] | None:
     """Returns (entry_price, take_profit_price, outcome, outcome_price,
     outcome_at), or None if there's no bar reasonably close to/after
     `signal_ready_at` (outside the available historical window ->
-    NO_PRICE_DATA, handled by the caller)."""
+    NO_PRICE_DATA, handled by the caller).
+
+    Direction-aware: a SELL profits when price falls $10 and loses when it
+    rises to the channel's Stop Loss (the mirror image of BUY). A LIMIT
+    order (BUY_LIMIT/SELL_LIMIT) is not filled at signal-ready time like a
+    MARKET order -- it is a pending order at the channel's own stated price,
+    so this waits (up to `_MAX_LIMIT_WAIT`) for a bar that actually touches
+    that level before treating it as filled; if price never gets there the
+    outcome is NEVER_TRIGGERED, not a guessed fill.
+    """
     start_index = bisect_left(bar_times, signal_ready_at)
     if start_index >= len(bars):
         return None
 
-    entry_bar = bars[start_index]
-    if entry_bar.time - signal_ready_at > _MAX_FILL_GAP:
+    ready_bar = bars[start_index]
+    if ready_bar.time - signal_ready_at > _MAX_FILL_GAP:
         return None
-    entry_price = entry_bar.close
-    take_profit = entry_price + _TP_DISTANCE
 
-    for bar in bars[start_index:]:
-        hit_sl = bar.low <= stop_loss
-        hit_tp = bar.high >= take_profit
+    if signal_type is OrderType.MARKET:
+        entry_price = ready_bar.close
+        fill_index = start_index
+    else:
+        # LIMIT: use whichever bound is nearer the market at signal time --
+        # BUY_LIMIT sits below market (price falls to meet it, so the
+        # HIGHER of the two stated bounds is touched first); SELL_LIMIT
+        # sits above market (the LOWER stated bound is touched first).
+        # Falls back to the only bound given when the channel posted a
+        # single price rather than a range.
+        if side is Side.BUY:
+            trigger = entry_max if entry_max is not None else entry_min
+        else:
+            trigger = entry_min if entry_min is not None else entry_max
+        if trigger is None:
+            return None
+
+        fill_index = None
+        deadline = signal_ready_at + _MAX_LIMIT_WAIT
+        for i in range(start_index, len(bars)):
+            bar = bars[i]
+            if bar.time > deadline:
+                break
+            touched = bar.low <= trigger <= bar.high
+            if touched:
+                fill_index = i
+                break
+        if fill_index is None:
+            return (trigger, trigger, "NEVER_TRIGGERED", None, None)
+        entry_price = trigger
+
+    take_profit = entry_price + _TP_DISTANCE if side is Side.BUY else entry_price - _TP_DISTANCE
+
+    for bar in bars[fill_index:]:
+        if side is Side.BUY:
+            hit_sl = bar.low <= stop_loss
+            hit_tp = bar.high >= take_profit
+        else:
+            hit_sl = bar.high >= stop_loss
+            hit_tp = bar.low <= take_profit
         if hit_sl and hit_tp:
             return (entry_price, take_profit, "LOSS", stop_loss, bar.time)  # conservative
         if hit_sl:
@@ -257,6 +342,20 @@ def _replay_through_signal_service(messages: list[IncomingMessageData]) -> Repla
             signal_completion_timeout_seconds=120,
         )
         for data in messages:
+            # CRITICAL: sweep expiry using THIS message's real historical
+            # timestamp before ingesting it. Without this, a signal that
+            # never got a stop-loss within the 120s completion timeout stays
+            # "open" in the scratch DB indefinitely (status is only flipped
+            # to EXPIRED by an explicit sweep), so a details message that
+            # arrives arbitrarily late -- minutes, hours, even days later --
+            # would still attach to it here, even though a live production
+            # system (which sweeps continuously against wall-clock time)
+            # would have already expired that signal and rejected the late
+            # attachment. Confirmed against real data: several archived
+            # "READY" signals had a channel-side gap between entry and SL
+            # far exceeding 120s (one over 24 minutes) and were still
+            # (wrongly) marked READY before this fix.
+            service.expire_stale_signals(now=data.sent_at)
             result = service.ingest_message(data)
             if result.signal is None or result.signal.id is None:
                 continue
@@ -282,7 +381,7 @@ def _replay_through_signal_service(messages: list[IncomingMessageData]) -> Repla
     )
 
 
-def build_archive(channel_id: int, since: datetime) -> None:
+def build_archive(channel_id: int, since: datetime, *, reset: bool = False) -> None:
     messages = asyncio.run(_fetch_channel_messages(channel_id, since))
     replay = _replay_through_signal_service(messages)
     scratch_signals = replay.signals
@@ -293,6 +392,22 @@ def build_archive(channel_id: int, since: datetime) -> None:
     engine = get_engine()
     SQLModel.metadata.create_all(engine)  # idempotent -- only creates missing tables
     with Session(engine) as session:
+        if reset:
+            # Pairing (which SL message attaches to which signal) can change
+            # between runs whenever the replay logic itself changes -- e.g.
+            # the expiry-timing fix above. Skip-existing-by-message-id would
+            # silently keep old, now-wrong rows forever; a full wipe for
+            # this channel guarantees every row reflects the current logic.
+            existing_rows = list(
+                session.exec(
+                    select(ArchivedSignal).where(ArchivedSignal.channel_id == str(channel_id))
+                )
+            )
+            for row in existing_rows:
+                session.delete(row)
+            session.commit()
+            print(f"Reset: deleted {len(existing_rows)} existing archived row(s) for this channel.")
+
         existing_ids = {
             row.message_id
             for row in session.exec(
@@ -301,7 +416,13 @@ def build_archive(channel_id: int, since: datetime) -> None:
         }
 
         counts = {"READY": 0, "NO_SL": 0, "AMBIGUOUS_OR_OTHER": 0, "NON_EXECUTABLE_TYPE": 0}
-        outcome_counts = {"WIN": 0, "LOSS": 0, "UNRESOLVED": 0, "NO_PRICE_DATA": 0}
+        outcome_counts = {
+            "WIN": 0,
+            "LOSS": 0,
+            "UNRESOLVED": 0,
+            "NO_PRICE_DATA": 0,
+            "NEVER_TRIGGERED": 0,
+        }
         skipped_duplicate = 0
 
         for signal in scratch_signals:
@@ -317,8 +438,13 @@ def build_archive(channel_id: int, since: datetime) -> None:
             # Matches EXECUTABLE_KINDS in app/core/constants.py: only a
             # plain market BUY is ever actually executed live -- BUY LIMIT/
             # STOP and any SELL variant have side=BUY or SELL but are
-            # rejected by the rules engine (UNSUPPORTED_SIGNAL_TYPE), never
-            # simulated as a real trade outcome here either.
+            # rejected by the rules engine (UNSUPPORTED_SIGNAL_TYPE). The
+            # `classification` column still reflects that distinction (so
+            # the live dashboard's "what would our bot actually have
+            # traded" view is unaffected), but -- per an explicit request to
+            # analyze SELL/BUY LIMIT/SELL LIMIT signals too -- both READY
+            # and NON_EXECUTABLE_TYPE rows now get a simulated outcome
+            # below, not READY alone.
             is_executable_kind = signal.side == Side.BUY and signal.signal_type == OrderType.MARKET
 
             if signal.status == SignalStatus.READY and is_executable_kind:
@@ -355,12 +481,19 @@ def build_archive(channel_id: int, since: datetime) -> None:
             )
 
             if (
-                row.classification == "READY"
+                row.classification in ("READY", "NON_EXECUTABLE_TYPE")
                 and signal.channel_stop_loss is not None
                 and real_completed_at is not None
             ):
                 result = _simulate_outcome(
-                    bars, bar_times, real_completed_at, signal.channel_stop_loss
+                    bars,
+                    bar_times,
+                    real_completed_at,
+                    signal.channel_stop_loss,
+                    side=signal.side,
+                    signal_type=signal.signal_type,
+                    entry_min=signal.entry_min,
+                    entry_max=signal.entry_max,
                 )
                 if result is None:
                     row.outcome = "NO_PRICE_DATA"
@@ -373,7 +506,10 @@ def build_archive(channel_id: int, since: datetime) -> None:
                     row.outcome_price = outcome_price
                     row.outcome_at = outcome_at
                     if outcome_price is not None:
-                        row.profit_estimate = (outcome_price - entry_price) * _CONTRACT_SIZE
+                        signed = 1 if signal.side == Side.BUY else -1
+                        row.profit_estimate = (
+                            (outcome_price - entry_price) * _CONTRACT_SIZE * signed
+                        )
                     outcome_counts[outcome] += 1
 
             session.add(row)
@@ -383,7 +519,7 @@ def build_archive(channel_id: int, since: datetime) -> None:
 
     print(f"\nSkipped (already archived): {skipped_duplicate}")
     print(f"Classification counts: {counts}")
-    print(f"Outcome counts (READY BUY signals only): {outcome_counts}")
+    print(f"Outcome counts (READY + NON_EXECUTABLE_TYPE, all sides/types): {outcome_counts}")
 
 
 def main() -> None:
@@ -392,6 +528,11 @@ def main() -> None:
     parser.add_argument(
         "--channel-id", type=int, default=None, help="Defaults to TELEGRAM_ALLOWED_CHANNEL_ID"
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Delete all existing archived rows for this channel before rebuilding.",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -399,7 +540,7 @@ def main() -> None:
     since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=UTC)
 
     print(f"Building archive for channel {channel_id} since {since.date()}...")
-    build_archive(channel_id, since)
+    build_archive(channel_id, since, reset=args.reset)
     print("\nDone.")
 
 

@@ -38,6 +38,13 @@ def pip_distance_to_price(symbol_info: SymbolInfo, pips: Decimal) -> Decimal:
     return pip_size(symbol_info) * Decimal(pips)
 
 
+def price_distance_to_pips(symbol_info: SymbolInfo, price_distance: Decimal) -> Decimal:
+    """Inverse of `pip_distance_to_price` -- how many pips a raw price
+    distance represents. `price_distance` may be negative (the caller
+    decides what a negative result means); this never guesses a sign."""
+    return price_distance / pip_size(symbol_info)
+
+
 def round_to_symbol(price: Decimal, symbol_info: SymbolInfo) -> Decimal:
     quantum = Decimal(1).scaleb(-symbol_info.digits)
     return price.quantize(quantum, rounding=ROUND_HALF_UP)

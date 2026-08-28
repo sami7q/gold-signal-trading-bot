@@ -188,6 +188,20 @@ export default function SettingsPage() {
           <div className="py-3">
             <PipPreviewPanel targetPips={form.target_pips ?? ""} />
           </div>
+          <Row
+            label="أقصى مسافة لستوب القناة (نقاط)"
+            description="رفض أي إشارة يكون ستوب القناة فيها أوسع من هذا الحد عن السعر الحالي — فلتر جودة، مو حد مخاطرة (البوت يستخدم ستوب القناة الحرفي دائمًا). أفرغ الحقل لتعطيله بالكامل. القيمة الافتراضية 200 نقطة مبنية على تحليل تاريخي (راجع VIP_FOREX_ANALYSIS.md)."
+          >
+            <Input
+              type="number"
+              step="1"
+              min="0"
+              placeholder="بدون حد"
+              className="w-28 text-right font-data"
+              value={form.max_channel_stop_pips ?? ""}
+              onChange={(e) => set("max_channel_stop_pips", e.target.value === "" ? null : e.target.value)}
+            />
+          </Row>
           <Row label="أقصى عدد صفقات مفتوحة" description="يمنع أي شراء جديد طالما هذا العدد مفتوح فعلاً.">
             <Input
               type="number"

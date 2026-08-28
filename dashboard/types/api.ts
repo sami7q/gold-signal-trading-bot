@@ -41,6 +41,7 @@ export interface TradingSettings {
   target_pips: string;
   require_stop_loss: boolean;
   max_open_trades: number;
+  max_channel_stop_pips: string | null;
   signal_completion_timeout_seconds: number;
 }
 
@@ -66,6 +67,7 @@ export interface TradingSettingsUpdate {
   target_pips?: string;
   require_stop_loss?: boolean;
   max_open_trades?: number;
+  max_channel_stop_pips?: string | null;
   signal_completion_timeout_seconds?: number;
   confirm_live_phrase?: string;
 }

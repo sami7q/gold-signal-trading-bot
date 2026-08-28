@@ -77,10 +77,17 @@ class TradingEngine:
 
         account = None
         symbol_info = None
+        quote = None
         if broker_health is not None and broker_health.healthy:
             try:
                 account = self._broker.get_account()
                 symbol_info = self._broker.get_symbol(signal.symbol)
+                # Fetched here (not just later, right before order placement)
+                # so the rules engine can screen the channel's Stop Loss
+                # against a current price (rule 7b). A fresh quote is still
+                # re-fetched right before order submission below -- this
+                # one is only for that coarse quality check.
+                quote = self._broker.get_quote(signal.symbol)
             except Exception:  # noqa: BLE001
                 broker_health = BrokerHealth(healthy=False, detail="broker query failed")
 
@@ -91,6 +98,7 @@ class TradingEngine:
             open_trades_count=self._count_open_trades(),
             broker_health=broker_health,
             symbol_info=symbol_info,
+            quote=quote,
             already_executed=False,
         )
 
