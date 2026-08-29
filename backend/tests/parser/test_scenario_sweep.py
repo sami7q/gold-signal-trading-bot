@@ -126,9 +126,10 @@ PARSER_SCENARIOS: list[ParserCase] = [
     _p("Please read the rules", None, C.IGNORED),
     _p("😀😀😀", None, C.IGNORED),
     _p("...", None, C.IGNORED),
-    # -- SELL / LIMIT / STOP: classified, never executable in v1 --------------
-    _p("SELL GOLD", K.SELL, C.ENTRY_SIGNAL, is_gold=True, executable=False),
-    _p("SELL GOLD 4650 - 4652", K.SELL, C.ENTRY_SIGNAL, is_gold=True, executable=False),
+    # -- SELL market: executable (v1.3). LIMIT / STOP: classified, never
+    # executable -- deferred pending-order lifecycle. -------------------------
+    _p("SELL GOLD", K.SELL, C.ENTRY_SIGNAL, is_gold=True, executable=True),
+    _p("SELL GOLD 4650 - 4652", K.SELL, C.ENTRY_SIGNAL, is_gold=True, executable=True),
     _p("SELL LIMIT GOLD 4546 - 4545", K.SELL_LIMIT, C.ENTRY_SIGNAL, is_gold=True, executable=False),
     _p("BUY LIMIT GOLD", K.BUY_LIMIT, C.ENTRY_SIGNAL, is_gold=True, executable=False),
     _p("BUY LIMIT GOLD 4600 - 4598", K.BUY_LIMIT, C.ENTRY_SIGNAL, is_gold=True, executable=False),
@@ -158,7 +159,7 @@ PARSER_SCENARIOS: list[ParserCase] = [
     _p("BUY GOLD,", K.BUY, C.ENTRY_SIGNAL, is_gold=True, executable=True),
     # -- more alias / emoji / spacing combinations -----------------------------
     _p("BUY GOLD 🔥", K.BUY, C.ENTRY_SIGNAL, is_gold=True, executable=True),
-    _p("🔴 SELL GOLD 🔴", K.SELL, C.ENTRY_SIGNAL, is_gold=True, executable=False),
+    _p("🔴 SELL GOLD 🔴", K.SELL, C.ENTRY_SIGNAL, is_gold=True, executable=True),
     _p("Buy XAUUSD Now!", K.BUY, C.ENTRY_SIGNAL, is_gold=True, executable=True),
     _p("GOLD BUY NOW 🚀", K.BUY, C.ENTRY_SIGNAL, is_gold=True, executable=True),
     _p("BUY GOLD  4633   -   4631", K.BUY, C.ENTRY_SIGNAL, is_gold=True, executable=True),

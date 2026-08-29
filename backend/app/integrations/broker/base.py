@@ -102,6 +102,9 @@ class Broker(ABC):
     def open_buy(self, request: OpenTradeRequest) -> BrokerExecution: ...
 
     @abstractmethod
+    def open_sell(self, request: OpenTradeRequest) -> BrokerExecution: ...
+
+    @abstractmethod
     def get_position(self, position_id: str) -> BrokerPosition | None: ...
 
     @abstractmethod

@@ -58,6 +58,9 @@ class _RaisingBroker:
     def open_buy(self, request):  # noqa: ANN001
         raise self._exc
 
+    def open_sell(self, request):  # noqa: ANN001
+        raise self._exc
+
     def get_position(self, position_id: str):  # noqa: ANN001
         return None
 
@@ -78,12 +81,14 @@ def _settings(**overrides) -> TradingSettings:
     return TradingSettings(**defaults)
 
 
-def _ready_signal(session) -> Signal:
+def _ready_signal(session, *, side: Side = Side.BUY) -> Signal:
     signal = Signal(
         symbol=CANONICAL_GOLD_SYMBOL,
-        side=Side.BUY,
+        side=side,
         signal_type=OrderType.MARKET,
-        channel_stop_loss=Decimal("4623"),
+        # Valid Stop Loss on the correct side of the raising broker's quote
+        # (bid=4638.30, ask=4638.50) either way: below for BUY, above for SELL.
+        channel_stop_loss=Decimal("4623") if side == Side.BUY else Decimal("4650"),
         status=SignalStatus.READY,
         source="mock",
         channel_id="chan-1",
@@ -119,6 +124,29 @@ def test_broker_exception_never_leaves_a_trade_open_or_stuck(session, exc):
     assert signal.status == SignalStatus.FAILED
 
     # No OPEN trade anywhere for this signal.
+    all_trades = list(session.exec(select(Trade).where(Trade.signal_id == signal.id)))
+    assert len(all_trades) == 1
+    assert all(t.status != TradeStatus.OPEN for t in all_trades)
+
+
+def test_broker_exception_on_sell_never_leaves_a_trade_open_or_stuck(session):
+    # Same guarantee as the BUY case above, exercised through open_sell()
+    # instead of open_buy() -- added alongside SELL market order support.
+    signal = _ready_signal(session, side=Side.SELL)
+    settings = _settings(sell_enabled=True)
+    broker = _RaisingBroker(ConnectionError("timed out talking to broker"))
+    engine = TradingEngine(session, broker, AuditService(session))
+
+    trade = engine.execute(signal, settings)
+
+    assert trade.status == TradeStatus.FAILED
+    assert trade.side == Side.SELL
+    assert trade.failure_reason is not None
+    assert "Broker error" in trade.failure_reason
+
+    session.refresh(signal)
+    assert signal.status == SignalStatus.FAILED
+
     all_trades = list(session.exec(select(Trade).where(Trade.signal_id == signal.id)))
     assert len(all_trades) == 1
     assert all(t.status != TradeStatus.OPEN for t in all_trades)

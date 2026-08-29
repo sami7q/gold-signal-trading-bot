@@ -39,8 +39,11 @@ class SignalKind(StrEnum):
 
 
 #: Kinds the v1 strategy is allowed to execute. Everything else is
-#: classified and stored but never sent to the trading engine.
-EXECUTABLE_KINDS: frozenset[SignalKind] = frozenset({SignalKind.BUY})
+#: classified and stored but never sent to the trading engine. LIMIT/STOP
+#: (pending/conditional orders) are deliberately excluded -- they need a
+#: separate pending-order lifecycle (fill/expire/cancel monitoring) the
+#: broker adapters and Trade state machine don't have yet.
+EXECUTABLE_KINDS: frozenset[SignalKind] = frozenset({SignalKind.BUY, SignalKind.SELL})
 
 
 class Side(StrEnum):
@@ -149,6 +152,7 @@ class TradeResult(StrEnum):
 class RejectionReason(StrEnum):
     AUTO_TRADING_DISABLED = "AUTO_TRADING_DISABLED"
     BUY_DISABLED = "BUY_DISABLED"
+    SELL_DISABLED = "SELL_DISABLED"
     STOP_LOSS_REQUIRED = "STOP_LOSS_REQUIRED"
     STOP_LOSS_INVALID = "STOP_LOSS_INVALID"
     #: The channel's own stated Stop Loss is farther from the current

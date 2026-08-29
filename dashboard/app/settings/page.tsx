@@ -152,6 +152,9 @@ export default function SettingsPage() {
           <Row label="إشارات الشراء" description="السماح للبوت بالتصرف بناءً على إشارات BUY GOLD.">
             <Switch checked={!!form.buy_enabled} onChange={(v) => set("buy_enabled", v)} label="الشراء مفعّل" />
           </Row>
+          <Row label="إشارات البيع" description="السماح للبوت بالتصرف بناءً على إشارات SELL GOLD. مستقل تمامًا عن مفتاح الشراء أعلاه.">
+            <Switch checked={!!form.sell_enabled} onChange={(v) => set("sell_enabled", v)} label="البيع مفعّل" />
+          </Row>
           <Row label="إلزامية وقف الخسارة" description="رفض أي إشارة بدون وقف خسارة من القناة بدل التداول بدون حماية.">
             <Switch
               checked={!!form.require_stop_loss}

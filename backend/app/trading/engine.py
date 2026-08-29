@@ -108,7 +108,7 @@ class TradingEngine:
                 execution_key=execution_key,
                 broker=self._broker.name,
                 symbol=signal.symbol,
-                side=Side.BUY,
+                side=signal.side,
                 requested_lot=settings.lot_size,
                 stop_loss=signal.channel_stop_loss or 0,
                 target_pips=settings.target_pips,
@@ -139,11 +139,15 @@ class TradingEngine:
         pending_trade: Trade | None = None
         try:
             quote = self._broker.get_quote(signal.symbol)
+            # BUY fills/targets off the ask, SELL off the bid -- same mirror
+            # as everywhere else this distinction shows up (broker adapters,
+            # rules.py rule 7b).
+            entry_reference_price = quote.ask if signal.side == Side.BUY else quote.bid
             take_profit_price = pips.compute_take_profit(
-                entry_price=quote.ask,
+                entry_price=entry_reference_price,
                 pips=settings.target_pips,
                 symbol_info=symbol_info,
-                side=Side.BUY,
+                side=signal.side,
             )
 
             pending_trade = Trade(
@@ -151,7 +155,7 @@ class TradingEngine:
                 execution_key=execution_key,
                 broker=self._broker.name,
                 symbol=signal.symbol,
-                side=Side.BUY,
+                side=signal.side,
                 requested_lot=settings.lot_size,
                 stop_loss=signal.channel_stop_loss,
                 target_pips=settings.target_pips,
@@ -166,20 +170,24 @@ class TradingEngine:
 
             self._audit.log(
                 AuditEventType.TRADE_SUBMISSION_STARTED,
-                f"Submitting BUY {signal.symbol} lot={fmt(settings.lot_size)} "
+                f"Submitting {signal.side.value} {signal.symbol} lot={fmt(settings.lot_size)} "
                 f"to {self._broker.name}",
                 metadata={"signal_id": signal.id, "trade_id": pending_trade.id},
             )
 
             request = OpenTradeRequest(
                 symbol=signal.symbol,
-                side=Side.BUY,
+                side=signal.side,
                 lot=settings.lot_size,
                 stop_loss=signal.channel_stop_loss,
                 take_profit=take_profit_price,
                 client_reference=execution_key,
             )
-            execution = self._broker.open_buy(request)
+            execution = (
+                self._broker.open_buy(request)
+                if signal.side == Side.BUY
+                else self._broker.open_sell(request)
+            )
         except Exception as exc:  # noqa: BLE001 - a broker fault must never leave a phantom OPEN trade
             return self._fail_from_exception(signal, execution_key, settings, pending_trade, exc)
 
@@ -204,7 +212,7 @@ class TradingEngine:
 
             self._audit.log(
                 AuditEventType.TRADE_OPENED,
-                f"Trade {trade.id} opened: BUY {trade.symbol} "
+                f"Trade {trade.id} opened: {signal.side.value} {trade.symbol} "
                 f"{fmt(trade.executed_lot)} @ {fmt(trade.entry_price)}",
                 metadata={"signal_id": signal.id, "trade_id": trade.id},
             )
@@ -258,7 +266,7 @@ class TradingEngine:
                 execution_key=execution_key,
                 broker=self._broker.name,
                 symbol=signal.symbol,
-                side=Side.BUY,
+                side=signal.side,
                 requested_lot=settings.lot_size,
                 stop_loss=signal.channel_stop_loss,
                 target_pips=settings.target_pips,

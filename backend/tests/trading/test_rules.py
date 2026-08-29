@@ -118,10 +118,33 @@ def test_valid_buy_with_sl_is_allowed():
     assert decision.reason_code is None
 
 
-def test_non_buy_kind_is_unsupported_in_v1():
-    decision = _evaluate(signal=_signal(side=Side.SELL))
+def test_pending_order_type_is_unsupported():
+    # LIMIT/STOP (pending/conditional orders) stay unsupported -- only
+    # market BUY/SELL execute (v1.3 added SELL; pending orders need their
+    # own lifecycle, not added yet).
+    decision = _evaluate(signal=_signal(signal_type=OrderType.LIMIT))
     assert decision.allowed is False
     assert decision.reason_code == "UNSUPPORTED_SIGNAL_TYPE"
+
+
+def test_sell_is_rejected_when_sell_disabled():
+    # sell_enabled defaults to False (TradingSettings) -- a SELL signal is
+    # a recognized, executable kind now, just gated off by default like BUY
+    # would be if buy_enabled were False.
+    decision = _evaluate(signal=_signal(side=Side.SELL, channel_stop_loss=Decimal("4640")))
+    assert decision.allowed is False
+    assert decision.reason_code == "SELL_DISABLED"
+
+
+def test_sell_is_allowed_when_sell_enabled():
+    # SL above the ask (4630) -- correct direction for a SELL -- and inside
+    # the default max_channel_stop_pips distance from the bid (4629).
+    decision = _evaluate(
+        signal=_signal(side=Side.SELL, channel_stop_loss=Decimal("4640")),
+        settings=_settings(sell_enabled=True),
+    )
+    assert decision.allowed is True
+    assert decision.reason_code is None
 
 
 def test_expired_signal_is_rejected():

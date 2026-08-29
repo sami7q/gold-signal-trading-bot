@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.core.config import Settings
+from app.core.constants import Side
 from app.core.logging import get_logger
 from app.integrations.broker.base import (
     Broker,
@@ -173,6 +174,18 @@ class MT5Broker(Broker):
         return Quote(bid=Decimal(str(tick.bid)), ask=Decimal(str(tick.ask)))
 
     def open_buy(self, request: OpenTradeRequest) -> BrokerExecution:
+        return self._open_position(request, side=Side.BUY)
+
+    def open_sell(self, request: OpenTradeRequest) -> BrokerExecution:
+        return self._open_position(request, side=Side.SELL)
+
+    def _open_position(self, request: OpenTradeRequest, *, side: Side) -> BrokerExecution:
+        """Shared by `open_buy`/`open_sell` -- identical in every respect
+        except which side of the spread fills the entry and which direction
+        Stop Loss/Take Profit must sit relative to it. A BUY fills at the
+        ask (SL below, TP above); a SELL fills at the bid (SL above, TP
+        below) -- the mirror image, matching real market convention (you
+        buy at the higher price, sell at the lower)."""
         mt5 = self._require_connected()
         symbol_info = self.get_symbol(request.symbol)
 
@@ -187,18 +200,32 @@ class MT5Broker(Broker):
         tick = mt5.symbol_info_tick(request.symbol)
         if tick is None:
             return BrokerExecution(success=False, error="No live tick available")
-        ask = Decimal(str(tick.ask))
-        if request.stop_loss is not None and request.stop_loss >= ask:
-            return BrokerExecution(success=False, error="Stop Loss invalid for a BUY")
-        if request.take_profit <= ask:
-            return BrokerExecution(success=False, error="Take Profit invalid for a BUY")
+
+        entry_price = Decimal(str(tick.ask)) if side is Side.BUY else Decimal(str(tick.bid))
+        sl_invalid = (
+            request.stop_loss is not None
+            and (
+                request.stop_loss >= entry_price
+                if side is Side.BUY
+                else request.stop_loss <= entry_price
+            )
+        )
+        if sl_invalid:
+            return BrokerExecution(success=False, error=f"Stop Loss invalid for a {side.value}")
+        tp_invalid = (
+            request.take_profit <= entry_price
+            if side is Side.BUY
+            else request.take_profit >= entry_price
+        )
+        if tp_invalid:
+            return BrokerExecution(success=False, error=f"Take Profit invalid for a {side.value}")
 
         order_request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": request.symbol,
             "volume": float(request.lot),
-            "type": mt5.ORDER_TYPE_BUY,
-            "price": float(ask),
+            "type": mt5.ORDER_TYPE_BUY if side is Side.BUY else mt5.ORDER_TYPE_SELL,
+            "price": float(entry_price),
             "sl": float(request.stop_loss) if request.stop_loss is not None else 0.0,
             "tp": float(request.take_profit),
             "comment": request.client_reference[:31],
@@ -289,13 +316,19 @@ class MT5Broker(Broker):
             return BrokerExecution(success=False, error="Position not found")
         p = positions[0]
         tick = mt5.symbol_info_tick(p.symbol)
+        # Closing means the opposite deal of however it was opened -- sell
+        # (at bid) to close a BUY, buy (at ask) to close a SELL. Was
+        # previously hardcoded to always sell-at-bid, which silently closed
+        # a SELL position by *opening a second SELL* instead of covering it
+        # -- harmless while only BUY existed, wrong now that SELL does too.
+        closing_a_buy = p.type == mt5.ORDER_TYPE_BUY
         close_request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": p.symbol,
             "volume": p.volume,
-            "type": mt5.ORDER_TYPE_SELL,
+            "type": mt5.ORDER_TYPE_SELL if closing_a_buy else mt5.ORDER_TYPE_BUY,
             "position": p.ticket,
-            "price": tick.bid,
+            "price": tick.bid if closing_a_buy else tick.ask,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }

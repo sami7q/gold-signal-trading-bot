@@ -102,6 +102,9 @@ class _StubBroker:
     def open_buy(self, request):  # noqa: ANN001
         raise NotImplementedError
 
+    def open_sell(self, request):  # noqa: ANN001
+        raise NotImplementedError
+
     def close_position(self, position_id):  # noqa: ANN001
         raise NotImplementedError
 

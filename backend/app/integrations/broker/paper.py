@@ -85,11 +85,18 @@ class PaperBroker(Broker):
         for position in self._positions.values():
             if not position.is_open:
                 continue
-            if position.stop_loss is not None and self._bid <= position.stop_loss:
-                self._settle(position, exit_price=position.stop_loss, reason="SL")
+            sl, tp = position.stop_loss, position.take_profit
+            if position.side is Side.BUY:
+                sl_hit = sl is not None and self._bid <= sl
+                tp_hit = tp is not None and self._bid >= tp
+            else:
+                sl_hit = sl is not None and self._bid >= sl
+                tp_hit = tp is not None and self._bid <= tp
+            if sl_hit and sl is not None:
+                self._settle(position, exit_price=sl, reason="SL")
                 closed.append(position)
-            elif position.take_profit is not None and self._bid >= position.take_profit:
-                self._settle(position, exit_price=position.take_profit, reason="TP")
+            elif tp_hit and tp is not None:
+                self._settle(position, exit_price=tp, reason="TP")
                 closed.append(position)
         return closed
 
@@ -98,8 +105,12 @@ class PaperBroker(Broker):
         position.closed_at = datetime.now(UTC)
         position.is_open = False
         position.close_reason = reason
+        signed = 1 if position.side is Side.BUY else -1
         position.profit = (
-            (exit_price - position.entry_price) * position.lot * (self._symbol_info.contract_size)
+            (exit_price - position.entry_price)
+            * position.lot
+            * self._symbol_info.contract_size
+            * signed
         )
         self._balance += position.profit
 
@@ -107,7 +118,10 @@ class PaperBroker(Broker):
 
     def get_account(self) -> BrokerAccount:
         unrealized = sum(
-            (self._bid - p.entry_price) * p.lot * self._symbol_info.contract_size
+            (self._bid - p.entry_price)
+            * p.lot
+            * self._symbol_info.contract_size
+            * (1 if p.side is Side.BUY else -1)
             for p in self._positions.values()
             if p.is_open
         ) or Decimal("0")
@@ -123,21 +137,40 @@ class PaperBroker(Broker):
         return Quote(bid=self._bid, ask=self.ask)
 
     def open_buy(self, request: OpenTradeRequest) -> BrokerExecution:
+        return self._open_position(request, side=Side.BUY)
+
+    def open_sell(self, request: OpenTradeRequest) -> BrokerExecution:
+        return self._open_position(request, side=Side.SELL)
+
+    def _open_position(self, request: OpenTradeRequest, *, side: Side) -> BrokerExecution:
+        """Shared by `open_buy`/`open_sell` -- mirror image of each other. A
+        BUY fills at the ask (SL below, TP above); a SELL fills at the bid
+        (SL above, TP below)."""
         symbol_info = self.get_symbol(request.symbol)
         if not (symbol_info.volume_min <= request.lot <= symbol_info.volume_max):
             return BrokerExecution(success=False, error="Requested lot outside broker volume range")
-        if request.stop_loss is not None and request.stop_loss >= self.ask:
-            return BrokerExecution(success=False, error="Stop Loss must be below entry for a BUY")
-        if request.take_profit <= self.ask:
-            return BrokerExecution(success=False, error="Take Profit must be above entry for a BUY")
+
+        entry_price = self.ask if side is Side.BUY else self.bid
+        sl = request.stop_loss
+        sl_invalid = sl is not None and (
+            sl >= entry_price if side is Side.BUY else sl <= entry_price
+        )
+        if sl_invalid:
+            return BrokerExecution(success=False, error=f"Stop Loss invalid for a {side.value}")
+        tp_invalid = (
+            request.take_profit <= entry_price
+            if side is Side.BUY
+            else request.take_profit >= entry_price
+        )
+        if tp_invalid:
+            return BrokerExecution(success=False, error=f"Take Profit invalid for a {side.value}")
 
         position_id = str(self._next_id)
         self._next_id += 1
-        entry_price = self.ask
         position = BrokerPosition(
             position_id=position_id,
             symbol=request.symbol,
-            side=Side.BUY,
+            side=side,
             lot=request.lot,
             entry_price=entry_price,
             stop_loss=request.stop_loss,
@@ -163,7 +196,10 @@ class PaperBroker(Broker):
             return BrokerExecution(success=False, error="Position not found")
         if not position.is_open:
             return BrokerExecution(success=False, error="Position already closed")
-        self._settle(position, exit_price=self._bid, reason="MANUAL")
+        # Closing a BUY means selling at the bid; closing a SELL means
+        # buying back at the ask -- the same mirror as opening.
+        exit_price = self._bid if position.side is Side.BUY else self.ask
+        self._settle(position, exit_price=exit_price, reason="MANUAL")
         return BrokerExecution(
             success=True,
             broker_order_id=position.position_id,

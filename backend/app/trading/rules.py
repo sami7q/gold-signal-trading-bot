@@ -53,22 +53,30 @@ class TradingRulesEngine:
         if not settings.auto_trading:
             return _decision(RejectionReason.AUTO_TRADING_DISABLED, "Auto Trading is OFF.")
 
-        # 4. Parser must have recognized a valid, v1-executable BUY GOLD signal.
+        # 4. Parser must have recognized a valid, executable GOLD signal.
+        # BUY and SELL market orders are both executable (v1.3); LIMIT/STOP
+        # (pending/conditional orders) are not -- they need a separate
+        # pending-order lifecycle the broker adapters don't have yet.
         if signal.symbol != CANONICAL_GOLD_SYMBOL:
             return _decision(
                 RejectionReason.UNSUPPORTED_SYMBOL,
                 f"Symbol {signal.symbol} is not supported in v1.",
             )
-        if signal.side != Side.BUY or signal.signal_type != OrderType.MARKET:
+        if signal.signal_type != OrderType.MARKET:
             return _decision(
                 RejectionReason.UNSUPPORTED_SIGNAL_TYPE,
-                f"{signal.side}/{signal.signal_type} is classified but not executable in v1.",
+                f"{signal.side}/{signal.signal_type} is classified but not executable "
+                "(only market BUY/SELL are, pending orders are not).",
             )
 
-        # 2. BUY signals must be enabled on the dashboard.
-        if not settings.buy_enabled:
+        # 2. BUY/SELL signals must be enabled on the dashboard, independently.
+        if signal.side == Side.BUY and not settings.buy_enabled:
             return _decision(
                 RejectionReason.BUY_DISABLED, "BUY signals are disabled on the dashboard."
+            )
+        if signal.side == Side.SELL and not settings.sell_enabled:
+            return _decision(
+                RejectionReason.SELL_DISABLED, "SELL signals are disabled on the dashboard."
             )
 
         # Signal must still be actionable (not already expired by the state machine).
@@ -109,9 +117,15 @@ class TradingRulesEngine:
         # wide channel Stop Loss are both lower win-rate AND carry
         # outsized losses when wrong (VIP_FOREX_ANALYSIS.md section 4).
         if settings.max_channel_stop_pips is not None and signal.channel_stop_loss is not None:
-            distance_pips = pips.price_distance_to_pips(
-                symbol_info, quote.ask - signal.channel_stop_loss
+            # BUY: SL sits below the ask, so ask - SL is a positive distance.
+            # SELL: SL sits above the bid, so SL - bid is the positive
+            # distance (the mirror image).
+            raw_distance = (
+                quote.ask - signal.channel_stop_loss
+                if signal.side == Side.BUY
+                else signal.channel_stop_loss - quote.bid
             )
+            distance_pips = pips.price_distance_to_pips(symbol_info, raw_distance)
             if distance_pips > settings.max_channel_stop_pips:
                 return _decision(
                     RejectionReason.STOP_LOSS_TOO_WIDE,
