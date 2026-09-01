@@ -243,6 +243,77 @@ export default function SettingsPage() {
       </Card>
 
       <Card>
+        <CardHeader
+          title="خطة اللوت اليومية/الأسبوعية"
+          subtitle="صفقة واحدة باليوم، وثانية فقط عند خسارة الأولى — لا صفقة ثالثة إطلاقًا. الاثنين له لوت خاص كبداية الأسبوع. التوقيت بتوقيت بغداد."
+        />
+        <CardBody className="p-0 px-4">
+          <Row
+            label="تفعيل الخطة"
+            description="عند التعطيل، كل صفقة تستخدم حجم اللوت الثابت أعلاه مباشرة، بدون حد يومي أو مضاعفة."
+          >
+            <Switch
+              checked={!!form.daily_lot_plan_enabled}
+              onChange={(v) => set("daily_lot_plan_enabled", v)}
+              label="خطة اللوت اليومية"
+            />
+          </Row>
+          <Row
+            label="أقصى عدد صفقات باليوم"
+            description="حد صارم — لا تُنفَّذ أي صفقة إضافية بعد الوصول لهذا العدد، بغض النظر عن نتيجتها."
+          >
+            <Input
+              type="number"
+              step="1"
+              min="1"
+              className="w-28 text-right font-data"
+              value={form.max_trades_per_day ?? ""}
+              onChange={(e) => set("max_trades_per_day", Number(e.target.value))}
+            />
+          </Row>
+          <Row
+            label="مضاعف اللوت (أيام عادية)"
+            description="صفقة اليوم الثانية — فقط لو خسرت الأولى — تستخدم حجم اللوت الثابت مضروبًا بهذا الرقم."
+          >
+            <Input
+              type="number"
+              step="0.1"
+              min="0"
+              className="w-28 text-right font-data"
+              value={form.martingale_lot_multiplier ?? ""}
+              onChange={(e) => set("martingale_lot_multiplier", e.target.value)}
+            />
+          </Row>
+          <Row
+            label="لوت أول صفقة يوم الاثنين"
+            description="بداية الأسبوع — أول صفقة يوم الاثنين تحديدًا تستخدم هذا الحجم بدل حجم اللوت الثابت."
+          >
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              className="w-28 text-right font-data"
+              value={form.monday_first_trade_lot ?? ""}
+              onChange={(e) => set("monday_first_trade_lot", e.target.value)}
+            />
+          </Row>
+          <Row
+            label="لوت ثاني صفقة يوم الاثنين"
+            description="فقط لو خسرت صفقة الاثنين الأولى — حجم ثابت، مو مضاعفة لوت الاثنين الأول."
+          >
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              className="w-28 text-right font-data"
+              value={form.monday_second_trade_lot ?? ""}
+              onChange={(e) => set("monday_second_trade_lot", e.target.value)}
+            />
+          </Row>
+        </CardBody>
+      </Card>
+
+      <Card>
         <CardHeader title="وضع التداول" subtitle="محاكاة ← تجريبي ← حقيقي" />
         <CardBody className="flex flex-col gap-4 px-4">
           <Row label="الوضع" description="يتحكم بأي وسيط يستقبل الأوامر.">

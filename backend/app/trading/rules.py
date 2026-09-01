@@ -8,6 +8,7 @@ is always the one reported — nothing is ever silently skipped.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 from app.core.constants import (
     CANONICAL_GOLD_SYMBOL,
@@ -48,6 +49,8 @@ class TradingRulesEngine:
         symbol_info: SymbolInfo | None,
         quote: Quote | None,
         already_executed: bool,
+        effective_lot: Decimal,
+        daily_plan_rejection: str | None = None,
     ) -> TradingDecision:
         # 1. Auto Trading must be enabled.
         if not settings.auto_trading:
@@ -140,8 +143,17 @@ class TradingRulesEngine:
                 f"{open_trades_count} of {settings.max_open_trades} max open trades already open.",
             )
 
-        # 9. The configured lot size must be valid for this broker/symbol.
-        if not risk.is_valid_lot(settings.lot_size, symbol_info):
+        # 8b. Daily/weekly lot plan (if TradingSettings.daily_lot_plan_enabled)
+        # must allow another trade today -- e.g. today's trade cap already
+        # reached, or today's first trade already won and there's nothing
+        # to recover. See app/trading/daily_lot_plan.py. Distinct from rule
+        # 8 above: that's about concurrency, this is a per-day count.
+        if daily_plan_rejection is not None:
+            return _decision(RejectionReason.DAILY_TRADE_LIMIT_REACHED, daily_plan_rejection)
+
+        # 9. The lot size (the daily plan's, or the configured one if that
+        # plan is disabled) must be valid for this broker/symbol.
+        if not risk.is_valid_lot(effective_lot, symbol_info):
             return _decision(
                 RejectionReason.INVALID_LOT_SIZE, "Configured lot size is invalid for this broker."
             )

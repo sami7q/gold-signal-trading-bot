@@ -52,5 +52,21 @@ class TradingSettings(Base, table=True):
     #: `app/trading/service.py::TradingService._apply_auto_stop_loss_fallback`.
     auto_sl_fallback_pips: Decimal | None = Decimal("150")
 
+    #: Daily/weekly lot plan (operator-requested martingale-style recovery
+    #: schedule, Asia/Baghdad calendar day -- see
+    #: `app/trading/daily_lot_plan.py` for the full rule). `False` restores
+    #: plain behavior: every executed trade uses `lot_size`, no daily cap.
+    daily_lot_plan_enabled: bool = True
+    #: Non-Monday second trade of the day (only reached if the first trade
+    #: that day lost): `lot_size * martingale_lot_multiplier`.
+    martingale_lot_multiplier: Decimal = Decimal("2")
+    #: Monday's first trade of the week uses this lot instead of `lot_size`.
+    monday_first_trade_lot: Decimal = Decimal("6")
+    #: Monday's second trade (only reached if the lot-6 first trade lost)
+    #: uses this lot instead of the multiplier-based one.
+    monday_second_trade_lot: Decimal = Decimal("2")
+    #: Hard cap on executed trades per calendar day, regardless of outcome.
+    max_trades_per_day: int = 2
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)

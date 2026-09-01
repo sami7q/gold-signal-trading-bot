@@ -161,15 +161,17 @@ def test_buy_and_sell_are_independent_toggles(session):
         channel_id="chan-1",
         first_message_at=datetime.now(UTC),
     )
+    settings = _settings(sell_enabled=False)
     decision = TradingRulesEngine.evaluate(
         signal=buy_signal,
-        settings=_settings(sell_enabled=False),
+        settings=settings,
         account=BrokerAccount(balance=Decimal("10000"), equity=Decimal("10000")),
         open_trades_count=0,
         broker_health=BrokerHealth(healthy=True),
         symbol_info=symbol_info,
         quote=quote,
         already_executed=False,
+        effective_lot=settings.lot_size,
     )
     assert decision.allowed is True
     assert decision.reason_code != RejectionReason.SELL_DISABLED.value

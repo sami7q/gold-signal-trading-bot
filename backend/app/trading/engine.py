@@ -8,7 +8,8 @@ last-resort guard against a race.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlmodel import Session, select
 
@@ -29,9 +30,24 @@ from app.database.models.trade import Trade
 from app.database.models.trading_settings import TradingSettings
 from app.integrations.broker.base import Broker, BrokerHealth, OpenTradeRequest
 from app.trading import pips
+from app.trading.daily_lot_plan import next_trade_lot, trading_day
 from app.trading.rules import TradingRulesEngine
 
 logger = get_logger(__name__)
+
+#: Trade statuses that represent a real, broker-confirmed attempt -- used
+#: to decide what counts as "today's Nth trade" for the daily lot plan.
+#: Excludes CREATED/SUBMITTING (transient) and REJECTED/FAILED (never
+#: actually reached the market).
+_COUNTS_TOWARD_DAILY_PLAN: frozenset[TradeStatus] = frozenset(
+    {
+        TradeStatus.OPEN,
+        TradeStatus.UNKNOWN,
+        TradeStatus.CLOSED_TP,
+        TradeStatus.CLOSED_SL,
+        TradeStatus.CLOSED_MANUAL,
+    }
+)
 
 
 class TradingEngine:
@@ -55,6 +71,27 @@ class TradingEngine:
         # PROJECT_SPEC.md section 32, rule 13.
         statement = select(Trade).where(Trade.status.in_(OPEN_TRADE_STATUSES))  # type: ignore[attr-defined]
         return len(list(self._session.exec(statement)))
+
+    def _todays_trades(self, now: datetime) -> list[Trade]:
+        """Every real (broker-confirmed) trade opened on `now`'s Asia/
+        Baghdad calendar day, oldest first -- see app/trading/daily_lot_plan.py.
+        SQLite can't compare timezone-aware dates portably, so this pulls a
+        generous UTC window (guaranteed to fully contain the Baghdad day)
+        and filters precisely in Python."""
+        today = trading_day(now)
+        window_start = datetime.combine(today, datetime.min.time(), tzinfo=UTC) - timedelta(
+            hours=6
+        )
+        window_end = window_start + timedelta(hours=36)
+        statement = (
+            select(Trade)
+            .where(Trade.status.in_(_COUNTS_TOWARD_DAILY_PLAN))  # type: ignore[attr-defined]
+            .where(Trade.created_at >= window_start)
+            .where(Trade.created_at <= window_end)
+            .order_by(Trade.created_at.asc())  # type: ignore[attr-defined]
+        )
+        candidates = list(self._session.exec(statement))
+        return [t for t in candidates if trading_day(t.created_at) == today]
 
     def execute(self, signal: Signal, settings: TradingSettings) -> Trade:
         assert signal.id is not None, "signal must be persisted before execution"
@@ -91,6 +128,17 @@ class TradingEngine:
             except Exception:  # noqa: BLE001
                 broker_health = BrokerHealth(healthy=False, detail="broker query failed")
 
+        now = datetime.now(UTC)
+        if settings.daily_lot_plan_enabled:
+            plan = next_trade_lot(self._todays_trades(now), now=now, settings=settings)
+            effective_lot: Decimal = (
+                plan.lot if plan.allowed and plan.lot is not None else settings.lot_size
+            )
+            daily_plan_rejection = None if plan.allowed else plan.explanation
+        else:
+            effective_lot = settings.lot_size
+            daily_plan_rejection = None
+
         decision = TradingRulesEngine.evaluate(
             signal=signal,
             settings=settings,
@@ -100,6 +148,8 @@ class TradingEngine:
             symbol_info=symbol_info,
             quote=quote,
             already_executed=False,
+            effective_lot=effective_lot,
+            daily_plan_rejection=daily_plan_rejection,
         )
 
         if not decision.allowed:
@@ -109,7 +159,7 @@ class TradingEngine:
                 broker=self._broker.name,
                 symbol=signal.symbol,
                 side=signal.side,
-                requested_lot=settings.lot_size,
+                requested_lot=effective_lot,
                 stop_loss=signal.channel_stop_loss or 0,
                 target_pips=settings.target_pips,
                 status=TradeStatus.REJECTED,
@@ -156,7 +206,7 @@ class TradingEngine:
                 broker=self._broker.name,
                 symbol=signal.symbol,
                 side=signal.side,
-                requested_lot=settings.lot_size,
+                requested_lot=effective_lot,
                 stop_loss=signal.channel_stop_loss,
                 target_pips=settings.target_pips,
                 take_profit_price=take_profit_price,
@@ -170,7 +220,7 @@ class TradingEngine:
 
             self._audit.log(
                 AuditEventType.TRADE_SUBMISSION_STARTED,
-                f"Submitting {signal.side.value} {signal.symbol} lot={fmt(settings.lot_size)} "
+                f"Submitting {signal.side.value} {signal.symbol} lot={fmt(effective_lot)} "
                 f"to {self._broker.name}",
                 metadata={"signal_id": signal.id, "trade_id": pending_trade.id},
             )
@@ -178,7 +228,7 @@ class TradingEngine:
             request = OpenTradeRequest(
                 symbol=signal.symbol,
                 side=signal.side,
-                lot=settings.lot_size,
+                lot=effective_lot,
                 stop_loss=signal.channel_stop_loss,
                 take_profit=take_profit_price,
                 client_reference=execution_key,
@@ -189,7 +239,9 @@ class TradingEngine:
                 else self._broker.open_sell(request)
             )
         except Exception as exc:  # noqa: BLE001 - a broker fault must never leave a phantom OPEN trade
-            return self._fail_from_exception(signal, execution_key, settings, pending_trade, exc)
+            return self._fail_from_exception(
+                signal, execution_key, effective_lot, settings, pending_trade, exc
+            )
 
         assert pending_trade is not None
         trade = pending_trade
@@ -241,6 +293,7 @@ class TradingEngine:
         self,
         signal: Signal,
         execution_key: str,
+        effective_lot: Decimal,
         settings: TradingSettings,
         trade: Trade | None,
         exc: Exception,
@@ -267,7 +320,7 @@ class TradingEngine:
                 broker=self._broker.name,
                 symbol=signal.symbol,
                 side=signal.side,
-                requested_lot=settings.lot_size,
+                requested_lot=effective_lot,
                 stop_loss=signal.channel_stop_loss,
                 target_pips=settings.target_pips,
             )

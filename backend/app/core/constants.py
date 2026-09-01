@@ -166,6 +166,11 @@ class RejectionReason(StrEnum):
     STOP_LOSS_TOO_WIDE = "STOP_LOSS_TOO_WIDE"
     DUPLICATE_SIGNAL = "DUPLICATE_SIGNAL"
     MAX_OPEN_TRADES_REACHED = "MAX_OPEN_TRADES_REACHED"
+    #: TradingSettings.max_trades_per_day already reached for today
+    #: (Asia/Baghdad calendar day) -- see app/trading/daily_lot_plan.py.
+    #: Distinct from MAX_OPEN_TRADES_REACHED, which is about concurrency,
+    #: not a per-day count.
+    DAILY_TRADE_LIMIT_REACHED = "DAILY_TRADE_LIMIT_REACHED"
     BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
     INVALID_LOT_SIZE = "INVALID_LOT_SIZE"
     INVALID_TARGET = "INVALID_TARGET"

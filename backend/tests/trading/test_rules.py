@@ -71,8 +71,13 @@ def _evaluate(**overrides):
         symbol_info=_symbol_info(),
         quote=_QUOTE,
         already_executed=False,
+        daily_plan_rejection=None,
     )
     kwargs.update(overrides)
+    # Defaults to whichever settings.lot_size ends up in play (including a
+    # `_settings(lot_size=...)` override) unless a test explicitly passes
+    # its own effective_lot to exercise the daily lot plan rule directly.
+    kwargs.setdefault("effective_lot", kwargs["settings"].lot_size)
     return TradingRulesEngine.evaluate(**kwargs)
 
 

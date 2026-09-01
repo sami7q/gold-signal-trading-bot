@@ -44,6 +44,11 @@ export interface TradingSettings {
   max_channel_stop_pips: string | null;
   signal_completion_timeout_seconds: number;
   auto_sl_fallback_pips: string | null;
+  daily_lot_plan_enabled: boolean;
+  martingale_lot_multiplier: string;
+  monday_first_trade_lot: string;
+  monday_second_trade_lot: string;
+  max_trades_per_day: number;
 }
 
 export interface PipPreview {
@@ -71,6 +76,11 @@ export interface TradingSettingsUpdate {
   max_channel_stop_pips?: string | null;
   signal_completion_timeout_seconds?: number;
   auto_sl_fallback_pips?: string | null;
+  daily_lot_plan_enabled?: boolean;
+  martingale_lot_multiplier?: string;
+  monday_first_trade_lot?: string;
+  monday_second_trade_lot?: string;
+  max_trades_per_day?: number;
   confirm_live_phrase?: string;
 }
 
