@@ -28,6 +28,7 @@ class TradingSettingsRead(BaseModel):
     monday_first_trade_lot: CleanDecimal
     monday_second_trade_lot: CleanDecimal
     max_trades_per_day: int
+    loss_recovery_enabled: bool
 
     model_config = {"from_attributes": True}
 
@@ -57,6 +58,9 @@ class TradingSettingsUpdate(BaseModel):
     monday_first_trade_lot: Decimal | None = Field(default=None, gt=0)
     monday_second_trade_lot: Decimal | None = Field(default=None, gt=0)
     max_trades_per_day: int | None = Field(default=None, ge=1)
+
+    #: Loss-recovery lot plan (see app/trading/loss_recovery.py).
+    loss_recovery_enabled: bool | None = None
 
     #: Required to equal `LIVE_CONFIRMATION_PHRASE` when `mode` is being set
     #: to LIVE (PROJECT_SPEC.md section 28).

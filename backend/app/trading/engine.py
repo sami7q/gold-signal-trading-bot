@@ -31,6 +31,7 @@ from app.database.models.trading_settings import TradingSettings
 from app.integrations.broker.base import Broker, BrokerHealth, OpenTradeRequest
 from app.trading import pips
 from app.trading.daily_lot_plan import next_trade_lot, trading_day
+from app.trading.loss_recovery import next_trade_lot as next_recovery_lot
 from app.trading.rules import TradingRulesEngine
 
 logger = get_logger(__name__)
@@ -101,6 +102,22 @@ class TradingEngine:
         candidates = list(self._session.exec(statement))
         return [t for t in candidates if trading_day(t.created_at) == today]
 
+    def _last_trade(self, account_id: int) -> Trade | None:
+        """This account's single most recent real (broker-confirmed) trade
+        -- see app/trading/loss_recovery.py. Not calendar-day scoped,
+        unlike `_todays_trades` above. Ordered by `id`, not `created_at`:
+        two trades can land on the exact same wall-clock microsecond
+        (observed in tests), which would make a `created_at` ordering
+        ambiguous -- the auto-increment primary key is guaranteed to
+        reflect actual insertion/execution order instead."""
+        statement = (
+            select(Trade)
+            .where(Trade.status.in_(_COUNTS_TOWARD_DAILY_PLAN))  # type: ignore[attr-defined]
+            .where(Trade.account_id == account_id)
+            .order_by(Trade.id.desc())  # type: ignore[union-attr]
+        )
+        return self._session.exec(statement).first()
+
     def execute(self, signal: Signal, settings: TradingSettings) -> Trade:
         assert signal.id is not None, "signal must be persisted before execution"
         execution_key = self.build_execution_key(settings.account_id, signal.id)
@@ -145,6 +162,12 @@ class TradingEngine:
                 plan.lot if plan.allowed and plan.lot is not None else settings.lot_size
             )
             daily_plan_rejection = None if plan.allowed else plan.explanation
+        elif settings.loss_recovery_enabled:
+            recovery = next_recovery_lot(
+                self._last_trade(settings.account_id), settings=settings
+            )
+            effective_lot = recovery.lot
+            daily_plan_rejection = None
         else:
             effective_lot = settings.lot_size
             daily_plan_rejection = None

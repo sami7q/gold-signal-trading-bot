@@ -72,5 +72,15 @@ class TradingSettings(Base, table=True):
     #: Hard cap on executed trades per calendar day, regardless of outcome.
     max_trades_per_day: int = 2
 
+    #: Loss-recovery lot plan (operator-requested rule, 2026-09-03 -- see
+    #: `app/trading/loss_recovery.py`). Not calendar-day scoped and never
+    #: caps trade count, unlike `daily_lot_plan_enabled` above: after a
+    #: LOSS on a normal-lot trade, the next trade doubles
+    #: (`martingale_lot_multiplier`); the trade after that always resets to
+    #: `lot_size` regardless of outcome. Mutually exclusive with
+    #: `daily_lot_plan_enabled` in practice -- `TradingEngine.execute`
+    #: checks the daily plan first, so it takes priority if both are on.
+    loss_recovery_enabled: bool = False
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)

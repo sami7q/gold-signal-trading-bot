@@ -314,6 +314,25 @@ export default function SettingsPage() {
       </Card>
 
       <Card>
+        <CardHeader
+          title="خطة استرداد الخسارة"
+          subtitle="بديل أبسط لخطة اللوت اليومية أعلاه — بدون حد يومي وبدون سقف لعدد الصفقات: كل صفقة تُنفَّذ."
+        />
+        <CardBody className="p-0 px-4">
+          <Row
+            label="تفعيل الخطة"
+            description="بعد خسارة صفقة بلوت عادي، الصفقة التالية تتضاعف (بنفس مضاعف خطة اللوت اليومية أعلاه). الصفقة اللي بعدها ترجع للوت العادي دائمًا، سواء ربحت صفقة المضاعفة أو خسرت. لو خطة اللوت اليومية أعلاه مفعّلة أيضًا فهي الأولوية وتتجاهل هذي."
+          >
+            <Switch
+              checked={!!form.loss_recovery_enabled}
+              onChange={(v) => set("loss_recovery_enabled", v)}
+              label="خطة استرداد الخسارة"
+            />
+          </Row>
+        </CardBody>
+      </Card>
+
+      <Card>
         <CardHeader title="وضع التداول" subtitle="محاكاة ← تجريبي ← حقيقي" />
         <CardBody className="flex flex-col gap-4 px-4">
           <Row label="الوضع" description="يتحكم بأي وسيط يستقبل الأوامر.">

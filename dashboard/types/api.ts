@@ -49,6 +49,7 @@ export interface TradingSettings {
   monday_first_trade_lot: string;
   monday_second_trade_lot: string;
   max_trades_per_day: number;
+  loss_recovery_enabled: boolean;
 }
 
 export interface PipPreview {
@@ -81,6 +82,7 @@ export interface TradingSettingsUpdate {
   monday_first_trade_lot?: string;
   monday_second_trade_lot?: string;
   max_trades_per_day?: number;
+  loss_recovery_enabled?: boolean;
   confirm_live_phrase?: string;
 }
 
