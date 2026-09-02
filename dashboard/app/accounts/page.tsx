@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Radio, Archive as ArchiveIcon, Pencil, X } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Check, Plus, Radio, Archive as ArchiveIcon, Pencil, X } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -14,6 +15,7 @@ import {
   useSetLiveAccount,
   useUpdateAccount,
 } from "@/hooks/use-accounts";
+import { useActiveAccountId } from "@/hooks/use-active-account";
 import { setActiveAccountId } from "@/lib/account";
 import { ApiError } from "@/lib/api";
 import type { MT5Account, MT5AccountCreate, MT5AccountUpdate } from "@/types/api";
@@ -243,6 +245,9 @@ function SetLivePanel({ account, onDone }: { account: MT5Account; onDone: () => 
 
 function AccountCard({ account }: { account: MT5Account }) {
   const archiveAccount = useArchiveAccount();
+  const queryClient = useQueryClient();
+  const activeId = useActiveAccountId();
+  const isCurrent = String(account.id) === activeId;
   const [mode, setMode] = useState<"view" | "edit" | "set-live">("view");
 
   const archiveError =
@@ -257,14 +262,19 @@ function AccountCard({ account }: { account: MT5Account }) {
 
   function handleSwitchToThis() {
     setActiveAccountId(account.id);
+    // Every account-scoped query (الإعدادات، الصفقات، الإشارات...) must
+    // refetch under the new X-Account-Id -- without this the switch
+    // "worked" (the cookie changed) but nothing on screen showed it.
+    queryClient.invalidateQueries();
   }
 
   return (
-    <Card>
+    <Card className={isCurrent ? "border-gold-dim/70" : undefined}>
       <CardHeader
         title={
           <span className="flex items-center gap-2">
             {account.label}
+            {isCurrent ? <Badge tone="gold">الحساب الحالي</Badge> : null}
             {account.is_live ? <Badge tone="win">مباشر</Badge> : <Badge tone="neutral">غير مفعّل</Badge>}
             {!account.is_active ? <Badge tone="warn">مؤرشف</Badge> : null}
           </span>
@@ -276,9 +286,16 @@ function AccountCard({ account }: { account: MT5Account }) {
         }
         action={
           <div className="flex flex-wrap items-center justify-end gap-1.5">
-            <Button size="sm" variant="ghost" onClick={handleSwitchToThis}>
-              التبديل إليه
-            </Button>
+            {isCurrent ? (
+              <span className="flex items-center gap-1 px-2 py-1 text-xs text-gold-bright">
+                <Check className="h-3.5 w-3.5" strokeWidth={2} />
+                معروض الآن
+              </span>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={handleSwitchToThis}>
+                التبديل إليه
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"

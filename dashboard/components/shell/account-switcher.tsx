@@ -7,7 +7,8 @@ import { ChevronsUpDown, Check, LogOut, Settings2 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/format";
 import { useLogout, useMe } from "@/hooks/use-auth";
-import { getActiveAccountId, setActiveAccountId } from "@/lib/account";
+import { useActiveAccountId } from "@/hooks/use-active-account";
+import { setActiveAccountId } from "@/lib/account";
 import type { MT5Account } from "@/types/api";
 
 function LiveDot({ isLive }: { isLive: boolean }) {
@@ -77,7 +78,7 @@ export function AccountSwitcher({ variant = "desktop" }: { variant?: "desktop" |
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  const activeId = getActiveAccountId();
+  const activeId = useActiveAccountId();
   const accounts = meQuery.data?.accounts ?? [];
   const activeAccount = accounts.find((a) => String(a.id) === activeId);
 
@@ -147,8 +148,14 @@ export function AccountSwitcher({ variant = "desktop" }: { variant?: "desktop" |
       {open ? (
         <div
           className={cn(
-            "absolute z-50 mt-1.5 w-64 overflow-hidden rounded-md border border-border bg-surface shadow-xl",
-            variant === "desktop" ? "bottom-full mb-1.5" : "left-0 top-full",
+            "absolute top-full z-50 mt-1.5 w-64 overflow-hidden rounded-md border border-border bg-surface shadow-xl",
+            // Desktop: the button spans the sidebar's full width, so
+            // anchoring left keeps the dropdown flowing into the open main
+            // content area. Mobile: the button sits near the *right* edge
+            // of the top bar, so anchoring left would push a 256px panel
+            // straight off the right side of the screen -- anchor right
+            // instead so it opens back onto the screen.
+            variant === "desktop" ? "left-0" : "right-0",
           )}
         >
           <div className="border-b border-border-soft px-3 py-2">

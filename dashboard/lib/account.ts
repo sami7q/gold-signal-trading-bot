@@ -38,13 +38,37 @@ export function getActiveAccountId(): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+// A plain `document.cookie` write is invisible to React -- nothing
+// re-renders on its own just because the cookie changed. Every place that
+// needs to reflect "which account is selected" (the switcher, the accounts
+// page) reads it through `useActiveAccountId()` (hooks/use-active-account.ts),
+// which subscribes here via `useSyncExternalStore` -- this pub/sub is what
+// makes that actually reactive instead of only updating on the next
+// unrelated re-render (the original bug: clicking "switch" silently changed
+// the cookie with nothing on screen reflecting it).
+type Listener = () => void;
+const listeners = new Set<Listener>();
+
+function notify(): void {
+  for (const listener of listeners) listener();
+}
+
+export function subscribeActiveAccountId(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 export function setActiveAccountId(accountId: number | string): void {
   if (typeof document === "undefined") return;
   const oneYear = 60 * 60 * 24 * 365;
   document.cookie = `${ACCOUNT_COOKIE}=${encodeURIComponent(String(accountId))}; path=/; max-age=${oneYear}; SameSite=Lax`;
+  notify();
 }
 
 export function clearActiveAccountId(): void {
   if (typeof document === "undefined") return;
   document.cookie = `${ACCOUNT_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
+  notify();
 }
