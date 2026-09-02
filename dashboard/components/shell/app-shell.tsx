@@ -1,12 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
 import { Sidebar } from "@/components/shell/sidebar";
 import { StatusStrip } from "@/components/shell/status-strip";
+import { AccountSwitcher } from "@/components/shell/account-switcher";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const [navOpen, setNavOpen] = useState(false);
+
+  // /login renders its own centered, chrome-free layout -- no sidebar, no
+  // account switcher (there's no account to switch to before logging in).
+  const isLoginPage = pathname === "/login";
 
   // Lock background scroll while the mobile drawer is open, and let Escape
   // close it -- otherwise the page behind the overlay keeps scrolling under
@@ -24,6 +31,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [navOpen]);
+
+  if (isLoginPage) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -50,7 +61,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="font-data text-sm font-semibold tracking-tight text-gold-bright">
             XAU
           </span>
-          <span className="text-sm font-medium text-muted">بوت الإشارات</span>
+          <div className="min-w-0 flex-1" />
+          <AccountSwitcher variant="mobile" />
         </div>
 
         <StatusStrip />

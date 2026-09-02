@@ -33,6 +33,11 @@ from app.signals.service import IngestResult, SignalService
 from app.trading import pips
 from app.trading.engine import TradingEngine
 
+#: Fallback used only when there is no live account to read a real
+#: `TradingSettings` row from (see `account_id=None` below) -- matches
+#: `TradingSettings.signal_completion_timeout_seconds`'s own default.
+_NO_ACCOUNT_TIMEOUT_SECONDS = 120
+
 
 class TradingService:
     def __init__(
@@ -41,16 +46,34 @@ class TradingService:
         broker: Broker,
         audit: AuditService | None = None,
         *,
+        account_id: int | None,
         signal_completion_timeout_seconds: int | None = None,
     ) -> None:
+        """`account_id=None` means "no MT5 account is currently live" --
+        used only from `app/lifecycle.py`'s background message handler and
+        signal-expiry sweep, which run independent of any logged-in HTTP
+        request. Every request-driven caller (the API routes) always has a
+        real account via `get_current_account` and must pass its id.
+        In the `None` case, messages are still ingested/parsed (so the
+        signal history stays complete for whenever an account goes live
+        again) but never reach the trading engine -- see
+        `NO_LIVE_ACCOUNT_CONFIGURED` below.
+        """
         self._session = session
         self._broker = broker
         self._audit = audit or AuditService(session)
+        self._account_id = account_id
         self._settings_service = SettingsService(session, self._audit)
 
         timeout = signal_completion_timeout_seconds
         if timeout is None:
-            timeout = self._settings_service.get_active().signal_completion_timeout_seconds
+            timeout = (
+                self._settings_service.get_for_account(
+                    account_id
+                ).signal_completion_timeout_seconds
+                if account_id is not None
+                else _NO_ACCOUNT_TIMEOUT_SECONDS
+            )
 
         self._signal_service = SignalService(
             session, self._audit, signal_completion_timeout_seconds=timeout
@@ -62,7 +85,15 @@ class TradingService:
     def process_incoming_message(self, data: IncomingMessageData) -> IngestResult:
         result = self._signal_service.ingest_message(data)
         if result.became_ready and result.signal is not None:
-            if self._is_observed_only(data.source):
+            if self._account_id is None:
+                self._audit.log(
+                    AuditEventType.NO_LIVE_ACCOUNT_CONFIGURED,
+                    f"Signal {result.signal.id} reached READY but no MT5 account is "
+                    "currently live -- not sent to the trading engine.",
+                    severity=AuditSeverity.WARNING,
+                    metadata={"signal_id": result.signal.id, "source": data.source},
+                )
+            elif self._is_observed_only(data.source):
                 self._audit.log(
                     AuditEventType.SIGNAL_OBSERVED_ONLY,
                     f"Signal {result.signal.id} reached READY from a real Telegram message "
@@ -71,7 +102,7 @@ class TradingService:
                     metadata={"signal_id": result.signal.id, "source": data.source},
                 )
             else:
-                settings = self._settings_service.get_active()
+                settings = self._settings_service.get_for_account(self._account_id)
                 self._engine.execute(result.signal, settings)
                 self._session.refresh(result.signal)
         return result
@@ -101,8 +132,23 @@ class TradingService:
         if not stale:
             return []
 
-        settings = self._settings_service.get_active()
-        processed: list[Signal] = []
+        if self._account_id is None:
+            # No account to read a real auto-SL-fallback setting from --
+            # same as the observe-only gate, just expire them (no trade).
+            processed: list[Signal] = []
+            for signal in stale:
+                self._audit.log(
+                    AuditEventType.NO_LIVE_ACCOUNT_CONFIGURED,
+                    f"Signal {signal.id} timed out waiting for a Stop Loss and no MT5 "
+                    "account is currently live -- expiring instead.",
+                    severity=AuditSeverity.WARNING,
+                    metadata={"signal_id": signal.id},
+                )
+                processed.append(self._signal_service.expire_one(signal, now=now))
+            return processed
+
+        settings = self._settings_service.get_for_account(self._account_id)
+        processed = []
         for signal in stale:
             if settings.auto_sl_fallback_pips is not None:
                 processed.append(self._apply_auto_stop_loss_fallback(signal, settings, now=now))

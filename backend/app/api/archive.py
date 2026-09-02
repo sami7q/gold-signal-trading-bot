@@ -13,8 +13,10 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.archive.calculations import ArchiveSummary, compute_archive_summary
+from app.core.auth_deps import get_current_user
 from app.core.decimals import CleanDecimal
 from app.database.models.archived_signal import ArchivedSignal
+from app.database.models.user import User
 from app.database.session import get_session
 
 router = APIRouter(prefix="/api/archive", tags=["archive"])
@@ -50,13 +52,17 @@ def _all_rows(session: Session) -> list[ArchivedSignal]:
 
 
 @router.get("/summary", response_model=ArchiveSummary)
-def get_archive_summary(session: Annotated[Session, Depends(get_session)]) -> ArchiveSummary:
+def get_archive_summary(
+    session: Annotated[Session, Depends(get_session)],
+    _user: Annotated[User, Depends(get_current_user)],
+) -> ArchiveSummary:
     return compute_archive_summary(_all_rows(session))
 
 
 @router.get("", response_model=list[ArchivedSignalRead])
 def list_archived_signals(
     session: Annotated[Session, Depends(get_session)],
+    _user: Annotated[User, Depends(get_current_user)],
     classification: str | None = None,
     outcome: str | None = None,
     limit: int = 500,

@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlmodel import Session
 
+from app.accounts.service import AccountService
 from app.audit.service import AuditService
 from app.core.config import Settings, get_settings
 from app.core.constants import AuditEventType, AuditSeverity, ErrorCode, TradingMode
@@ -95,7 +96,11 @@ async def _poll_expired_signals(poll_seconds: int) -> None:
         try:
             with Session(get_engine()) as session:
                 broker = get_broker()
-                TradingService(session, broker, AuditService(session)).sweep_expired_signals()
+                audit = AuditService(session)
+                live_account = AccountService(session, audit).get_live_account()
+                TradingService(
+                    session, broker, audit, account_id=live_account.id if live_account else None
+                ).sweep_expired_signals()
         except Exception:  # noqa: BLE001 - one bad sweep must never kill the loop
             logger.exception("Periodic signal expiry sweep failed")
 
@@ -104,11 +109,18 @@ def _message_handler(data: IncomingMessageData) -> None:
     """Entry point for any long-running async source (currently: Telegram).
 
     Opens its own session because it runs outside any HTTP request's
-    request-scoped session.
+    request-scoped session. Resolves whichever MT5 account is currently
+    live (Phase 1's single-broker-connection constraint, see the approved
+    multi-account plan) -- `None` if none is, which still lets the message
+    be parsed but never reach the trading engine.
     """
     with Session(get_engine()) as session:
         try:
-            TradingService(session, get_broker()).process_incoming_message(data)
+            audit = AuditService(session)
+            live_account = AccountService(session, audit).get_live_account()
+            TradingService(
+                session, get_broker(), audit, account_id=live_account.id if live_account else None
+            ).process_incoming_message(data)
         except Exception:  # noqa: BLE001 - a bad message must never kill the source
             logger.exception("Failed to process incoming message from %s", data.source)
 
@@ -130,7 +142,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     with Session(get_engine()) as session:
         audit = AuditService(session)
-        SettingsService(session, audit).get_active()
+        live_account = AccountService(session, audit).get_live_account()
+        if live_account is not None:
+            SettingsService(session, audit).get_for_account(live_account.id)  # type: ignore[arg-type]
+        else:
+            audit.log(
+                AuditEventType.NO_LIVE_ACCOUNT_CONFIGURED,
+                "Backend starting with no MT5 account currently marked live -- signals "
+                "will be parsed but not executed until one is set live.",
+                severity=AuditSeverity.WARNING,
+            )
         audit.log(
             AuditEventType.SERVICE_STARTED,
             "Backend started",

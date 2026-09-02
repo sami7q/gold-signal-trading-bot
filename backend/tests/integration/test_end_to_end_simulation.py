@@ -44,8 +44,9 @@ def _msg(text: str, message_id: str) -> IncomingMessageData:
     )
 
 
-def _configure(session) -> None:
+def _configure(session, account_id: int) -> None:
     SettingsService(session).update(
+        account_id,
         TradingSettingsUpdate(
             auto_trading=True,
             buy_enabled=True,
@@ -53,14 +54,14 @@ def _configure(session) -> None:
             target_pips=Decimal("100"),
             max_open_trades=1,
             require_stop_loss=True,
-        )
+        ),
     )
 
 
-def test_full_scenario_buy_gold_then_sl_then_tp_hit_is_a_win(session):
+def test_full_scenario_buy_gold_then_sl_then_tp_hit_is_a_win(session, seed_account):
     broker = _broker()
-    _configure(session)
-    service = TradingService(session, broker)
+    _configure(session, seed_account.id)
+    service = TradingService(session, broker, account_id=seed_account.id)
 
     first = service.process_incoming_message(_msg("BUY GOLD", "m1"))
     assert first.signal.status == SignalStatus.WAITING_FOR_DETAILS
@@ -82,7 +83,9 @@ def test_full_scenario_buy_gold_then_sl_then_tp_hit_is_a_win(session):
     assert trade.status == TradeStatus.CLOSED_TP
     assert trade.result == TradeResult.WIN
 
-    summary = AnalyticsService(session).get_dashboard_summary(broker)
+    summary = AnalyticsService(session).get_dashboard_summary(
+        broker, seed_account.id, is_live=seed_account.is_live
+    )
     assert summary.statistics.trades_executed == 1
     assert summary.statistics.closed_trades == 1
     assert summary.statistics.wins == 1
@@ -95,10 +98,10 @@ def test_full_scenario_buy_gold_then_sl_then_tp_hit_is_a_win(session):
     assert len(list(session.exec(select(Trade)))) == 1
 
 
-def test_full_scenario_sl_hit_is_a_loss(session):
+def test_full_scenario_sl_hit_is_a_loss(session, seed_account):
     broker = _broker()
-    _configure(session)
-    service = TradingService(session, broker)
+    _configure(session, seed_account.id)
+    service = TradingService(session, broker, account_id=seed_account.id)
 
     service.process_incoming_message(_msg("BUY GOLD", "m1"))
     service.process_incoming_message(_msg("4640 - 4637\nSL 4623", "m2"))
@@ -111,17 +114,19 @@ def test_full_scenario_sl_hit_is_a_loss(session):
     assert trade.status == TradeStatus.CLOSED_SL
     assert trade.result == TradeResult.LOSS
 
-    summary = AnalyticsService(session).get_dashboard_summary(broker)
+    summary = AnalyticsService(session).get_dashboard_summary(
+        broker, seed_account.id, is_live=seed_account.is_live
+    )
     assert summary.statistics.wins == 0
     assert summary.statistics.losses == 1
     assert summary.statistics.win_rate == Decimal("0")
 
 
-def test_auto_trading_off_never_opens_a_trade(session):
+def test_auto_trading_off_never_opens_a_trade(session, seed_account):
     broker = _broker()
-    _configure(session)
-    SettingsService(session).update(TradingSettingsUpdate(auto_trading=False))
-    service = TradingService(session, broker)
+    _configure(session, seed_account.id)
+    SettingsService(session).update(seed_account.id, TradingSettingsUpdate(auto_trading=False))
+    service = TradingService(session, broker, account_id=seed_account.id)
 
     service.process_incoming_message(_msg("BUY GOLD", "m1"))
     result = service.process_incoming_message(_msg("4640 - 4637\nSL 4623", "m2"))

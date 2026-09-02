@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     mt5_terminal_path: str = ""
     mt5_symbol: str = "XAUUSD"
 
+    #: Fernet key (base64, `Fernet.generate_key()`) used to encrypt every
+    #: MT5Account row's password at rest -- see app/core/credentials.py.
+    #: Generated once, never committed. The live MT5Broker connection above
+    #: still reads mt5_account/mt5_password/mt5_server directly (unchanged,
+    #: Phase 1 decision to avoid touching the code path already trading on
+    #: the VPS) -- this key only guards the multi-account feature's DB rows.
+    account_credentials_encryption_key: str = ""
+
     #: How often (seconds) the background loop re-checks every OPEN trade
     #: against the broker. A real broker (MT5) closes positions on its own
     #: server the instant SL/TP is hit -- without this poll, that closure
@@ -82,6 +90,15 @@ class Settings(BaseSettings):
     signal_expiry_poll_seconds: int = 5
 
     dashboard_cors_origins: str = "http://localhost:3000"
+
+    #: Session cookie flags (multi-account feature, 2026-09). Production
+    #: default is correct for the real deployment (Vercel dashboard <->
+    #: Cloudflare Tunnel backend, both HTTPS but different domains, which
+    #: is a cross-site request -- SameSite=None + Secure=True is required
+    #: for the browser to send the cookie at all). Override both to False
+    #: only for plain-http local dev if needed.
+    cookie_secure: bool = True
+    cookie_samesite: str = "none"
 
     #: /docs, /redoc, /openapi.json. Enabled by default for local dev; set
     #: to false for a deployed instance so the full API surface/schema

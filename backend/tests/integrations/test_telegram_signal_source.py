@@ -128,9 +128,11 @@ def test_photo_with_no_caption_is_normalized_to_empty_text_and_never_crashes(ses
     assert health.last_error is None
 
 
-def test_photo_with_no_caption_never_creates_a_signal_end_to_end(session):
+def test_photo_with_no_caption_never_creates_a_signal_end_to_end(session, seed_account):
     broker = _broker()
-    service = TradingService(session, broker, signal_completion_timeout_seconds=120)
+    service = TradingService(
+        session, broker, account_id=seed_account.id, signal_completion_timeout_seconds=120
+    )
     data = IncomingMessageData(
         source="telegram",
         channel_id=ALLOWED_CHANNEL,
@@ -229,10 +231,10 @@ def test_handle_event_writes_telegram_message_received_audit_event(session):
 # -- edited messages: same identity, dedup handles the rest -----------------
 
 
-def test_edited_message_cannot_create_a_second_execution(session):
+def test_edited_message_cannot_create_a_second_execution(session, seed_account):
     broker = _broker()
     source = TelegramSignalSource(_settings(telegram_observe_only=False))
-    service = TradingService(session, broker)
+    service = TradingService(session, broker, account_id=seed_account.id)
     source.on_message(service.process_incoming_message)
 
     original = FakeEvent(
@@ -391,25 +393,25 @@ def _msg(text: str, mid: str, *, channel: str = ALLOWED_CHANNEL, reply_to: str |
     )
 
 
-def test_buy_signal_enters_waiting_for_details(session):
-    service = TradingService(session, _broker())
+def test_buy_signal_enters_waiting_for_details(session, seed_account):
+    service = TradingService(session, _broker(), account_id=seed_account.id)
     result = service.process_incoming_message(_msg("BUY GOLD", "t1"))
     assert result.signal.status == SignalStatus.WAITING_FOR_DETAILS
 
 
-def test_target_only_message_creates_no_trade(session):
+def test_target_only_message_creates_no_trade(session, seed_account):
     from app.database.models.signal import Signal
     from app.database.models.trade import Trade
 
-    service = TradingService(session, _broker())
+    service = TradingService(session, _broker(), account_id=seed_account.id)
     service.process_incoming_message(_msg("4644\n4650\n4663\n4677", "t1"))
 
     assert list(session.exec(select(Signal))) == []
     assert list(session.exec(select(Trade))) == []
 
 
-def test_duplicate_telegram_event_blocked(session):
-    service = TradingService(session, _broker())
+def test_duplicate_telegram_event_blocked(session, seed_account):
+    service = TradingService(session, _broker(), account_id=seed_account.id)
     first = service.process_incoming_message(_msg("BUY GOLD", "dup-1"))
     second = service.process_incoming_message(_msg("BUY GOLD", "dup-1"))
 
@@ -421,8 +423,8 @@ def test_duplicate_telegram_event_blocked(session):
     assert len(list(session.exec(select(Signal)))) == 1
 
 
-def test_two_waiting_signals_generic_sl_is_ambiguous_no_trade(session):
-    service = TradingService(session, _broker())
+def test_two_waiting_signals_generic_sl_is_ambiguous_no_trade(session, seed_account):
+    service = TradingService(session, _broker(), account_id=seed_account.id)
     service.process_incoming_message(_msg("BUY GOLD", "amb-a"))
     service.process_incoming_message(_msg("BUY GOLD", "amb-b"))
     result = service.process_incoming_message(_msg("SL 4623", "amb-sl"))
@@ -433,8 +435,10 @@ def test_two_waiting_signals_generic_sl_is_ambiguous_no_trade(session):
     assert list(session.exec(select(Trade))) == []
 
 
-def test_two_waiting_signals_telegram_reply_resolves_correct_signal_only(session):
-    service = TradingService(session, _broker(), signal_completion_timeout_seconds=120)
+def test_two_waiting_signals_telegram_reply_resolves_correct_signal_only(session, seed_account):
+    service = TradingService(
+        session, _broker(), account_id=seed_account.id, signal_completion_timeout_seconds=120
+    )
     a = service.process_incoming_message(_msg("BUY GOLD", "rep-a"))
     service.process_incoming_message(_msg("BUY GOLD", "rep-b"))
 
@@ -446,7 +450,7 @@ def test_two_waiting_signals_telegram_reply_resolves_correct_signal_only(session
     assert a.signal.status in (SignalStatus.READY, SignalStatus.EXECUTED)
 
 
-def test_buy_plus_sl_reaches_ready_but_observe_only_blocks_execution(session):
+def test_buy_plus_sl_reaches_ready_but_observe_only_blocks_execution(session, seed_account):
     """TELEGRAM_OBSERVE_ONLY defaults true: the signal must still reach
     READY (parser/state-machine validated), but the trading engine must
     never be invoked -- no trade, no execution."""
@@ -458,7 +462,7 @@ def test_buy_plus_sl_reaches_ready_but_observe_only_blocks_execution(session):
 
     os.environ["TELEGRAM_OBSERVE_ONLY"] = "true"
     try:
-        service = TradingService(session, _broker())
+        service = TradingService(session, _broker(), account_id=seed_account.id)
         service.process_incoming_message(_msg("BUY GOLD", "obs-a"))
         result = service.process_incoming_message(_msg("4640 - 4637\nSL 4623", "obs-b"))
 
@@ -474,7 +478,7 @@ def test_buy_plus_sl_reaches_ready_but_observe_only_blocks_execution(session):
         get_settings.cache_clear()
 
 
-def test_buy_plus_sl_executes_when_observe_only_disabled(session):
+def test_buy_plus_sl_executes_when_observe_only_disabled(session, seed_account):
     from app.core.config import get_settings
     from app.database.models.trade import Trade
     from app.settings.schemas import TradingSettingsUpdate
@@ -485,8 +489,10 @@ def test_buy_plus_sl_executes_when_observe_only_disabled(session):
 
     os.environ["TELEGRAM_OBSERVE_ONLY"] = "false"
     try:
-        SettingsService(session).update(TradingSettingsUpdate(auto_trading=True, buy_enabled=True))
-        service = TradingService(session, _broker())
+        SettingsService(session).update(
+            seed_account.id, TradingSettingsUpdate(auto_trading=True, buy_enabled=True)
+        )
+        service = TradingService(session, _broker(), account_id=seed_account.id)
         service.process_incoming_message(_msg("BUY GOLD", "live-a"))
         result = service.process_incoming_message(_msg("4640 - 4637\nSL 4623", "live-b"))
 
@@ -498,7 +504,7 @@ def test_buy_plus_sl_executes_when_observe_only_disabled(session):
         get_settings.cache_clear()
 
 
-def test_mock_source_messages_are_never_gated_by_observe_only(session):
+def test_mock_source_messages_are_never_gated_by_observe_only(session, seed_account):
     """TELEGRAM_OBSERVE_ONLY must only ever affect source="telegram" -- the
     Simulation page (source="mock") must always execute normally regardless
     of this flag, or dashboard-driven testing would silently stop working."""
@@ -513,8 +519,10 @@ def test_mock_source_messages_are_never_gated_by_observe_only(session):
         from app.settings.schemas import TradingSettingsUpdate
         from app.settings.service import SettingsService
 
-        SettingsService(session).update(TradingSettingsUpdate(auto_trading=True, buy_enabled=True))
-        service = TradingService(session, _broker())
+        SettingsService(session).update(
+            seed_account.id, TradingSettingsUpdate(auto_trading=True, buy_enabled=True)
+        )
+        service = TradingService(session, _broker(), account_id=seed_account.id)
         now = datetime.now(UTC)
         service.process_incoming_message(
             IncomingMessageData(

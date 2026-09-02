@@ -45,7 +45,7 @@ def _broker(starting_price: Decimal = Decimal("4638.30")) -> PaperBroker:
     )
 
 
-def _configure(session, **overrides) -> None:
+def _configure(session, account_id: int, **overrides) -> None:
     defaults = dict(
         auto_trading=True,
         buy_enabled=True,
@@ -57,7 +57,7 @@ def _configure(session, **overrides) -> None:
         signal_completion_timeout_seconds=120,
     )
     defaults.update(overrides)
-    SettingsService(session).update(TradingSettingsUpdate(**defaults))
+    SettingsService(session).update(account_id, TradingSettingsUpdate(**defaults))
 
 
 def _stale_buy_signal(session, *, sent_at: datetime) -> Signal:
@@ -78,12 +78,12 @@ def _stale_buy_signal(session, *, sent_at: datetime) -> Signal:
     return signal
 
 
-def test_fallback_applies_computed_stop_loss_and_executes(session):
-    _configure(session, auto_sl_fallback_pips=Decimal("150"))
+def test_fallback_applies_computed_stop_loss_and_executes(session, seed_account):
+    _configure(session, seed_account.id, auto_sl_fallback_pips=Decimal("150"))
     long_ago = datetime.now(UTC) - timedelta(seconds=200)
     signal = _stale_buy_signal(session, sent_at=long_ago)
 
-    service = TradingService(session, _broker())
+    service = TradingService(session, _broker(), account_id=seed_account.id)
     processed = service.sweep_expired_signals()
 
     assert len(processed) == 1
@@ -100,12 +100,12 @@ def test_fallback_applies_computed_stop_loss_and_executes(session):
     assert trade.stop_loss == Decimal("4623.50")
 
 
-def test_fallback_disabled_expires_the_signal_instead(session):
-    _configure(session, auto_sl_fallback_pips=None)
+def test_fallback_disabled_expires_the_signal_instead(session, seed_account):
+    _configure(session, seed_account.id, auto_sl_fallback_pips=None)
     long_ago = datetime.now(UTC) - timedelta(seconds=200)
     signal = _stale_buy_signal(session, sent_at=long_ago)
 
-    service = TradingService(session, _broker())
+    service = TradingService(session, _broker(), account_id=seed_account.id)
     processed = service.sweep_expired_signals()
 
     assert len(processed) == 1
@@ -117,12 +117,12 @@ def test_fallback_disabled_expires_the_signal_instead(session):
     assert trades == []
 
 
-def test_signal_not_yet_stale_is_left_alone(session):
-    _configure(session, auto_sl_fallback_pips=Decimal("150"))
+def test_signal_not_yet_stale_is_left_alone(session, seed_account):
+    _configure(session, seed_account.id, auto_sl_fallback_pips=Decimal("150"))
     just_now = datetime.now(UTC)
     signal = _stale_buy_signal(session, sent_at=just_now)
 
-    service = TradingService(session, _broker())
+    service = TradingService(session, _broker(), account_id=seed_account.id)
     processed = service.sweep_expired_signals()
 
     assert processed == []
@@ -131,12 +131,12 @@ def test_signal_not_yet_stale_is_left_alone(session):
     assert signal.channel_stop_loss is None
 
 
-def test_fallback_audit_event_records_the_computed_price(session):
-    _configure(session, auto_sl_fallback_pips=Decimal("150"))
+def test_fallback_audit_event_records_the_computed_price(session, seed_account):
+    _configure(session, seed_account.id, auto_sl_fallback_pips=Decimal("150"))
     long_ago = datetime.now(UTC) - timedelta(seconds=200)
     signal = _stale_buy_signal(session, sent_at=long_ago)
 
-    service = TradingService(session, _broker())
+    service = TradingService(session, _broker(), account_id=seed_account.id)
     service.sweep_expired_signals()
 
     events = list(
@@ -151,15 +151,15 @@ def test_fallback_audit_event_records_the_computed_price(session):
     assert "4623.50" in events[0].metadata_json
 
 
-def test_fallback_falls_back_to_expiry_when_broker_is_unavailable(session):
-    _configure(session, auto_sl_fallback_pips=Decimal("150"))
+def test_fallback_falls_back_to_expiry_when_broker_is_unavailable(session, seed_account):
+    _configure(session, seed_account.id, auto_sl_fallback_pips=Decimal("150"))
     long_ago = datetime.now(UTC) - timedelta(seconds=200)
     signal = _stale_buy_signal(session, sent_at=long_ago)
 
     broker = _broker()
     broker.health = lambda: BrokerHealth(healthy=False, detail="disconnected")  # type: ignore[method-assign]
 
-    service = TradingService(session, broker)
+    service = TradingService(session, broker, account_id=seed_account.id)
     processed = service.sweep_expired_signals()
 
     assert len(processed) == 1
@@ -174,7 +174,7 @@ def test_fallback_falls_back_to_expiry_when_broker_is_unavailable(session):
     assert len(events) == 1
 
 
-def test_observe_only_fallback_reaches_ready_but_never_executes(session):
+def test_observe_only_fallback_reaches_ready_but_never_executes(session, seed_account):
     """A real-source ("telegram") signal must reach READY via the fallback
     exactly like the immediate-SL path does, but never be sent to the
     trading engine while TELEGRAM_OBSERVE_ONLY=true. Force the env var
@@ -187,7 +187,7 @@ def test_observe_only_fallback_reaches_ready_but_never_executes(session):
     os.environ["TELEGRAM_OBSERVE_ONLY"] = "true"
     get_settings.cache_clear()
     try:
-        _configure(session, auto_sl_fallback_pips=Decimal("150"))
+        _configure(session, seed_account.id, auto_sl_fallback_pips=Decimal("150"))
 
         long_ago = datetime.now(UTC) - timedelta(seconds=200)
         signal = Signal(
@@ -205,7 +205,7 @@ def test_observe_only_fallback_reaches_ready_but_never_executes(session):
         session.commit()
         session.refresh(signal)
 
-        service = TradingService(session, _broker())
+        service = TradingService(session, _broker(), account_id=seed_account.id)
         service.sweep_expired_signals()
 
         session.refresh(signal)

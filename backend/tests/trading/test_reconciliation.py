@@ -50,9 +50,10 @@ def _signal(session) -> Signal:
     return signal
 
 
-def _open_trade(session, *, position_id: str = "1") -> Trade:
+def _open_trade(session, account_id: int, *, position_id: str = "1") -> Trade:
     trade = Trade(
         signal_id=_signal(session).id,
+        account_id=account_id,
         execution_key=f"reconcile-{position_id}",
         broker="paper",
         broker_position_id=position_id,
@@ -109,8 +110,8 @@ class _StubBroker:
         raise NotImplementedError
 
 
-def test_position_confirmed_open_stays_open(session):
-    trade = _open_trade(session)
+def test_position_confirmed_open_stays_open(session, seed_account):
+    trade = _open_trade(session, seed_account.id)
     position = BrokerPosition(
         position_id="1",
         symbol=CANONICAL_GOLD_SYMBOL,
@@ -136,8 +137,8 @@ def test_position_confirmed_open_stays_open(session):
     assert AuditEventType.RECONCILIATION_COMPLETED.value in events
 
 
-def test_position_missing_marks_unknown_requires_reconciliation(session):
-    trade = _open_trade(session)
+def test_position_missing_marks_unknown_requires_reconciliation(session, seed_account):
+    trade = _open_trade(session, seed_account.id)
     summary = ReconciliationService(
         session, _StubBroker(None), AuditService(session)
     ).reconcile_open_trades()
@@ -154,8 +155,8 @@ def test_position_missing_marks_unknown_requires_reconciliation(session):
     assert AuditEventType.RECONCILIATION_REQUIRED.value in events
 
 
-def test_broker_error_during_reconciliation_is_treated_conservatively(session):
-    trade = _open_trade(session)
+def test_broker_error_during_reconciliation_is_treated_conservatively(session, seed_account):
+    trade = _open_trade(session, seed_account.id)
     broker = _StubBroker(raise_on_get=ConnectionError("terminal unreachable"))
     summary = ReconciliationService(session, broker, AuditService(session)).reconcile_open_trades()
 
@@ -165,10 +166,10 @@ def test_broker_error_during_reconciliation_is_treated_conservatively(session):
     assert summary.marked_reconciliation_required == 1
 
 
-def test_position_closed_with_broker_data_resolves_properly_not_as_unknown(session):
+def test_position_closed_with_broker_data_resolves_properly_not_as_unknown(session, seed_account):
     """When the broker DOES know how it closed, use that real data instead
     of parking the trade as UNKNOWN."""
-    trade = _open_trade(session)
+    trade = _open_trade(session, seed_account.id)
     position = BrokerPosition(
         position_id="1",
         symbol=CANONICAL_GOLD_SYMBOL,
@@ -196,8 +197,8 @@ def test_position_closed_with_broker_data_resolves_properly_not_as_unknown(sessi
     assert summary.marked_reconciliation_required == 0
 
 
-def test_trade_with_no_broker_position_id_is_defensively_marked_unknown(session):
-    trade = _open_trade(session, position_id="1")
+def test_trade_with_no_broker_position_id_is_defensively_marked_unknown(session, seed_account):
+    trade = _open_trade(session, seed_account.id, position_id="1")
     trade.broker_position_id = None
     session.add(trade)
     session.commit()
@@ -223,7 +224,7 @@ def test_no_open_trades_reconciliation_is_a_clean_noop(session):
 
 
 def test_paper_broker_restart_orphan_is_caught_by_reconciliation_and_still_blocks_new_trades(
-    session,
+    session, seed_account,
 ):
     """Reproduces the exact HIGH-3 scenario end to end: a real PaperBroker
     opens a position, a *fresh* PaperBroker instance (simulating the
@@ -256,7 +257,7 @@ def test_paper_broker_restart_orphan_is_caught_by_reconciliation_and_still_block
     )
     assert execution.success is True
 
-    trade = _open_trade(session, position_id=execution.broker_position_id)
+    trade = _open_trade(session, seed_account.id, position_id=execution.broker_position_id)
 
     # Simulate the restart: a brand-new, empty-memory PaperBroker.
     new_broker = PaperBroker(
@@ -283,20 +284,26 @@ def test_paper_broker_restart_orphan_is_caught_by_reconciliation_and_still_block
 
     # And it must still consume the max_open_trades capacity defensively.
     engine = TradingEngine(session, new_broker, AuditService(session))
-    assert engine._count_open_trades() == 1  # noqa: SLF001 - intentional internal check
+    assert engine._count_open_trades(seed_account.id) == 1  # noqa: SLF001 - intentional internal check
 
 
-def test_reconciliation_runs_automatically_on_real_app_startup(session):
+def test_reconciliation_runs_automatically_on_real_app_startup(
+    session, seed_account, test_credentials
+):
     """End-to-end: an OPEN trade sitting in the database before the app
     even starts must come out the other side of a real FastAPI startup
     (app/lifecycle.py's lifespan) as UNKNOWN, not silently left OPEN."""
-    trade = _open_trade(session, position_id="startup-orphan-1")
+    trade = _open_trade(session, seed_account.id, position_id="startup-orphan-1")
 
     from fastapi.testclient import TestClient
 
     from app.main import app
 
+    username, password = test_credentials
     with TestClient(app) as client:
+        client.post("/api/auth/login", json={"username": username, "password": password})
+        client.headers["X-Account-Id"] = str(seed_account.id)
+
         response = client.get(f"/api/trades/{trade.id}")
         assert response.status_code == 200
         assert response.json()["status"] == "UNKNOWN"

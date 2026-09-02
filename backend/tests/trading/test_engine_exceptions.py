@@ -68,8 +68,9 @@ class _RaisingBroker:
         raise NotImplementedError
 
 
-def _settings(**overrides) -> TradingSettings:
+def _settings(account_id: int, **overrides) -> TradingSettings:
     defaults = dict(
+        account_id=account_id,
         auto_trading=True,
         buy_enabled=True,
         lot_size=Decimal("0.10"),
@@ -108,9 +109,9 @@ def _ready_signal(session, *, side: Side = Side.BUY) -> Signal:
         RuntimeError("unexpected broker failure"),
     ],
 )
-def test_broker_exception_never_leaves_a_trade_open_or_stuck(session, exc):
+def test_broker_exception_never_leaves_a_trade_open_or_stuck(session, seed_account, exc):
     signal = _ready_signal(session)
-    settings = _settings()
+    settings = _settings(seed_account.id)
     broker = _RaisingBroker(exc)
     engine = TradingEngine(session, broker, AuditService(session))
 
@@ -129,11 +130,11 @@ def test_broker_exception_never_leaves_a_trade_open_or_stuck(session, exc):
     assert all(t.status != TradeStatus.OPEN for t in all_trades)
 
 
-def test_broker_exception_on_sell_never_leaves_a_trade_open_or_stuck(session):
+def test_broker_exception_on_sell_never_leaves_a_trade_open_or_stuck(session, seed_account):
     # Same guarantee as the BUY case above, exercised through open_sell()
     # instead of open_buy() -- added alongside SELL market order support.
     signal = _ready_signal(session, side=Side.SELL)
-    settings = _settings(sell_enabled=True)
+    settings = _settings(seed_account.id, sell_enabled=True)
     broker = _RaisingBroker(ConnectionError("timed out talking to broker"))
     engine = TradingEngine(session, broker, AuditService(session))
 
@@ -152,9 +153,9 @@ def test_broker_exception_on_sell_never_leaves_a_trade_open_or_stuck(session):
     assert all(t.status != TradeStatus.OPEN for t in all_trades)
 
 
-def test_broker_exception_writes_audit_events(session):
+def test_broker_exception_writes_audit_events(session, seed_account):
     signal = _ready_signal(session)
-    settings = _settings()
+    settings = _settings(seed_account.id)
     broker = _RaisingBroker(ConnectionError("boom"))
     engine = TradingEngine(session, broker, AuditService(session))
 
@@ -166,9 +167,11 @@ def test_broker_exception_writes_audit_events(session):
     assert AuditEventType.TRADE_FAILED.value in event_types
 
 
-def test_broker_exception_does_not_leak_raw_exception_text_to_failure_reason(session):
+def test_broker_exception_does_not_leak_raw_exception_text_to_failure_reason(
+    session, seed_account
+):
     signal = _ready_signal(session)
-    settings = _settings()
+    settings = _settings(seed_account.id)
     secret_looking_text = "connection refused: password=hunter2 host=internal-broker"
     broker = _RaisingBroker(ConnectionError(secret_looking_text))
     engine = TradingEngine(session, broker, AuditService(session))
@@ -179,9 +182,9 @@ def test_broker_exception_does_not_leak_raw_exception_text_to_failure_reason(ses
     assert trade.failure_reason == "Broker error: ConnectionError"
 
 
-def test_retrying_the_same_signal_after_broker_exception_does_not_duplicate(session):
+def test_retrying_the_same_signal_after_broker_exception_does_not_duplicate(session, seed_account):
     signal = _ready_signal(session)
-    settings = _settings()
+    settings = _settings(seed_account.id)
     broker = _RaisingBroker(TimeoutError("still down"))
     engine = TradingEngine(session, broker, AuditService(session))
 
@@ -195,7 +198,7 @@ def test_retrying_the_same_signal_after_broker_exception_does_not_duplicate(sess
 
 
 def test_exception_during_quote_fetch_before_trade_row_exists_is_rejected_not_stuck(
-    session,
+    session, seed_account,
 ):
     """`get_quote()` is now called early (rule 7b needs a current price to
     screen the channel's Stop Loss width), alongside get_account()/
@@ -214,7 +217,7 @@ def test_exception_during_quote_fetch_before_trade_row_exists_is_rejected_not_st
             raise AssertionError("open_buy should never be reached")
 
     signal = _ready_signal(session)
-    settings = _settings()
+    settings = _settings(seed_account.id)
     engine = TradingEngine(
         session, _RaisingOnQuote(ConnectionError("unused")), AuditService(session)
     )

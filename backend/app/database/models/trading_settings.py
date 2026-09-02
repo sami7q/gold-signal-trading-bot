@@ -11,16 +11,20 @@ from app.database.types import UTCDateTime
 
 
 class TradingSettings(Base, table=True):
-    """Singleton-ish settings row.
+    """One settings row per MT5 account (multi-account feature, 2026-09).
 
-    The service layer always operates on the most recently updated row; a
-    fresh default row is created on first startup if none exists (see
-    `app/settings/service.py`).
+    The service layer operates on the most recently updated row *for a
+    given `account_id`*; a fresh default row is created for that account on
+    first access if none exists yet (see `app/settings/service.py`'s
+    `get_for_account`). Every field below is therefore independent per
+    account -- two accounts can run completely different strategies against
+    the same shared Telegram channel.
     """
 
     __tablename__ = "trading_settings"
 
     id: int | None = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="mt5_accounts.id", index=True)
 
     auto_trading: bool = False
     mode: TradingMode = TradingMode.SIMULATION

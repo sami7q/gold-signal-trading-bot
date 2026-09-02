@@ -11,9 +11,11 @@ import {
   ScrollText,
   FlaskConical,
   Archive,
+  Users,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/format";
+import { AccountSwitcher } from "@/components/shell/account-switcher";
 
 const NAV_ITEMS = [
   { href: "/", label: "نظرة عامة", icon: LayoutDashboard },
@@ -23,6 +25,7 @@ const NAV_ITEMS = [
   { href: "/archive", label: "الأرشيف", icon: Archive },
   { href: "/simulation", label: "المحاكاة", icon: FlaskConical },
   { href: "/logs", label: "السجلات", icon: ScrollText },
+  { href: "/accounts", label: "الحسابات", icon: Users },
   { href: "/settings", label: "الإعدادات", icon: SlidersHorizontal },
 ] as const;
 
@@ -53,6 +56,10 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         >
           <X className="h-4 w-4" strokeWidth={1.75} />
         </button>
+      </div>
+
+      <div className="border-b border-border-soft px-2 py-2.5">
+        <AccountSwitcher variant="desktop" />
       </div>
 
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">

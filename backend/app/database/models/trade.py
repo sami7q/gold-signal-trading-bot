@@ -17,8 +17,15 @@ class Trade(Base, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     signal_id: int = Field(foreign_key="signals.id", index=True)
+    #: Which account this trade belongs to (multi-account feature, 2026-09).
+    #: `Signal` itself stays account-agnostic -- the same shared channel
+    #: signal can produce one `Trade` per account, each independently.
+    account_id: int = Field(foreign_key="mt5_accounts.id", index=True)
 
-    #: `signal_id + strategy_version` — the idempotency guard (see PROJECT_SPEC.md section 8).
+    #: `account_id + signal_id + strategy_version` — the idempotency guard
+    #: (see PROJECT_SPEC.md section 8). Account-scoped so N accounts can
+    #: each execute their own trade against the same shared signal instead
+    #: of only the first one ever being allowed to.
     execution_key: str = Field(index=True)
 
     broker: str

@@ -7,8 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.core.auth_deps import get_current_account
 from app.core.constants import Side, TradeResult, TradeStatus
 from app.core.decimals import CleanDecimal
+from app.database.models.mt5_account import MT5Account
 from app.database.models.trade import Trade
 from app.database.session import get_session
 
@@ -18,6 +20,7 @@ router = APIRouter(prefix="/api/trades", tags=["trades"])
 class TradeRead(BaseModel):
     id: int
     signal_id: int
+    account_id: int
     execution_key: str
     broker: str
     broker_order_id: str | None
@@ -48,13 +51,14 @@ class TradeRead(BaseModel):
 @router.get("", response_model=list[TradeRead])
 def list_trades(
     session: Annotated[Session, Depends(get_session)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
     status_filter: Annotated[TradeStatus | None, Query(alias="status")] = None,
     result_filter: Annotated[TradeResult | None, Query(alias="result")] = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     limit: int = 200,
 ) -> list[Trade]:
-    statement = select(Trade)
+    statement = select(Trade).where(Trade.account_id == account.id)
     if status_filter is not None:
         statement = statement.where(Trade.status == status_filter)
     if result_filter is not None:
@@ -68,8 +72,14 @@ def list_trades(
 
 
 @router.get("/{trade_id}", response_model=TradeRead)
-def get_trade(trade_id: int, session: Annotated[Session, Depends(get_session)]) -> Trade:
+def get_trade(
+    trade_id: int,
+    session: Annotated[Session, Depends(get_session)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
+) -> Trade:
     trade = session.get(Trade, trade_id)
-    if trade is None:
+    if trade is None or trade.account_id != account.id:
+        # Same "404 either way" isolation reasoning as get_current_account
+        # -- never confirm another account's trade even exists.
         raise HTTPException(status_code=404, detail="Trade not found")
     return trade

@@ -385,8 +385,9 @@ def _flow_case_ids():
 
 
 @pytest.mark.parametrize("scenario", FLOW_SCENARIOS, ids=_flow_case_ids())
-def test_flow_scenario(session, scenario: FlowScenario):
+def test_flow_scenario(session, seed_account, scenario: FlowScenario):
     SettingsService(session).update(
+        seed_account.id,
         TradingSettingsUpdate(
             auto_trading=True,
             buy_enabled=True,
@@ -418,7 +419,10 @@ def test_flow_scenario(session, scenario: FlowScenario):
         starting_price=Decimal("4638.30"),
     )
     service = TradingService(
-        session, broker, signal_completion_timeout_seconds=scenario.timeout_seconds
+        session,
+        broker,
+        account_id=seed_account.id,
+        signal_completion_timeout_seconds=scenario.timeout_seconds,
     )
 
     base_time = datetime.now(UTC)

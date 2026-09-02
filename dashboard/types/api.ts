@@ -87,6 +87,7 @@ export interface TradingSettingsUpdate {
 export interface Trade {
   id: number;
   signal_id: number;
+  account_id: number;
   execution_key: string;
   broker: string;
   broker_order_id: string | null;
@@ -295,4 +296,50 @@ export interface SendMessageResult {
   signal_id: number | null;
   signal_status: string | null;
   became_ready: boolean;
+}
+
+// -- Auth / multi-account (2026-09) ------------------------------------------
+
+export interface User {
+  id: number;
+  username: string;
+  display_name: string;
+}
+
+export interface MT5Account {
+  id: number;
+  label: string;
+  mt5_login: string;
+  mt5_server: string;
+  symbol: string;
+  is_live: boolean;
+  is_active: boolean;
+  has_password: boolean;
+}
+
+export interface MeResponse {
+  user: User;
+  accounts: MT5Account[];
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+  remember_me?: boolean;
+}
+
+export interface MT5AccountCreate {
+  label: string;
+  mt5_login: string;
+  mt5_server: string;
+  mt5_password: string;
+  symbol?: string;
+}
+
+export interface MT5AccountUpdate {
+  label?: string;
+  mt5_login?: string;
+  mt5_server?: string;
+  mt5_password?: string;
+  symbol?: string;
 }

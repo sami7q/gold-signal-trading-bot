@@ -57,27 +57,34 @@ class TradingEngine:
         self._audit = audit or AuditService(session)
 
     @staticmethod
-    def build_execution_key(signal_id: int) -> str:
-        return f"{signal_id}:{STRATEGY_VERSION}"
+    def build_execution_key(account_id: int, signal_id: int) -> str:
+        # Account-scoped (multi-account feature, 2026-09): each account
+        # gets its own independent trade for the same shared-channel
+        # signal, instead of the old signal-only key blocking every
+        # account but the first from ever executing it.
+        return f"{account_id}:{signal_id}:{STRATEGY_VERSION}"
 
     def _find_trade(self, execution_key: str) -> Trade | None:
         statement = select(Trade).where(Trade.execution_key == execution_key)
         return self._session.exec(statement).first()
 
-    def _count_open_trades(self) -> int:
+    def _count_open_trades(self, account_id: int) -> int:
         # UNKNOWN (unreconciled) trades are counted too — a trade we can't
         # confirm is actually closed must still be treated as consuming risk
         # capacity. See app/trading/reconciliation.py and
         # PROJECT_SPEC.md section 32, rule 13.
-        statement = select(Trade).where(Trade.status.in_(OPEN_TRADE_STATUSES))  # type: ignore[attr-defined]
+        statement = select(Trade).where(
+            Trade.status.in_(OPEN_TRADE_STATUSES),  # type: ignore[attr-defined]
+            Trade.account_id == account_id,
+        )
         return len(list(self._session.exec(statement)))
 
-    def _todays_trades(self, now: datetime) -> list[Trade]:
+    def _todays_trades(self, now: datetime, account_id: int) -> list[Trade]:
         """Every real (broker-confirmed) trade opened on `now`'s Asia/
-        Baghdad calendar day, oldest first -- see app/trading/daily_lot_plan.py.
-        SQLite can't compare timezone-aware dates portably, so this pulls a
-        generous UTC window (guaranteed to fully contain the Baghdad day)
-        and filters precisely in Python."""
+        Baghdad calendar day for this account, oldest first -- see
+        app/trading/daily_lot_plan.py. SQLite can't compare timezone-aware
+        dates portably, so this pulls a generous UTC window (guaranteed to
+        fully contain the Baghdad day) and filters precisely in Python."""
         today = trading_day(now)
         window_start = datetime.combine(today, datetime.min.time(), tzinfo=UTC) - timedelta(
             hours=6
@@ -86,6 +93,7 @@ class TradingEngine:
         statement = (
             select(Trade)
             .where(Trade.status.in_(_COUNTS_TOWARD_DAILY_PLAN))  # type: ignore[attr-defined]
+            .where(Trade.account_id == account_id)
             .where(Trade.created_at >= window_start)
             .where(Trade.created_at <= window_end)
             .order_by(Trade.created_at.asc())  # type: ignore[attr-defined]
@@ -95,7 +103,7 @@ class TradingEngine:
 
     def execute(self, signal: Signal, settings: TradingSettings) -> Trade:
         assert signal.id is not None, "signal must be persisted before execution"
-        execution_key = self.build_execution_key(signal.id)
+        execution_key = self.build_execution_key(settings.account_id, signal.id)
 
         existing = self._find_trade(execution_key)
         if existing is not None:
@@ -130,7 +138,9 @@ class TradingEngine:
 
         now = datetime.now(UTC)
         if settings.daily_lot_plan_enabled:
-            plan = next_trade_lot(self._todays_trades(now), now=now, settings=settings)
+            plan = next_trade_lot(
+                self._todays_trades(now, settings.account_id), now=now, settings=settings
+            )
             effective_lot: Decimal = (
                 plan.lot if plan.allowed and plan.lot is not None else settings.lot_size
             )
@@ -143,7 +153,7 @@ class TradingEngine:
             signal=signal,
             settings=settings,
             account=account,
-            open_trades_count=self._count_open_trades(),
+            open_trades_count=self._count_open_trades(settings.account_id),
             broker_health=broker_health,
             symbol_info=symbol_info,
             quote=quote,
@@ -155,6 +165,7 @@ class TradingEngine:
         if not decision.allowed:
             trade = Trade(
                 signal_id=signal.id,
+                account_id=settings.account_id,
                 execution_key=execution_key,
                 broker=self._broker.name,
                 symbol=signal.symbol,
@@ -202,6 +213,7 @@ class TradingEngine:
 
             pending_trade = Trade(
                 signal_id=signal.id,
+                account_id=settings.account_id,
                 execution_key=execution_key,
                 broker=self._broker.name,
                 symbol=signal.symbol,
@@ -316,6 +328,7 @@ class TradingEngine:
         if trade is None:
             trade = Trade(
                 signal_id=signal.id,
+                account_id=settings.account_id,
                 execution_key=execution_key,
                 broker=self._broker.name,
                 symbol=signal.symbol,

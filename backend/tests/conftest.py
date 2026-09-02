@@ -31,6 +31,21 @@ os.environ["MT5_ENABLED"] = "false"
 os.environ["TELEGRAM_OBSERVE_ONLY"] = "true"
 os.environ["AUTO_TRADING"] = "false"
 os.environ["TRADING_MODE"] = "SIMULATION"
+#: A real Fernet key so MT5Account fixtures can encrypt a placeholder
+#: password (app/core/credentials.py) -- one generated per test *process*
+#: is fine, nothing here needs it to be stable across runs.
+os.environ.setdefault(
+    "ACCOUNT_CREDENTIALS_ENCRYPTION_KEY",
+    __import__("cryptography.fernet", fromlist=["Fernet"]).Fernet.generate_key().decode(),
+)
+#: The real deployment needs Secure+SameSite=None because Vercel and the
+#: Cloudflare Tunnel are different HTTPS origins (see Settings.cookie_*'s
+#: docstring) -- TestClient talks plain http://testserver, where a
+#: Secure-flagged cookie set at login would silently never be resent on
+#: later requests, breaking every "authenticated" fixture below in a way
+#: that looks like an auth bug rather than a test-transport mismatch.
+os.environ["COOKIE_SECURE"] = "false"
+os.environ["COOKIE_SAMESITE"] = "lax"
 
 import pytest  # noqa: E402
 from sqlmodel import Session, SQLModel  # noqa: E402
@@ -38,6 +53,11 @@ from sqlmodel import Session, SQLModel  # noqa: E402
 import app.database.models  # noqa: E402,F401  (populate SQLModel.metadata)
 from app.core.runtime import reset_runtime_singletons  # noqa: E402
 from app.database.session import get_engine  # noqa: E402
+
+#: Shared by every fixture/test that needs a real login -- not a secret,
+#: just fixture data (see backend/scripts/seed_users.py for the real thing).
+TEST_USERNAME = "testuser"
+TEST_PASSWORD = "testpassword123"
 
 
 @pytest.fixture(autouse=True)
@@ -57,10 +77,101 @@ def session():
 
 
 @pytest.fixture()
-def client():
+def seed_user(session):
+    """A real, loggable-in `User` row -- see TEST_USERNAME/TEST_PASSWORD."""
+    from app.core.security import hash_password
+    from app.database.models.user import User
+
+    user = User(
+        username=TEST_USERNAME,
+        display_name="Test User",
+        password_hash=hash_password(TEST_PASSWORD),
+    )
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
+
+
+def make_account(session, user, *, label="Test Account", mt5_login="999001", is_live=True):
+    """Not a fixture itself -- call directly from a test that needs more
+    than one account (e.g. cross-user isolation tests), where a single
+    fixture instance wouldn't do. `seed_account` below is the one-account
+    convenience wrapper around this for everything else."""
+    from app.core.credentials import encrypt_mt5_password
+    from app.database.models.mt5_account import MT5Account
+
+    account = MT5Account(
+        user_id=user.id,
+        label=label,
+        mt5_login=mt5_login,
+        mt5_server="Test-Server",
+        mt5_password_encrypted=encrypt_mt5_password("placeholder"),
+        is_live=is_live,
+    )
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return account
+
+
+@pytest.fixture()
+def seed_account(session, seed_user):
+    """The one MT5 account almost every test needs -- `is_live=True` so it
+    behaves like the real deployment's single live account (dashboard
+    balance/equity, engine execution, etc. all gate on that)."""
+    return make_account(session, seed_user)
+
+
+@pytest.fixture()
+def account_factory():
+    """The `make_account` callable, as a fixture -- for a test that needs
+    more than one account (e.g. cross-user isolation tests) where the
+    single `seed_account` instance isn't enough. Exists so such a test
+    never has to `from tests.conftest import make_account` at module level
+    -- same double-import hazard `test_credentials` avoids (see its
+    docstring), except here it would fire at collection time instead of
+    mid-test, which happens to be less likely to explode but is just as
+    fragile to depend on."""
+    return make_account
+
+
+@pytest.fixture()
+def test_credentials():
+    """(username, password) for `seed_user` -- for a test that builds its
+    own raw `TestClient` (instead of using `client`/`raw_client`) and needs
+    to log in manually. Exists so such a test never has to
+    `from tests.conftest import TEST_USERNAME` mid-test -- that re-imports
+    this module as a second, separate module object, re-running the
+    module-level env var / test-db setup above against an already-open DB
+    file."""
+    return TEST_USERNAME, TEST_PASSWORD
+
+
+@pytest.fixture()
+def raw_client():
+    """An unauthenticated TestClient -- use this (not `client`) for
+    login/auth/account-isolation tests that need to control the cookie and
+    X-Account-Id header themselves instead of getting them for free."""
     from fastapi.testclient import TestClient
 
     from app.main import app
 
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def client(raw_client, seed_account):
+    """A TestClient already logged in as `seed_user` with `X-Account-Id`
+    defaulted to `seed_account` -- every endpoint added by the multi-account
+    feature requires both, and almost every existing test only ever cared
+    about "a working session against the one account it set up", not about
+    exercising auth itself (that's what `raw_client` + test_auth.py /
+    test_accounts.py are for)."""
+    response = raw_client.post(
+        "/api/auth/login", json={"username": TEST_USERNAME, "password": TEST_PASSWORD}
+    )
+    assert response.status_code == 200, response.text
+    raw_client.headers["X-Account-Id"] = str(seed_account.id)
+    yield raw_client

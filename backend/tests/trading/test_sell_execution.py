@@ -42,8 +42,9 @@ def _broker(starting_price: Decimal = Decimal("4638.30")) -> PaperBroker:
     )
 
 
-def _settings(**overrides) -> TradingSettings:
+def _settings(account_id: int, **overrides) -> TradingSettings:
     defaults = dict(
+        account_id=account_id,
         auto_trading=True,
         buy_enabled=True,
         sell_enabled=True,
@@ -74,11 +75,11 @@ def _sell_signal(session, *, stop_loss: Decimal = Decimal("4650")) -> Signal:
     return signal
 
 
-def test_sell_signal_executes_and_opens_a_real_position(session):
+def test_sell_signal_executes_and_opens_a_real_position(session, seed_account):
     signal = _sell_signal(session)
     engine = TradingEngine(session, _broker(), AuditService(session))
 
-    trade = engine.execute(signal, _settings())
+    trade = engine.execute(signal, _settings(seed_account.id))
 
     assert trade.status == TradeStatus.OPEN
     assert trade.side == Side.SELL
@@ -87,34 +88,34 @@ def test_sell_signal_executes_and_opens_a_real_position(session):
     assert signal.status == SignalStatus.EXECUTED
 
 
-def test_sell_take_profit_is_below_entry_by_target_pips(session):
+def test_sell_take_profit_is_below_entry_by_target_pips(session, seed_account):
     # PaperBroker's bid = 4638.30, spread 20 points (0.20) -> SELL fills at
     # bid = 4638.30. pip_size for 2-digit gold = 0.1; 100 pips = 10.00 below.
     signal = _sell_signal(session)
     engine = TradingEngine(session, _broker(), AuditService(session))
 
-    trade = engine.execute(signal, _settings(target_pips=Decimal("100")))
+    trade = engine.execute(signal, _settings(seed_account.id, target_pips=Decimal("100")))
 
     assert trade.entry_price == Decimal("4638.30")
     assert trade.take_profit_price == Decimal("4628.30")
 
 
-def test_sell_disabled_rejects_without_touching_the_broker(session):
+def test_sell_disabled_rejects_without_touching_the_broker(session, seed_account):
     signal = _sell_signal(session)
     engine = TradingEngine(session, _broker(), AuditService(session))
 
-    trade = engine.execute(signal, _settings(sell_enabled=False))
+    trade = engine.execute(signal, _settings(seed_account.id, sell_enabled=False))
 
     assert trade.status == TradeStatus.REJECTED
     assert trade.failure_reason == "SELL_DISABLED"
 
 
-def test_sell_position_closes_at_take_profit_when_price_falls(session):
+def test_sell_position_closes_at_take_profit_when_price_falls(session, seed_account):
     signal = _sell_signal(session)
     broker = _broker()
     engine = TradingEngine(session, broker, AuditService(session))
 
-    trade = engine.execute(signal, _settings(target_pips=Decimal("100")))
+    trade = engine.execute(signal, _settings(seed_account.id, target_pips=Decimal("100")))
     assert trade.broker_position_id is not None
 
     closed = broker.set_price(trade.take_profit_price)
@@ -124,12 +125,12 @@ def test_sell_position_closes_at_take_profit_when_price_falls(session):
     assert position.profit > 0
 
 
-def test_sell_position_closes_at_stop_loss_when_price_rises(session):
+def test_sell_position_closes_at_stop_loss_when_price_rises(session, seed_account):
     signal = _sell_signal(session, stop_loss=Decimal("4650"))
     broker = _broker()
     engine = TradingEngine(session, broker, AuditService(session))
 
-    trade = engine.execute(signal, _settings())
+    trade = engine.execute(signal, _settings(seed_account.id))
     closed = broker.set_price(Decimal("4650"))
     assert len(closed) == 1
     position = broker.get_position(trade.broker_position_id)
@@ -137,7 +138,7 @@ def test_sell_position_closes_at_stop_loss_when_price_rises(session):
     assert position.profit < 0
 
 
-def test_buy_and_sell_are_independent_toggles(session):
+def test_buy_and_sell_are_independent_toggles(session, seed_account):
     # buy_enabled=True, sell_enabled=False must still let BUY through --
     # confirms the two checks are genuinely independent, not accidentally
     # coupled (e.g. one flag gating both sides).
@@ -161,7 +162,7 @@ def test_buy_and_sell_are_independent_toggles(session):
         channel_id="chan-1",
         first_message_at=datetime.now(UTC),
     )
-    settings = _settings(sell_enabled=False)
+    settings = _settings(seed_account.id, sell_enabled=False)
     decision = TradingRulesEngine.evaluate(
         signal=buy_signal,
         settings=settings,

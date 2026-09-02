@@ -28,24 +28,31 @@ class SettingsService:
         self._session = session
         self._audit = audit or AuditService(session)
 
-    def get_active(self) -> TradingSettings:
-        statement = select(TradingSettings).order_by(
-            TradingSettings.updated_at.desc()  # type: ignore[attr-defined]
+    def get_for_account(self, account_id: int) -> TradingSettings:
+        """One settings row per account (multi-account feature, 2026-09) --
+        the most-recently-updated row *for this account_id specifically*;
+        a fresh default row is created for it on first access if none
+        exists yet, exactly like the old singleton behavior did globally."""
+        statement = (
+            select(TradingSettings)
+            .where(TradingSettings.account_id == account_id)
+            .order_by(TradingSettings.updated_at.desc())  # type: ignore[attr-defined]
         )
         settings = self._session.exec(statement).first()
         if settings is None:
-            settings = TradingSettings()
+            settings = TradingSettings(account_id=account_id)
             self._session.add(settings)
             self._session.commit()
             self._session.refresh(settings)
             self._audit.log(
                 AuditEventType.SETTINGS_CHANGED,
                 "Default trading settings created (SIMULATION, auto trading OFF).",
+                metadata={"account_id": account_id},
             )
         return settings
 
-    def update(self, patch: TradingSettingsUpdate) -> TradingSettings:
-        settings = self.get_active()
+    def update(self, account_id: int, patch: TradingSettingsUpdate) -> TradingSettings:
+        settings = self.get_for_account(account_id)
         changes: dict[str, tuple[object, object]] = {}
 
         data = patch.model_dump(exclude={"confirm_live_phrase"}, exclude_unset=True)

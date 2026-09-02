@@ -221,6 +221,19 @@ class AuditEventType(StrEnum):
     #: execution instead of expiring. See app/trading/service.py.
     AUTO_STOP_LOSS_APPLIED = "AUTO_STOP_LOSS_APPLIED"
 
+    #: Multi-account feature (2026-09) -- login/account-management trail.
+    USER_LOGIN_SUCCEEDED = "USER_LOGIN_SUCCEEDED"
+    USER_LOGIN_FAILED = "USER_LOGIN_FAILED"
+    USER_LOGOUT = "USER_LOGOUT"
+    ACCOUNT_CREATED = "ACCOUNT_CREATED"
+    ACCOUNT_UPDATED = "ACCOUNT_UPDATED"
+    ACCOUNT_ARCHIVED = "ACCOUNT_ARCHIVED"
+    ACCOUNT_SET_LIVE = "ACCOUNT_SET_LIVE"
+    #: No MT5Account has is_live=True -- an incoming signal was parsed and
+    #: stored but never reached the trading engine. Mirrors
+    #: SIGNAL_OBSERVED_ONLY's "we deliberately did nothing" shape.
+    NO_LIVE_ACCOUNT_CONFIGURED = "NO_LIVE_ACCOUNT_CONFIGURED"
+
 
 class AuditSeverity(StrEnum):
     INFO = "INFO"

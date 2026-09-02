@@ -64,8 +64,9 @@ def _broker(starting_price: Decimal = Decimal("4638.30")) -> PaperBroker:
     )
 
 
-def _settings(**overrides) -> TradingSettings:
+def _settings(account_id: int, **overrides) -> TradingSettings:
     defaults = dict(
+        account_id=account_id,
         auto_trading=True,
         buy_enabled=True,
         sell_enabled=True,
@@ -116,74 +117,74 @@ def _settle_at_price(session, broker: PaperBroker, price: Decimal) -> None:
     ReconciliationService(session, broker, AuditService(session)).reconcile_open_trades()
 
 
-def test_first_trade_of_the_day_uses_base_lot(session):
+def test_first_trade_of_the_day_uses_base_lot(session, seed_account):
     signal = _signal(session)
     engine = TradingEngine(session, _broker(), AuditService(session))
 
-    trade = engine.execute(signal, _settings())
+    trade = engine.execute(signal, _settings(seed_account.id))
 
     assert trade.status == TradeStatus.OPEN
     assert trade.requested_lot == Decimal("1")
 
 
-def test_second_trade_rejected_after_first_wins(session):
+def test_second_trade_rejected_after_first_wins(session, seed_account):
     broker = _broker()
     engine = TradingEngine(session, broker, AuditService(session))
 
     first_signal = _signal(session)
-    first_trade = engine.execute(first_signal, _settings())
+    first_trade = engine.execute(first_signal, _settings(seed_account.id))
     _settle_at_price(session, broker, first_trade.take_profit_price)  # win it
     session.refresh(first_trade)
     assert first_trade.status == TradeStatus.CLOSED_TP
     assert first_trade.result.value == "WIN"
 
     second_signal = _signal(session)
-    second_trade = engine.execute(second_signal, _settings())
+    second_trade = engine.execute(second_signal, _settings(seed_account.id))
 
     assert second_trade.status == TradeStatus.REJECTED
     assert second_trade.failure_reason == "DAILY_TRADE_LIMIT_REACHED"
 
 
-def test_second_trade_after_a_loss_uses_doubled_lot(session):
+def test_second_trade_after_a_loss_uses_doubled_lot(session, seed_account):
     broker = _broker()
     engine = TradingEngine(session, broker, AuditService(session))
 
     first_signal = _signal(session, stop_loss=Decimal("4623"))
-    first_trade = engine.execute(first_signal, _settings())
+    first_trade = engine.execute(first_signal, _settings(seed_account.id))
     _settle_at_price(session, broker, first_trade.stop_loss)  # lose it
     session.refresh(first_trade)
     assert first_trade.status == TradeStatus.CLOSED_SL
     assert first_trade.result.value == "LOSS"
 
     second_signal = _signal(session, stop_loss=Decimal("4600"))
-    second_trade = engine.execute(second_signal, _settings())
+    second_trade = engine.execute(second_signal, _settings(seed_account.id))
 
     assert second_trade.status == TradeStatus.OPEN
     assert second_trade.requested_lot == Decimal("2")  # 1 * martingale_lot_multiplier(2)
 
 
-def test_third_trade_rejected_even_after_second_trade_loses(session):
+def test_third_trade_rejected_even_after_second_trade_loses(session, seed_account):
     broker = _broker()
     engine = TradingEngine(session, broker, AuditService(session))
 
-    first_trade = engine.execute(_signal(session), _settings())
+    first_trade = engine.execute(_signal(session), _settings(seed_account.id))
     _settle_at_price(session, broker, first_trade.stop_loss)
     session.refresh(first_trade)
 
-    second_trade = engine.execute(_signal(session), _settings())
+    second_trade = engine.execute(_signal(session), _settings(seed_account.id))
     _settle_at_price(session, broker, second_trade.stop_loss)
     session.refresh(second_trade)
     assert second_trade.status == TradeStatus.CLOSED_SL
 
-    third_trade = engine.execute(_signal(session), _settings())
+    third_trade = engine.execute(_signal(session), _settings(seed_account.id))
     assert third_trade.status == TradeStatus.REJECTED
     assert third_trade.failure_reason == "DAILY_TRADE_LIMIT_REACHED"
 
 
-def test_daily_lot_plan_disabled_falls_back_to_plain_lot_size(session):
+def test_daily_lot_plan_disabled_falls_back_to_plain_lot_size(session, seed_account):
     broker = _broker()
     engine = TradingEngine(session, broker, AuditService(session))
-    settings = _settings(daily_lot_plan_enabled=False, lot_size=Decimal("0.5"))
+    settings = _settings(seed_account.id, daily_lot_plan_enabled=False, lot_size=Decimal("0.5"))
 
     first_trade = engine.execute(_signal(session), settings)
     broker.set_price(first_trade.take_profit_price)
@@ -196,28 +197,28 @@ def test_daily_lot_plan_disabled_falls_back_to_plain_lot_size(session):
     assert second_trade.requested_lot == Decimal("0.5")
 
 
-def test_max_channel_stop_pips_still_enforced_alongside_the_daily_plan(session):
+def test_max_channel_stop_pips_still_enforced_alongside_the_daily_plan(session, seed_account):
     # A wide Stop Loss must still be rejected on its own terms (150 pip cap
     # from this same request), independent of the daily lot plan.
     signal = _signal(session, stop_loss=Decimal("4400"))  # ~2300 pips away
     engine = TradingEngine(session, _broker(), AuditService(session))
 
-    trade = engine.execute(signal, _settings(max_channel_stop_pips=Decimal("150")))
+    trade = engine.execute(signal, _settings(seed_account.id, max_channel_stop_pips=Decimal("150")))
 
     assert trade.status == TradeStatus.REJECTED
     assert trade.failure_reason == "STOP_LOSS_TOO_WIDE"
 
 
-def test_todays_trades_query_ignores_rejected_and_failed(session):
+def test_todays_trades_query_ignores_rejected_and_failed(session, seed_account):
     # A REJECTED trade (no Stop Loss at all, require_stop_loss=True) must
     # never count as "today's first trade" for the daily plan -- it never
     # reached the broker.
     engine = TradingEngine(session, _broker(), AuditService(session))
-    rejected = engine.execute(_signal(session, stop_loss=None), _settings())
+    rejected = engine.execute(_signal(session, stop_loss=None), _settings(seed_account.id))
     assert rejected.status == TradeStatus.REJECTED
     assert rejected.failure_reason == "STOP_LOSS_REQUIRED"
 
-    real_first = engine.execute(_signal(session), _settings())
+    real_first = engine.execute(_signal(session), _settings(seed_account.id))
     assert real_first.status == TradeStatus.OPEN
     assert real_first.requested_lot == Decimal("1")  # still treated as trade #1, not #2
 

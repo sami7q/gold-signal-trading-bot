@@ -7,9 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.core.auth_deps import get_current_account
 from app.core.constants import MessageRole, OrderType, Side, SignalStatus
 from app.core.decimals import CleanDecimal
 from app.database.models.incoming_message import IncomingMessage
+from app.database.models.mt5_account import MT5Account
 from app.database.models.signal import Signal
 from app.database.models.signal_message import SignalMessage
 from app.database.models.trade import Trade
@@ -50,11 +52,19 @@ class SignalRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
-def _load_trade_ids(session: Session, signal_ids: list[int]) -> dict[int, int]:
+def _load_trade_ids(session: Session, signal_ids: list[int], account_id: int) -> dict[int, int]:
+    """`Signal` is shared across every account (same channel message), but
+    `linked_trade_id` must mean *this account's* trade for that signal --
+    other accounts may have their own independent Trade row for the same
+    signal now (see Trade.execution_key's account-scoped format)."""
     trade_by_signal: dict[int, int] = {}
     if not signal_ids:
         return trade_by_signal
-    for t in session.exec(select(Trade).where(Trade.signal_id.in_(signal_ids))):  # type: ignore[attr-defined]
+    statement = select(Trade).where(
+        Trade.signal_id.in_(signal_ids),  # type: ignore[attr-defined]
+        Trade.account_id == account_id,
+    )
+    for t in session.exec(statement):
         if t.id is not None:
             trade_by_signal[t.signal_id] = t.id
     return trade_by_signal
@@ -96,9 +106,13 @@ def _to_read(
 @router.get("", response_model=list[SignalRead])
 def list_signals(
     session: Annotated[Session, Depends(get_session)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
     status_filter: SignalStatus | None = None,
     limit: int = 200,
 ) -> list[SignalRead]:
+    # Signal itself is intentionally not filtered by account -- every
+    # account sees the same shared channel signals (see the approved
+    # plan); only which trade (if any) resulted is account-specific.
     statement = select(Signal)
     if status_filter is not None:
         statement = statement.where(Signal.status == status_filter)
@@ -106,7 +120,7 @@ def list_signals(
     signals = list(session.exec(statement))
     signal_ids = [s.id for s in signals if s.id is not None]
 
-    trade_by_signal = _load_trade_ids(session, signal_ids)
+    trade_by_signal = _load_trade_ids(session, signal_ids, account.id)  # type: ignore[arg-type]
     messages_by_signal = _load_messages(session, signal_ids)
 
     return [
@@ -120,10 +134,16 @@ def list_signals(
 
 
 @router.get("/{signal_id}", response_model=SignalRead)
-def get_signal(signal_id: int, session: Annotated[Session, Depends(get_session)]) -> SignalRead:
+def get_signal(
+    signal_id: int,
+    session: Annotated[Session, Depends(get_session)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
+) -> SignalRead:
     signal = session.get(Signal, signal_id)
     if signal is None:
         raise HTTPException(status_code=404, detail="Signal not found")
-    trade = session.exec(select(Trade).where(Trade.signal_id == signal_id)).first()
+    trade = session.exec(
+        select(Trade).where(Trade.signal_id == signal_id, Trade.account_id == account.id)
+    ).first()
     messages = _load_messages(session, [signal_id]).get(signal_id, [])
     return _to_read(signal, trade_id=trade.id if trade else None, messages=messages)

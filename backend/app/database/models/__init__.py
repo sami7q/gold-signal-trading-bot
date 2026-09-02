@@ -7,17 +7,23 @@ autogenerate must import this package first.
 from app.database.models.archived_signal import ArchivedSignal
 from app.database.models.audit_event import AuditEvent
 from app.database.models.incoming_message import IncomingMessage
+from app.database.models.mt5_account import MT5Account
 from app.database.models.signal import Signal
 from app.database.models.signal_message import SignalMessage
 from app.database.models.trade import Trade
 from app.database.models.trading_settings import TradingSettings
+from app.database.models.user import User
+from app.database.models.user_session import UserSession
 
 __all__ = [
     "ArchivedSignal",
     "AuditEvent",
     "IncomingMessage",
+    "MT5Account",
     "Signal",
     "SignalMessage",
     "Trade",
     "TradingSettings",
+    "User",
+    "UserSession",
 ]

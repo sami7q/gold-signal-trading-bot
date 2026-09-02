@@ -17,10 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, model_validator
 from sqlmodel import Session, delete
 
+from app.accounts.service import AccountService
+from app.core.auth_deps import get_current_account
 from app.core.constants import TradingMode
 from app.core.decimals import CleanDecimal
 from app.core.runtime import get_broker, get_paper_broker
 from app.database.models.incoming_message import IncomingMessage
+from app.database.models.mt5_account import MT5Account
 from app.database.models.signal import Signal
 from app.database.models.signal_message import SignalMessage
 from app.database.models.trade import Trade
@@ -34,8 +37,16 @@ from app.trading.service import TradingService
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
 
-def require_not_live(session: Annotated[Session, Depends(get_session)]) -> None:
-    settings = SettingsService(session).get_active()
+def require_not_live(
+    session: Annotated[Session, Depends(get_session)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
+) -> None:
+    # Runs against whichever account is selected (X-Account-Id), regardless
+    # of that account's is_live flag -- LIVE mode is a per-account trading
+    # setting, and simulation must stay blocked for that account's own
+    # settings even though "is_live" (the global broker-connection flag)
+    # is a separate concept in Phase 1.
+    settings = SettingsService(session).get_for_account(account.id)  # type: ignore[arg-type]
     if settings.mode == TradingMode.LIVE:
         raise HTTPException(
             status_code=403, detail="Simulation endpoints are disabled in LIVE mode."
@@ -139,6 +150,7 @@ def send_mock_message(
     payload: SendMessageIn,
     session: Annotated[Session, Depends(get_session)],
     broker: Annotated[Broker, Depends(get_broker)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
 ) -> SendMessageOut:
     message_id = payload.message_id or str(uuid4())
     data = IncomingMessageData(
@@ -150,7 +162,7 @@ def send_mock_message(
         received_at=datetime.now(UTC),
         reply_to_message_id=payload.reply_to_message_id,
     )
-    service = TradingService(session, broker)
+    service = TradingService(session, broker, account_id=account.id)  # type: ignore[arg-type]
     result = service.process_incoming_message(data)
     return SendMessageOut(
         message_id=message_id,
@@ -170,13 +182,16 @@ def set_market_price(
     payload: MarketPriceIn,
     session: Annotated[Session, Depends(get_session)],
     broker: Annotated[PaperBroker, Depends(get_paper_broker)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
 ) -> SimulationStateOut:
     if payload.bid is not None:
         closed = broker.set_price(payload.bid)
     else:
         assert payload.delta is not None  # enforced by MarketPriceIn._one_of
         closed = broker.move_price(payload.delta)
-    TradingService(session, broker).on_positions_closed(closed)
+    TradingService(session, broker, account_id=account.id).on_positions_closed(  # type: ignore[arg-type]
+        closed
+    )
     return _state(broker)
 
 
@@ -186,6 +201,7 @@ def set_market_price(
 def trigger_take_profit(
     session: Annotated[Session, Depends(get_session)],
     broker: Annotated[PaperBroker, Depends(get_paper_broker)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
 ) -> SimulationStateOut:
     open_positions = broker.open_positions()
     if not open_positions:
@@ -194,7 +210,9 @@ def trigger_take_profit(
     if target.take_profit is None:
         raise HTTPException(status_code=400, detail="Open position has no Take Profit set.")
     closed = broker.set_price(target.take_profit)
-    TradingService(session, broker).on_positions_closed(closed)
+    TradingService(session, broker, account_id=account.id).on_positions_closed(  # type: ignore[arg-type]
+        closed
+    )
     return _state(broker)
 
 
@@ -204,6 +222,7 @@ def trigger_take_profit(
 def trigger_stop_loss(
     session: Annotated[Session, Depends(get_session)],
     broker: Annotated[PaperBroker, Depends(get_paper_broker)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
 ) -> SimulationStateOut:
     open_positions = broker.open_positions()
     if not open_positions:
@@ -212,7 +231,9 @@ def trigger_stop_loss(
     if target.stop_loss is None:
         raise HTTPException(status_code=400, detail="Open position has no Stop Loss set.")
     closed = broker.set_price(target.stop_loss)
-    TradingService(session, broker).on_positions_closed(closed)
+    TradingService(session, broker, account_id=account.id).on_positions_closed(  # type: ignore[arg-type]
+        closed
+    )
     return _state(broker)
 
 
@@ -227,16 +248,34 @@ def reset_simulation(
     payload: ResetIn,
     session: Annotated[Session, Depends(get_session)],
     broker: Annotated[PaperBroker, Depends(get_paper_broker)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
 ) -> dict:
     if payload.scope not in ("account", "trades", "all"):
         raise HTTPException(status_code=400, detail="scope must be one of: account, trades, all")
+
+    if payload.scope in ("trades", "all"):
+        # Signal/IncomingMessage/SignalMessage are shared across every
+        # account (same channel data, see the multi-account plan) -- unlike
+        # Trade there is no account_id to scope the wipe to. Refuse whenever
+        # a *different* account is currently the live one, so a simulation
+        # cleanup run as one account can never reach into another (possibly
+        # live, real-money) account's signal history.
+        live_account = AccountService(session).get_live_account()
+        if live_account is not None and live_account.id != account.id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot reset shared signal history while a different account "
+                    "is the live account."
+                ),
+            )
 
     if payload.scope in ("account", "all"):
         broker.reset()
 
     if payload.scope in ("trades", "all"):
+        session.exec(delete(Trade).where(Trade.account_id == account.id))  # type: ignore[arg-type]
         session.exec(delete(SignalMessage))
-        session.exec(delete(Trade))
         session.exec(delete(Signal))
         session.exec(delete(IncomingMessage))
         session.commit()

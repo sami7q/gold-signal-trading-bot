@@ -7,10 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from app.core.auth_deps import get_current_account
 from app.core.constants import CANONICAL_GOLD_SYMBOL, Side
 from app.core.decimals import CleanDecimal
 from app.core.runtime import get_broker
-from app.core.security import require_api_key
+from app.database.models.mt5_account import MT5Account
 from app.database.session import get_session
 from app.integrations.broker.base import Broker
 from app.settings.schemas import TradingSettingsRead, TradingSettingsUpdate
@@ -21,17 +22,22 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("", response_model=TradingSettingsRead)
-def get_settings_endpoint(session: Annotated[Session, Depends(get_session)]) -> TradingSettingsRead:
-    settings = SettingsService(session).get_active()
+def get_settings_endpoint(
+    session: Annotated[Session, Depends(get_session)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
+) -> TradingSettingsRead:
+    settings = SettingsService(session).get_for_account(account.id)  # type: ignore[arg-type]
     return TradingSettingsRead.model_validate(settings)
 
 
-@router.patch("", response_model=TradingSettingsRead, dependencies=[Depends(require_api_key)])
+@router.patch("", response_model=TradingSettingsRead)
 def update_settings_endpoint(
-    patch: TradingSettingsUpdate, session: Annotated[Session, Depends(get_session)]
+    patch: TradingSettingsUpdate,
+    session: Annotated[Session, Depends(get_session)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
 ) -> TradingSettingsRead:
     try:
-        settings = SettingsService(session).update(patch)
+        settings = SettingsService(session).update(account.id, patch)  # type: ignore[arg-type]
     except LiveModeConfirmationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return TradingSettingsRead.model_validate(settings)
@@ -54,6 +60,7 @@ class PipPreview(BaseModel):
 def get_pip_preview(
     session: Annotated[Session, Depends(get_session)],
     broker: Annotated[Broker, Depends(get_broker)],
+    account: Annotated[MT5Account, Depends(get_current_account)],
     target_pips: Decimal | None = None,
 ) -> PipPreview:
     """Read-only preview of what the configured (or a supplied) pip target
@@ -64,7 +71,7 @@ def get_pip_preview(
     math in the dashboard, so the preview can never drift from what would
     actually happen (PROJECT_SPEC.md section 10).
     """
-    settings = SettingsService(session).get_active()
+    settings = SettingsService(session).get_for_account(account.id)  # type: ignore[arg-type]
     pips_value = target_pips if target_pips is not None else settings.target_pips
     if pips_value <= 0:
         raise HTTPException(status_code=422, detail="target_pips must be greater than zero")
