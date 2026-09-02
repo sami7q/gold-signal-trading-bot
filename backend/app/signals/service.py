@@ -29,9 +29,10 @@ from app.core.constants import (
 from app.database.models.incoming_message import IncomingMessage
 from app.database.models.signal import Signal
 from app.database.models.signal_message import SignalMessage
+from app.database.models.trade import Trade
 from app.signals.models import IncomingMessageData, ParsedMessage
 from app.signals.parser import parse_message
-from app.signals.state_machine import OPEN_STATUSES, SignalStateMachine
+from app.signals.state_machine import EXECUTION_ELIGIBLE_STATUSES, OPEN_STATUSES, SignalStateMachine
 
 
 @dataclass(slots=True)
@@ -322,6 +323,36 @@ class SignalService:
 
         if signal is not None:
             self._link_message(signal, db_message, parsed.role)
+
+    # -- execution eligibility (concurrent-execution "Phase 2" update) --------
+
+    def find_unexecuted_for_account(self, account_id: int) -> list[Signal]:
+        """Every execution-eligible signal (see `EXECUTION_ELIGIBLE_STATUSES`)
+        for which `account_id` doesn't have a `Trade` row yet -- what
+        `backend/scripts/worker.py` (and, in principle, the hub too) polls
+        instead of `WHERE Signal.status == READY`.
+
+        `Signal.status` is a single shared column (Signal itself is
+        account-agnostic, one row per channel message, by design) -- the
+        moment *any* account executes it, `status` flips away from READY
+        forever, so a second account's process filtering on that column
+        would never see it again even though *it* hasn't executed yet.
+        `Trade` rows, by contrast, are already properly account-scoped
+        (`account_id` + the `account_id:signal_id:version` execution_key,
+        see TradingEngine.build_execution_key) -- "does *this* account have
+        a Trade for this signal" is the only question that's actually
+        correct to ask per-account.
+        """
+        executed_signal_ids = select(Trade.signal_id).where(Trade.account_id == account_id)
+        statement = (
+            select(Signal)
+            .where(
+                Signal.status.in_(EXECUTION_ELIGIBLE_STATUSES),  # type: ignore[attr-defined]
+                Signal.id.not_in(executed_signal_ids),  # type: ignore[union-attr]
+            )
+            .order_by(Signal.created_at.asc())  # type: ignore[attr-defined]
+        )
+        return list(self._session.exec(statement))
 
     # -- expiry sweep ---------------------------------------------------------
 

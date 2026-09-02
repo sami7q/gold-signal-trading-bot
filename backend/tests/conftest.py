@@ -28,6 +28,15 @@ _TEST_DB_PATH.unlink(missing_ok=True)
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH.as_posix()}"
 os.environ["TELEGRAM_ENABLED"] = "false"
 os.environ["MT5_ENABLED"] = "false"
+#: Must match `make_account`'s defaults below (mt5_login/mt5_server) --
+#: concurrent-execution "Phase 2" update: a process resolves "which account
+#: am I" by matching these against MT5Account rows (see
+#: AccountService.resolve_own_process_account), so `app/lifecycle.py`'s
+#: real `lifespan()` (exercised by the `client`/`raw_client` fixtures'
+#: `TestClient(app)`) needs a match here or every test would silently
+#: resolve to "no account" (account_id=None) regardless of `seed_account`.
+os.environ["MT5_ACCOUNT"] = "999001"
+os.environ["MT5_SERVER"] = "Test-Server"
 os.environ["TELEGRAM_OBSERVE_ONLY"] = "true"
 os.environ["AUTO_TRADING"] = "false"
 os.environ["TRADING_MODE"] = "SIMULATION"
@@ -93,11 +102,27 @@ def seed_user(session):
     return user
 
 
-def make_account(session, user, *, label="Test Account", mt5_login="999001", is_live=True):
+def make_account(
+    session,
+    user,
+    *,
+    label="Test Account",
+    mt5_login="999001",
+    mt5_server="Test-Server",
+    connected=True,
+):
     """Not a fixture itself -- call directly from a test that needs more
     than one account (e.g. cross-user isolation tests), where a single
     fixture instance wouldn't do. `seed_account` below is the one-account
-    convenience wrapper around this for everything else."""
+    convenience wrapper around this for everything else.
+
+    `connected` writes (or omits) a fresh `last_heartbeat_at` --
+    concurrent-execution "Phase 2" update: the account's wire-level
+    `is_live` is computed from that recency (app/accounts/schemas.py), not
+    from the model's own `is_live` column, which is dead as of that update
+    (see MT5Account's docstring)."""
+    from datetime import UTC, datetime
+
     from app.core.credentials import encrypt_mt5_password
     from app.database.models.mt5_account import MT5Account
 
@@ -105,9 +130,9 @@ def make_account(session, user, *, label="Test Account", mt5_login="999001", is_
         user_id=user.id,
         label=label,
         mt5_login=mt5_login,
-        mt5_server="Test-Server",
+        mt5_server=mt5_server,
         mt5_password_encrypted=encrypt_mt5_password("placeholder"),
-        is_live=is_live,
+        last_heartbeat_at=datetime.now(UTC) if connected else None,
     )
     session.add(account)
     session.commit()
@@ -117,9 +142,13 @@ def make_account(session, user, *, label="Test Account", mt5_login="999001", is_
 
 @pytest.fixture()
 def seed_account(session, seed_user):
-    """The one MT5 account almost every test needs -- `is_live=True` so it
-    behaves like the real deployment's single live account (dashboard
-    balance/equity, engine execution, etc. all gate on that)."""
+    """The one MT5 account almost every test needs -- `connected=True`
+    (the default) so its wire-level `is_live` reads True, matching the
+    real deployment's account (dashboard balance/equity, engine execution,
+    etc. all gate on that). `mt5_login`/`mt5_server` default to the same
+    values conftest.py sets MT5_ACCOUNT/MT5_SERVER to, so this account is
+    also what `app/lifecycle.py`'s real startup resolves as "this
+    process's own account" in the `client`/`raw_client` fixtures."""
     return make_account(session, seed_user)
 
 

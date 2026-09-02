@@ -2,30 +2,46 @@
 2026-09). `user_id` is the actual isolation boundary -- every account
 endpoint filters by it (see app/api/accounts.py).
 
-Phase 1 scope (see the approved plan): multiple accounts can be registered
-and each gets its own fully independent TradingSettings row, but the
-`MetaTrader5` package only manages one terminal connection per OS process,
-so at most one account across ALL users can be `is_live` at a time --
-that's the one actually wired to the running MT5Broker connection (which,
-in Phase 1, still reads its credentials from `.env`/Settings exactly as
-before this feature, NOT from this table -- see app/core/credentials.py's
-module docstring for why). Every other account is fully manageable
-(settings, history once it *was* live) but inert for real execution until
-Phase 2 gives it its own process.
+Phase 2 (2026-09, see the approved "concurrent execution" plan): real
+concurrent execution across accounts is a real OS-process boundary --
+`MetaTrader5` only manages one terminal connection per process -- so each
+account that trades for real runs its own process (the hub, or a
+`backend/scripts/worker.py` instance), each resolving *its own* identity by
+matching its own `.env`'s MT5_ACCOUNT/MT5_SERVER against this table's
+`mt5_login`/`mt5_server` (see AccountService.resolve_own_process_account),
+never by reading a flag here. `is_live` is therefore no longer written or
+read by any decision-making code path -- it is inert history, kept only to
+avoid a destructive column-drop migration against a table with real rows;
+`MT5AccountRead`'s wire-level `is_live` is computed from `last_heartbeat_at`
+instead (see app/accounts/schemas.py).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field
 
 from app.database.base import Base
 from app.database.types import UTCDateTime
 
+#: A process last confirmed `broker.health().healthy` more than this long
+#: ago is treated as disconnected -- generous relative to worker.py's
+#: ~10s poll tick (a few missed ticks of grace) without letting a genuinely
+#: dead process linger as "connected" for long. Lives here (not in
+#: app/accounts/service.py) so both that service *and*
+#: app/accounts/schemas.py can use it without a circular import (schemas
+#: needs it to compute the wire-level `is_live` field; service needs it for
+#: the archive-guard and `list_connected`).
+HEARTBEAT_STALE_AFTER = timedelta(seconds=60)
+
 
 class MT5Account(Base, table=True):
     __tablename__ = "mt5_accounts"
+    __table_args__ = (
+        UniqueConstraint("mt5_login", "mt5_server", name="uq_mt5_account_login_server"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", index=True)
@@ -33,6 +49,9 @@ class MT5Account(Base, table=True):
     #: Operator-chosen, e.g. "Sami - ICMarkets Main". Never used for lookup.
     label: str
 
+    #: Together with `mt5_server`, unique (enforced by both a DB constraint
+    #: and AccountService.create/update) -- this pair is how a running
+    #: process resolves "which MT5Account am I" from its own `.env`.
     mt5_login: str
     mt5_server: str
     #: Fernet ciphertext -- see app/core/credentials.py. Never plaintext,
@@ -40,11 +59,32 @@ class MT5Account(Base, table=True):
     mt5_password_encrypted: str
     symbol: str = "XAUUSD"
 
-    #: Global across every user's accounts combined -- see module docstring.
-    #: Flipped only via AccountService.set_live(), never a plain field PATCH.
+    #: Dead column as of Phase 2 -- see module docstring. Kept only to avoid
+    #: a destructive migration; never read or written by application code.
     is_live: bool = False
-    #: Soft-archive (matches ArchivedSignal's idiom) -- refuses while is_live.
+    #: Written periodically by whichever process (hub or worker) has
+    #: resolved this account and confirmed `broker.health().healthy` --
+    #: never set speculatively. `MT5AccountRead.is_live` (the wire field
+    #: the dashboard actually shows) is `now - last_heartbeat_at < 60s`,
+    #: computed in app/accounts/schemas.py -- a self-healing "is a real
+    #: process actually connected right now" signal, not a manually-toggled
+    #: switch that can silently go stale if a process dies uncleanly.
+    last_heartbeat_at: datetime | None = Field(default=None, sa_type=UTCDateTime)
+    #: Soft-archive (matches ArchivedSignal's idiom) -- refuses while a
+    #: process is currently connected to this account (AccountService.archive).
     is_active: bool = True
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)
+
+
+def is_account_connected(account: MT5Account, *, now: datetime | None = None) -> bool:
+    """Self-healing "is a real process connected to this account right
+    now" signal -- see the module docstring for why this replaced the old
+    manually-toggled `is_live` flag. A process that dies uncleanly simply
+    stops refreshing `last_heartbeat_at`; there's no separate cleanup path
+    needed, unlike a boolean someone has to remember to flip back off."""
+    if account.last_heartbeat_at is None:
+        return False
+    now = now or datetime.now(UTC)
+    return now - account.last_heartbeat_at < HEARTBEAT_STALE_AFTER

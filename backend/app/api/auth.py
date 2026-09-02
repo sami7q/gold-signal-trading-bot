@@ -38,7 +38,7 @@ def _me_response(session: Session, user: User) -> MeResponse:
     accounts = AccountService(session).list_for_user(user.id)  # type: ignore[arg-type]
     return MeResponse(
         user=UserRead.model_validate(user),
-        accounts=[MT5AccountRead.model_validate(a) for a in accounts],
+        accounts=[MT5AccountRead.from_account(a) for a in accounts],
     )
 
 

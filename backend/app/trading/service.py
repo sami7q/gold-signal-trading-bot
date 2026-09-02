@@ -107,6 +107,33 @@ class TradingService:
                 self._session.refresh(result.signal)
         return result
 
+    def execute_ready_signals(self) -> list[Trade]:
+        """Polled by `backend/scripts/worker.py` on its own account-scoped
+        timer -- every execution-eligible signal this account doesn't have
+        a `Trade` for yet (see `SignalService.find_unexecuted_for_account`
+        for why that's the correct per-account watermark, not
+        `Signal.status == READY`), executed via the same
+        `TradingEngine.execute()` every other path uses -- fully idempotent
+        per account via `execution_key`, so re-scanning the same signals on
+        every poll tick is safe: a signal this account already executed is
+        a guaranteed no-op, not a duplicate trade. Same observe-only gate
+        as `process_incoming_message` -- a real Telegram signal must still
+        never reach the engine while `TELEGRAM_OBSERVE_ONLY=true`, for
+        every account, not just whichever one calls this synchronously.
+        """
+        if self._account_id is None:
+            return []
+        signals = self._signal_service.find_unexecuted_for_account(self._account_id)
+        if not signals:
+            return []
+        settings = self._settings_service.get_for_account(self._account_id)
+        executed: list[Trade] = []
+        for signal in signals:
+            if self._is_observed_only(signal.source):
+                continue
+            executed.append(self._engine.execute(signal, settings))
+        return executed
+
     @staticmethod
     def _is_observed_only(source: str) -> bool:
         """Phase 11 safety gate (PROJECT_SPEC.md section 17): real Telegram

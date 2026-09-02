@@ -68,8 +68,8 @@ def _shared_signal(session) -> Signal:
 def test_two_accounts_each_get_their_own_trade_from_the_same_signal(
     session, seed_user, account_factory
 ):
-    account_a = account_factory(session, seed_user, label="A", mt5_login="900001", is_live=True)
-    account_b = account_factory(session, seed_user, label="B", mt5_login="900002", is_live=False)
+    account_a = account_factory(session, seed_user, label="A", mt5_login="900001")
+    account_b = account_factory(session, seed_user, label="B", mt5_login="900002")
 
     signal = _shared_signal(session)
     engine = TradingEngine(session, _broker(), AuditService(session))
@@ -110,8 +110,8 @@ def test_retrying_the_same_account_against_the_same_signal_is_still_idempotent(
 def test_one_account_s_open_trade_count_never_includes_another_account_s_trades(
     session, seed_user, account_factory
 ):
-    account_a = account_factory(session, seed_user, label="A", mt5_login="900003", is_live=True)
-    account_b = account_factory(session, seed_user, label="B", mt5_login="900004", is_live=False)
+    account_a = account_factory(session, seed_user, label="A", mt5_login="900003")
+    account_b = account_factory(session, seed_user, label="B", mt5_login="900004")
 
     engine = TradingEngine(session, _broker(), AuditService(session))
     engine.execute(_shared_signal(session), _settings(account_a.id, max_open_trades=1))

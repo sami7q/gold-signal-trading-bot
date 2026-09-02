@@ -107,14 +107,14 @@ def _signal(session, *, stop_loss: Decimal | None = Decimal("4623")) -> Signal:
     return signal
 
 
-def _settle_at_price(session, broker: PaperBroker, price: Decimal) -> None:
+def _settle_at_price(session, broker: PaperBroker, price: Decimal, account_id: int) -> None:
     """`PaperBroker.set_price` only updates the broker's own in-memory
     position -- never the DB `Trade` row, exactly like a real MT5 position
     closing server-side. The daily lot plan reads `Trade.result` from the
     DB, so tests must reconcile afterward, the same as the real periodic
     poll loop (app/lifecycle.py::_poll_open_trades) does live."""
     broker.set_price(price)
-    ReconciliationService(session, broker, AuditService(session)).reconcile_open_trades()
+    ReconciliationService(session, broker, AuditService(session)).reconcile_open_trades(account_id)
 
 
 def test_first_trade_of_the_day_uses_base_lot(session, seed_account):
@@ -133,7 +133,7 @@ def test_second_trade_rejected_after_first_wins(session, seed_account):
 
     first_signal = _signal(session)
     first_trade = engine.execute(first_signal, _settings(seed_account.id))
-    _settle_at_price(session, broker, first_trade.take_profit_price)  # win it
+    _settle_at_price(session, broker, first_trade.take_profit_price, seed_account.id)  # win it
     session.refresh(first_trade)
     assert first_trade.status == TradeStatus.CLOSED_TP
     assert first_trade.result.value == "WIN"
@@ -151,7 +151,7 @@ def test_second_trade_after_a_loss_uses_doubled_lot(session, seed_account):
 
     first_signal = _signal(session, stop_loss=Decimal("4623"))
     first_trade = engine.execute(first_signal, _settings(seed_account.id))
-    _settle_at_price(session, broker, first_trade.stop_loss)  # lose it
+    _settle_at_price(session, broker, first_trade.stop_loss, seed_account.id)  # lose it
     session.refresh(first_trade)
     assert first_trade.status == TradeStatus.CLOSED_SL
     assert first_trade.result.value == "LOSS"
@@ -168,11 +168,11 @@ def test_third_trade_rejected_even_after_second_trade_loses(session, seed_accoun
     engine = TradingEngine(session, broker, AuditService(session))
 
     first_trade = engine.execute(_signal(session), _settings(seed_account.id))
-    _settle_at_price(session, broker, first_trade.stop_loss)
+    _settle_at_price(session, broker, first_trade.stop_loss, seed_account.id)
     session.refresh(first_trade)
 
     second_trade = engine.execute(_signal(session), _settings(seed_account.id))
-    _settle_at_price(session, broker, second_trade.stop_loss)
+    _settle_at_price(session, broker, second_trade.stop_loss, seed_account.id)
     session.refresh(second_trade)
     assert second_trade.status == TradeStatus.CLOSED_SL
 

@@ -7,6 +7,7 @@ disabled — see PROJECT_SPEC.md section 26.
 
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 from functools import lru_cache
 
@@ -106,6 +107,13 @@ class Settings(BaseSettings):
     #: dashboard/API must not be wide open).
     api_docs_enabled: bool = True
 
+    #: How often (seconds) a `backend/scripts/worker.py` process polls for
+    #: unexecuted signals + runs its own account-scoped reconciliation +
+    #: writes its heartbeat (concurrent-execution "Phase 2" update). Not
+    #: used by the hub, which has its own longer-established poll settings
+    #: above (position_poll_seconds/signal_expiry_poll_seconds).
+    worker_poll_seconds: int = 10
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.dashboard_cors_origins.split(",") if o.strip()]
@@ -117,4 +125,13 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """A `backend/scripts/worker.py` process reads a *different* `.env`
+    file than the hub (its own MT5 credentials for its own account, no
+    Telegram) -- point it there via the `GOLDBOT_ENV_FILE` environment
+    variable rather than the class default (`../.env`, still what the hub
+    and every test use unchanged). Concurrent-execution "Phase 2" update.
+    """
+    env_file_override = os.environ.get("GOLDBOT_ENV_FILE")
+    if env_file_override:
+        return Settings(_env_file=env_file_override)  # type: ignore[call-arg]
     return Settings()

@@ -257,16 +257,22 @@ def reset_simulation(
         # Signal/IncomingMessage/SignalMessage are shared across every
         # account (same channel data, see the multi-account plan) -- unlike
         # Trade there is no account_id to scope the wipe to. Refuse whenever
-        # a *different* account is currently the live one, so a simulation
-        # cleanup run as one account can never reach into another (possibly
-        # live, real-money) account's signal history.
-        live_account = AccountService(session).get_live_account()
-        if live_account is not None and live_account.id != account.id:
+        # a process is currently connected to a *different* account
+        # (concurrent-execution "Phase 2": several accounts can each have
+        # their own real worker process connected at once now, not just a
+        # single global "live" one -- see AccountService.list_connected),
+        # so a simulation cleanup run as one account can never reach into
+        # another currently-connected (possibly real-money) account's
+        # signal history.
+        other_connected = [
+            a for a in AccountService(session).list_connected() if a.id != account.id
+        ]
+        if other_connected:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Cannot reset shared signal history while a different account "
-                    "is the live account."
+                    "Cannot reset shared signal history while another account "
+                    "has a process connected to it right now."
                 ),
             )
 

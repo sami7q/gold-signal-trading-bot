@@ -8,6 +8,11 @@ export function useAccounts() {
   return useQuery({
     queryKey: ["accounts"],
     queryFn: () => api.get<MT5Account[]>("/api/accounts"),
+    // `is_live` is a live heartbeat signal now (concurrent-execution
+    // "Phase 2" update), not a manually-toggled flag -- refetch on a timer
+    // so the "متصل الآن"/"غير متصل" badges update on their own instead of
+    // only ever reflecting the moment this page was loaded.
+    refetchInterval: 20_000,
   });
 }
 
@@ -37,15 +42,6 @@ export function useArchiveAccount() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => api.patch<MT5Account>(`/api/accounts/${id}/archive`),
-    onSuccess: () => invalidateAccounts(queryClient),
-  });
-}
-
-export function useSetLiveAccount() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, confirmPhrase }: { id: number; confirmPhrase: string }) =>
-      api.post<MT5Account>(`/api/accounts/${id}/set-live`, { confirm_phrase: confirmPhrase }),
     onSuccess: () => invalidateAccounts(queryClient),
   });
 }

@@ -8,19 +8,12 @@ import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, LoadingState, ErrorState } from "@/components/ui/empty-state";
-import {
-  useAccounts,
-  useArchiveAccount,
-  useCreateAccount,
-  useSetLiveAccount,
-  useUpdateAccount,
-} from "@/hooks/use-accounts";
+import { useAccounts, useArchiveAccount, useCreateAccount, useUpdateAccount } from "@/hooks/use-accounts";
 import { useActiveAccountId } from "@/hooks/use-active-account";
 import { setActiveAccountId } from "@/lib/account";
 import { ApiError } from "@/lib/api";
+import { formatRelativeTime } from "@/lib/format";
 import type { MT5Account, MT5AccountCreate, MT5AccountUpdate } from "@/types/api";
-
-const LIVE_PHRASE = "ENABLE LIVE TRADING";
 
 interface FormValues {
   label: string;
@@ -197,58 +190,12 @@ function EditAccountForm({ account, onDone }: { account: MT5Account; onDone: () 
   );
 }
 
-function SetLivePanel({ account, onDone }: { account: MT5Account; onDone: () => void }) {
-  const setLiveAccount = useSetLiveAccount();
-  const [phrase, setPhrase] = useState("");
-
-  function handleConfirm() {
-    setLiveAccount.mutate(
-      { id: account.id, confirmPhrase: phrase },
-      { onSuccess: () => onDone() },
-    );
-  }
-
-  const errorMessage =
-    setLiveAccount.error instanceof ApiError ? setLiveAccount.error.message : null;
-
-  return (
-    <div className="flex flex-col gap-2.5 border-t border-border-soft bg-warn/5 p-4">
-      <p className="text-xs text-warn">
-        هذا سيوقف تنفيذ أي حساب آخر مباشر حاليًا (لدى أي مستخدم) ويجعل هذا الحساب هو المتصل
-        فعليًا بالبوت. اكتب العبارة التالية للتأكيد:{" "}
-        <span className="font-data text-bone">{LIVE_PHRASE}</span>
-      </p>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Input
-          value={phrase}
-          onChange={(e) => setPhrase(e.target.value)}
-          placeholder={LIVE_PHRASE}
-          className="font-data"
-        />
-        <div className="flex gap-2">
-          <Button
-            variant="danger"
-            disabled={phrase !== LIVE_PHRASE || setLiveAccount.isPending}
-            onClick={handleConfirm}
-          >
-            تأكيد التفعيل
-          </Button>
-          <Button variant="ghost" onClick={onDone}>
-            إلغاء
-          </Button>
-        </div>
-      </div>
-      {errorMessage ? <p className="text-xs text-loss-bright">{errorMessage}</p> : null}
-    </div>
-  );
-}
-
 function AccountCard({ account }: { account: MT5Account }) {
   const archiveAccount = useArchiveAccount();
   const queryClient = useQueryClient();
   const activeId = useActiveAccountId();
   const isCurrent = String(account.id) === activeId;
-  const [mode, setMode] = useState<"view" | "edit" | "set-live">("view");
+  const [mode, setMode] = useState<"view" | "edit">("view");
 
   const archiveError =
     archiveAccount.error instanceof ApiError ? archiveAccount.error.message : null;
@@ -275,13 +222,16 @@ function AccountCard({ account }: { account: MT5Account }) {
           <span className="flex items-center gap-2">
             {account.label}
             {isCurrent ? <Badge tone="gold">الحساب الحالي</Badge> : null}
-            {account.is_live ? <Badge tone="win">مباشر</Badge> : <Badge tone="neutral">غير مفعّل</Badge>}
+            {account.is_live ? <Badge tone="win">متصل الآن</Badge> : <Badge tone="neutral">غير متصل</Badge>}
             {!account.is_active ? <Badge tone="warn">مؤرشف</Badge> : null}
           </span>
         }
         subtitle={
           <span className="font-data">
             {account.mt5_login} · {account.mt5_server} · {account.symbol}
+            {account.last_heartbeat_at ? (
+              <span className="text-muted-dim"> · آخر اتصال {formatRelativeTime(account.last_heartbeat_at)}</span>
+            ) : null}
           </span>
         }
         action={
@@ -304,22 +254,12 @@ function AccountCard({ account }: { account: MT5Account }) {
               <Pencil className="h-3.5 w-3.5" strokeWidth={1.75} />
               تعديل
             </Button>
-            {!account.is_live ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setMode(mode === "set-live" ? "view" : "set-live")}
-              >
-                <Radio className="h-3.5 w-3.5" strokeWidth={1.75} />
-                جعله مباشرًا
-              </Button>
-            ) : null}
             <Button
               size="sm"
               variant="ghost"
               disabled={account.is_live || archiveAccount.isPending}
               onClick={handleArchive}
-              title={account.is_live ? "لا يمكن أرشفة حساب مباشر" : undefined}
+              title={account.is_live ? "لا يمكن أرشفة حساب متصل الآن" : undefined}
             >
               <ArchiveIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
               أرشفة
@@ -333,7 +273,6 @@ function AccountCard({ account }: { account: MT5Account }) {
         </p>
       ) : null}
       {mode === "edit" ? <EditAccountForm account={account} onDone={() => setMode("view")} /> : null}
-      {mode === "set-live" ? <SetLivePanel account={account} onDone={() => setMode("view")} /> : null}
     </Card>
   );
 }
@@ -349,7 +288,8 @@ export default function AccountsPage() {
           <h1 className="text-xl font-semibold text-bone">حسابات MT5</h1>
           <p className="mt-1 text-sm text-muted">
             كل حساب معزول بالكامل — استراتيجيته وإعداداته الخاصة، لا يراه أحد غيرك. جميعها تستقبل
-            من نفس قناة تيليكرام؛ حساب واحد فقط يكون &quot;مباشرًا&quot; فعليًا في كل لحظة.
+            من نفس قناة تيليكرام. شارة &quot;متصل الآن&quot; تعكس اتصالًا فعليًا حيًا بمحطة MT5
+            الخاصة بالحساب، وليست تبديلًا يدويًا.
           </p>
         </div>
         {!showAdd ? (

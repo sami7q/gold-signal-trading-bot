@@ -25,8 +25,10 @@ from app.core.logging import configure_logging, get_logger
 from app.core.runtime import (
     get_broker,
     get_mock_signal_source,
+    get_resolved_account_id,
     set_active_broker,
     set_active_signal_source,
+    set_resolved_account_id,
 )
 from app.database.session import create_db_and_tables, get_engine
 from app.integrations.broker.mt5 import MT5Broker, MT5ConnectionError
@@ -68,15 +70,29 @@ async def _poll_open_trades(poll_seconds: int) -> None:
     only ever happened once, at process startup, so a trade that closed
     five minutes into a long-running process would sit as OPEN (wrong
     balance/equity, wrong win/loss stats) until the next restart.
+
+    Also this process's heartbeat tick (concurrent-execution "Phase 2"
+    update): written only when the broker actually reports healthy, piggy-
+    backed on this existing timer rather than a separate one -- see
+    AccountService.record_heartbeat's docstring for why this replaced the
+    old manually-toggled `is_live` flag.
     """
     while True:
         await asyncio.sleep(poll_seconds)
+        account_id = get_resolved_account_id()
+        if account_id is None:
+            continue
         try:
             with Session(get_engine()) as session:
                 broker = get_broker()
-                ReconciliationService(
-                    session, broker, AuditService(session)
-                ).reconcile_open_trades()
+                audit = AuditService(session)
+                ReconciliationService(session, broker, audit).reconcile_open_trades(account_id)
+                try:
+                    healthy = broker.health().healthy
+                except Exception:  # noqa: BLE001 - a broker fault must never block the poll
+                    healthy = False
+                if healthy:
+                    AccountService(session, audit).record_heartbeat(account_id)
         except Exception:  # noqa: BLE001 - one bad poll must never kill the loop
             logger.exception("Periodic trade reconciliation failed")
 
@@ -97,9 +113,9 @@ async def _poll_expired_signals(poll_seconds: int) -> None:
             with Session(get_engine()) as session:
                 broker = get_broker()
                 audit = AuditService(session)
-                live_account = AccountService(session, audit).get_live_account()
+                account_id = get_resolved_account_id()
                 TradingService(
-                    session, broker, audit, account_id=live_account.id if live_account else None
+                    session, broker, audit, account_id=account_id
                 ).sweep_expired_signals()
         except Exception:  # noqa: BLE001 - one bad sweep must never kill the loop
             logger.exception("Periodic signal expiry sweep failed")
@@ -109,17 +125,22 @@ def _message_handler(data: IncomingMessageData) -> None:
     """Entry point for any long-running async source (currently: Telegram).
 
     Opens its own session because it runs outside any HTTP request's
-    request-scoped session. Resolves whichever MT5 account is currently
-    live (Phase 1's single-broker-connection constraint, see the approved
-    multi-account plan) -- `None` if none is, which still lets the message
-    be parsed but never reach the trading engine.
+    request-scoped session. Uses this *process's own* resolved account
+    (concurrent-execution "Phase 2" update: resolved once at startup by
+    matching this process's own `.env` MT5 credentials against
+    `MT5Account` -- see `lifespan` below and `app/core/runtime.py`) --
+    `None` if this process's own credentials don't match any registered
+    account, which still lets the message be parsed but never reach the
+    trading engine. A second (or third...) account that wants real
+    concurrent execution runs its own separate `backend/scripts/worker.py`
+    process instead, each resolving and executing for its own account.
     """
     with Session(get_engine()) as session:
         try:
             audit = AuditService(session)
-            live_account = AccountService(session, audit).get_live_account()
+            account_id = get_resolved_account_id()
             TradingService(
-                session, get_broker(), audit, account_id=live_account.id if live_account else None
+                session, get_broker(), audit, account_id=account_id
             ).process_incoming_message(data)
         except Exception:  # noqa: BLE001 - a bad message must never kill the source
             logger.exception("Failed to process incoming message from %s", data.source)
@@ -140,16 +161,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mock_source.on_message(_message_handler)
     await mock_source.start()
 
+    # This process's own identity (concurrent-execution "Phase 2" update):
+    # resolved unconditionally here, from `.env`'s MT5_ACCOUNT/MT5_SERVER --
+    # *not* gated on a real MT5 connection succeeding below, so dev/test/
+    # simulation-only runs (MT5_ENABLED=false, the documented default)
+    # resolve exactly like they did under Phase 1's `get_live_account()`.
+    # A `backend/scripts/worker.py` instance resolves differently (only
+    # after *its own* successful `MT5Broker.connect()` -- see that script)
+    # since a worker with no real connection has no reason to run at all.
     with Session(get_engine()) as session:
         audit = AuditService(session)
-        live_account = AccountService(session, audit).get_live_account()
-        if live_account is not None:
-            SettingsService(session, audit).get_for_account(live_account.id)  # type: ignore[arg-type]
+        own_account = AccountService(session, audit).resolve_own_process_account(
+            settings.mt5_account, settings.mt5_server
+        )
+        set_resolved_account_id(own_account.id if own_account else None)
+        if own_account is not None:
+            SettingsService(session, audit).get_for_account(own_account.id)  # type: ignore[arg-type]
         else:
             audit.log(
                 AuditEventType.NO_LIVE_ACCOUNT_CONFIGURED,
-                "Backend starting with no MT5 account currently marked live -- signals "
-                "will be parsed but not executed until one is set live.",
+                "Backend starting -- no MT5Account row matches this process's own "
+                f"MT5_ACCOUNT/MT5_SERVER ('{settings.mt5_account}'/'{settings.mt5_server}'). "
+                "Signals will be parsed but never executed until a matching account is "
+                "registered (see the /accounts page).",
                 severity=AuditSeverity.WARNING,
             )
         audit.log(
@@ -199,10 +233,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Runs against whichever broker actually ended up active (paper, or MT5
     # if it just connected above) — must happen after the MT5 connect
     # attempt, not before, so a DB `OPEN` trade is checked against the real
-    # broker rather than assumed to be a Paper Broker position.
-    with Session(get_engine()) as session:
-        active_broker = get_broker()
-        ReconciliationService(session, active_broker, AuditService(session)).reconcile_open_trades()
+    # broker rather than assumed to be a Paper Broker position. Scoped to
+    # this process's own resolved account only -- see reconcile_open_trades'
+    # docstring for why an unscoped reconciliation is unsafe now that other
+    # accounts' OPEN trades can exist in the same shared database, reconciled
+    # by their own separate worker processes against their own brokers.
+    own_account_id = get_resolved_account_id()
+    if own_account_id is not None:
+        with Session(get_engine()) as session:
+            active_broker = get_broker()
+            reconciliation = ReconciliationService(session, active_broker, AuditService(session))
+            reconciliation.reconcile_open_trades(own_account_id)
 
     assert_paper_broker_active_if_telegram_live(settings)
 

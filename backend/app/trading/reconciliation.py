@@ -58,15 +58,32 @@ class ReconciliationService:
         self._broker = broker
         self._audit = audit or AuditService(session)
 
-    def reconcile_open_trades(self) -> ReconciliationSummary:
-        statement = select(Trade).where(Trade.status == TradeStatus.OPEN)
+    def reconcile_open_trades(self, account_id: int) -> ReconciliationSummary:
+        """`account_id` is required (no default) -- concurrent-execution
+        "Phase 2" update: multiple accounts can now have their own OPEN
+        trades in this same shared database at once, each reconciled by
+        its own process against its own broker connection. An unscoped
+        query here would let one account's process query the broker about
+        a `broker_position_id` that actually belongs to a *different*
+        account's connection -- at best a false POSITION_MISSING on a
+        trade that's genuinely still open elsewhere, at worst a real
+        position on this broker coincidentally sharing that id number,
+        silently overwriting the wrong Trade row with its close data.
+        """
+        statement = select(Trade).where(
+            Trade.status == TradeStatus.OPEN, Trade.account_id == account_id
+        )
         open_trades = list(self._session.exec(statement))
 
         summary = ReconciliationSummary(checked=len(open_trades))
         self._audit.log(
             AuditEventType.RECONCILIATION_STARTED,
             f"Reconciling {len(open_trades)} OPEN trade(s) against broker '{self._broker.name}'.",
-            metadata={"broker": self._broker.name, "trade_count": len(open_trades)},
+            metadata={
+                "broker": self._broker.name,
+                "trade_count": len(open_trades),
+                "account_id": account_id,
+            },
         )
 
         for trade in open_trades:
@@ -83,6 +100,7 @@ class ReconciliationService:
                 else AuditSeverity.INFO
             ),
             metadata={
+                "account_id": account_id,
                 "checked": summary.checked,
                 "confirmed_open": summary.confirmed_open,
                 "resolved_from_broker": summary.resolved_from_broker,

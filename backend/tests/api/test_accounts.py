@@ -3,11 +3,16 @@
 The critical case in this file is isolation: sami must never see, edit,
 archive, or use as X-Account-Id anything belonging to mustafa, and a
 cross-user id must come back 404 (never 403 -- see
-app/accounts/service.py::get_owned's docstring)."""
+app/accounts/service.py::get_owned's docstring).
+
+No "set live" endpoint as of the concurrent-execution "Phase 2" update --
+`is_live` is a heartbeat-derived read-only signal now (see
+AccountService.is_account_connected / app/accounts/schemas.py), never a
+manually-toggled, mutually-exclusive flag."""
 
 from __future__ import annotations
 
-from app.accounts.schemas import LIVE_CONFIRMATION_PHRASE
+from app.accounts.service import is_account_connected
 from app.core.security import hash_password
 from app.database.models.user import User
 
@@ -55,8 +60,25 @@ def test_create_account_is_owned_by_the_caller(raw_client, seed_user, test_crede
     body = response.json()
     assert body["label"] == "My second account"
     assert body["has_password"] is True
+    assert body["is_live"] is False  # never connected -- no heartbeat yet
     assert "mt5_password" not in body
     assert "mt5_password_encrypted" not in body
+
+
+def test_creating_a_duplicate_login_server_pair_is_refused(
+    raw_client, session, seed_user, seed_account, test_credentials
+):
+    _login(raw_client, test_credentials)
+    response = raw_client.post(
+        "/api/accounts",
+        json={
+            "label": "Duplicate",
+            "mt5_login": seed_account.mt5_login,
+            "mt5_server": seed_account.mt5_server,
+            "mt5_password": "whatever",
+        },
+    )
+    assert response.status_code == 409
 
 
 def test_cannot_read_another_user_s_account(
@@ -93,7 +115,7 @@ def test_cannot_archive_another_user_s_account(
 ):
     other = _other_user(session)
     other_account = account_factory(
-        session, other, label="Mustafa's account", mt5_login="777004", is_live=False
+        session, other, label="Mustafa's account", mt5_login="777004", connected=False
     )
 
     _login(raw_client, test_credentials)
@@ -102,25 +124,6 @@ def test_cannot_archive_another_user_s_account(
 
     session.refresh(other_account)
     assert other_account.is_active is True
-
-
-def test_cannot_set_another_user_s_account_live(
-    raw_client, session, seed_user, account_factory, test_credentials
-):
-    other = _other_user(session)
-    other_account = account_factory(
-        session, other, label="Mustafa's account", mt5_login="777005", is_live=False
-    )
-
-    _login(raw_client, test_credentials)
-    response = raw_client.post(
-        f"/api/accounts/{other_account.id}/set-live",
-        json={"confirm_phrase": LIVE_CONFIRMATION_PHRASE},
-    )
-    assert response.status_code == 404
-
-    session.refresh(other_account)
-    assert other_account.is_live is False
 
 
 def test_cannot_use_another_user_s_account_id_as_x_account_id_header(
@@ -132,7 +135,7 @@ def test_cannot_use_another_user_s_account_id_as_x_account_id_header(
     /api/accounts management endpoints themselves."""
     other = _other_user(session)
     other_account = account_factory(
-        session, other, label="Mustafa's live account", mt5_login="777006", is_live=True
+        session, other, label="Mustafa's connected account", mt5_login="777006"
     )
 
     _login(raw_client, test_credentials)
@@ -140,48 +143,39 @@ def test_cannot_use_another_user_s_account_id_as_x_account_id_header(
     assert response.status_code == 404
 
 
-def test_archiving_a_live_account_is_refused(raw_client, seed_user, seed_account, test_credentials):
-    assert seed_account.is_live is True
+def test_archiving_a_connected_account_is_refused(
+    raw_client, seed_user, seed_account, test_credentials
+):
+    assert is_account_connected(seed_account)  # sanity: the fixture default is `connected=True`
     _login(raw_client, test_credentials)
 
     response = raw_client.patch(f"/api/accounts/{seed_account.id}/archive")
     assert response.status_code == 409
 
 
-def test_set_live_requires_the_exact_confirmation_phrase(
+def test_archiving_a_disconnected_account_succeeds(
     raw_client, session, seed_user, account_factory, test_credentials
 ):
-    second = account_factory(session, seed_user, label="Second", mt5_login="555010", is_live=False)
+    disconnected = account_factory(
+        session, seed_user, label="Old account", mt5_login="555099", connected=False
+    )
     _login(raw_client, test_credentials)
 
-    wrong = raw_client.post(f"/api/accounts/{second.id}/set-live", json={"confirm_phrase": "nope"})
-    assert wrong.status_code == 400
-
-    right = raw_client.post(
-        f"/api/accounts/{second.id}/set-live",
-        json={"confirm_phrase": LIVE_CONFIRMATION_PHRASE},
-    )
-    assert right.status_code == 200
-    assert right.json()["is_live"] is True
+    response = raw_client.patch(f"/api/accounts/{disconnected.id}/archive")
+    assert response.status_code == 200
+    assert response.json()["is_active"] is False
 
 
-def test_setting_a_new_account_live_demotes_the_previous_one_even_across_users(
+def test_multiple_accounts_can_be_connected_at_once_even_across_users(
     session, seed_user, seed_account, account_factory
 ):
-    """The one genuinely global piece of state (Phase 1's single-broker-
-    connection constraint) -- confirms it really does demote across the
-    user boundary, not just within one user's own accounts."""
-    assert seed_account.is_live is True
+    """The point of the concurrent-execution "Phase 2" update: unlike the
+    old `is_live` toggle (mutually exclusive, demoted whichever account was
+    previously live), heartbeat-derived connectivity has no such limit --
+    two accounts, even belonging to different users, can both be genuinely
+    connected (each via its own worker process) at the same time."""
     other = _other_user(session)
-    other_account = account_factory(
-        session, other, label="Mustafa's account", mt5_login="777007", is_live=False
-    )
+    other_account = account_factory(session, other, label="Mustafa's account", mt5_login="777007")
 
-    from app.accounts.service import AccountService
-
-    AccountService(session).set_live(other_account, confirm_phrase=LIVE_CONFIRMATION_PHRASE)
-
-    session.refresh(seed_account)
-    session.refresh(other_account)
-    assert seed_account.is_live is False
-    assert other_account.is_live is True
+    assert is_account_connected(seed_account)
+    assert is_account_connected(other_account)

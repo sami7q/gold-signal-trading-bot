@@ -312,7 +312,10 @@ export interface MT5Account {
   mt5_login: string;
   mt5_server: string;
   symbol: string;
+  //: Heartbeat-derived (concurrent-execution "Phase 2" update) -- true
+  //: while `last_heartbeat_at` is recent, not a manually-toggled flag.
   is_live: boolean;
+  last_heartbeat_at: string | null;
   is_active: boolean;
   has_password: boolean;
 }

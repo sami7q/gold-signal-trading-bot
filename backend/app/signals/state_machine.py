@@ -33,6 +33,22 @@ TERMINAL_STATUSES: frozenset[SignalStatus] = frozenset(
     }
 )
 
+#: Every status a signal reaches once the state machine has actually
+#: decided something about it -- has (or once had) a real Stop Loss and a
+#: side/symbol worth executing against, as opposed to still being
+#: assembled (`OPEN_STATUSES`) or having been ruled out entirely
+#: (EXPIRED/IGNORED/DUPLICATE: never had -- or will never get -- a Stop
+#: Loss, or was never a real signal to begin with). Used by
+#: `SignalService.find_unexecuted_for_account` (concurrent-execution
+#: "Phase 2" update) to decide which signals a per-account worker should
+#: even consider -- trying to execute an EXPIRED/IGNORED/DUPLICATE signal
+#: makes no sense regardless of account.
+EXECUTION_ELIGIBLE_STATUSES: frozenset[SignalStatus] = TERMINAL_STATUSES - {
+    SignalStatus.EXPIRED,
+    SignalStatus.IGNORED,
+    SignalStatus.DUPLICATE,
+} | {SignalStatus.READY, SignalStatus.VALIDATING, SignalStatus.EXECUTION_PENDING}
+
 
 class SignalStateMachine:
     @staticmethod

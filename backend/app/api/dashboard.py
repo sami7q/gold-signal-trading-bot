@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
+from app.accounts.service import is_account_connected
 from app.analytics.calculations import DailyPerformance, OrderPositionPerformance, ProfitCurvePoint
 from app.analytics.service import AnalyticsService, DashboardSummary
 from app.api.logs import AuditEventRead
@@ -29,7 +30,7 @@ def get_summary(
     account: Annotated[MT5Account, Depends(get_current_account)],
 ) -> dict:
     summary: DashboardSummary = AnalyticsService(session).get_dashboard_summary(
-        broker, account.id, is_live=account.is_live  # type: ignore[arg-type]
+        broker, account.id, is_live=is_account_connected(account)  # type: ignore[arg-type]
     )
     settings: TradingSettingsRead = TradingSettingsRead.model_validate(
         SettingsService(session).get_for_account(account.id)  # type: ignore[arg-type]

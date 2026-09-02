@@ -124,7 +124,7 @@ def test_position_confirmed_open_stays_open(session, seed_account):
     )
     summary = ReconciliationService(
         session, _StubBroker(position), AuditService(session)
-    ).reconcile_open_trades()
+    ).reconcile_open_trades(seed_account.id)
 
     session.refresh(trade)
     assert trade.status == TradeStatus.OPEN
@@ -141,7 +141,7 @@ def test_position_missing_marks_unknown_requires_reconciliation(session, seed_ac
     trade = _open_trade(session, seed_account.id)
     summary = ReconciliationService(
         session, _StubBroker(None), AuditService(session)
-    ).reconcile_open_trades()
+    ).reconcile_open_trades(seed_account.id)
 
     session.refresh(trade)
     assert trade.status == TradeStatus.UNKNOWN
@@ -158,7 +158,9 @@ def test_position_missing_marks_unknown_requires_reconciliation(session, seed_ac
 def test_broker_error_during_reconciliation_is_treated_conservatively(session, seed_account):
     trade = _open_trade(session, seed_account.id)
     broker = _StubBroker(raise_on_get=ConnectionError("terminal unreachable"))
-    summary = ReconciliationService(session, broker, AuditService(session)).reconcile_open_trades()
+    summary = ReconciliationService(session, broker, AuditService(session)).reconcile_open_trades(
+        seed_account.id
+    )
 
     session.refresh(trade)
     assert trade.status == TradeStatus.UNKNOWN
@@ -186,7 +188,7 @@ def test_position_closed_with_broker_data_resolves_properly_not_as_unknown(sessi
     )
     summary = ReconciliationService(
         session, _StubBroker(position), AuditService(session)
-    ).reconcile_open_trades()
+    ).reconcile_open_trades(seed_account.id)
 
     session.refresh(trade)
     assert trade.status == TradeStatus.CLOSED_TP
@@ -205,17 +207,17 @@ def test_trade_with_no_broker_position_id_is_defensively_marked_unknown(session,
 
     summary = ReconciliationService(
         session, _StubBroker(None), AuditService(session)
-    ).reconcile_open_trades()
+    ).reconcile_open_trades(seed_account.id)
 
     session.refresh(trade)
     assert trade.status == TradeStatus.UNKNOWN
     assert summary.marked_reconciliation_required == 1
 
 
-def test_no_open_trades_reconciliation_is_a_clean_noop(session):
+def test_no_open_trades_reconciliation_is_a_clean_noop(session, seed_account):
     summary = ReconciliationService(
         session, _StubBroker(None), AuditService(session)
-    ).reconcile_open_trades()
+    ).reconcile_open_trades(seed_account.id)
     assert summary.checked == 0
     assert summary.marked_reconciliation_required == 0
     events = {e.event_type for e in session.exec(select(AuditEvent))}
@@ -275,7 +277,7 @@ def test_paper_broker_restart_orphan_is_caught_by_reconciliation_and_still_block
 
     summary = ReconciliationService(
         session, new_broker, AuditService(session)
-    ).reconcile_open_trades()
+    ).reconcile_open_trades(seed_account.id)
 
     session.refresh(trade)
     assert trade.status == TradeStatus.UNKNOWN

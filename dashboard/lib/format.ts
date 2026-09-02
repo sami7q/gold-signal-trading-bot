@@ -44,6 +44,22 @@ export function formatTime(value: string | null | undefined): string {
   return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+/** "قبل 3 دقائق" style relative time -- used for MT5Account.last_heartbeat_at. */
+export function formatRelativeTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  const seconds = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (seconds < 5) return "الآن";
+  if (seconds < 60) return `قبل ${seconds} ثانية`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `قبل ${minutes} دقيقة`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `قبل ${hours} ساعة`;
+  const days = Math.floor(hours / 24);
+  return `قبل ${days} يوم`;
+}
+
 export function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
 }

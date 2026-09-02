@@ -55,6 +55,25 @@ def get_broker() -> Broker:
     return _active_broker or get_paper_broker()
 
 
+_resolved_account_id: int | None = None
+
+
+def set_resolved_account_id(account_id: int | None) -> None:
+    """Called once at process startup (the hub in `app/lifecycle.py`, or a
+    `backend/scripts/worker.py` instance) after resolving which
+    `MT5Account` row matches this process's own `.env` credentials
+    (concurrent-execution "Phase 2" update -- see
+    `AccountService.resolve_own_process_account`). Replaces the old
+    single-global-`is_live` lookup: identity is now a fact about *this
+    process*, decided once, not a DB flag re-queried on every tick."""
+    global _resolved_account_id
+    _resolved_account_id = account_id
+
+
+def get_resolved_account_id() -> int | None:
+    return _resolved_account_id
+
+
 @lru_cache
 def get_mock_signal_source() -> MockSignalSource:
     return MockSignalSource()
@@ -84,8 +103,9 @@ def get_active_signal_source() -> SignalSource:
 
 def reset_runtime_singletons() -> None:
     """Test-only: drop cached singletons so each test gets a fresh broker/source."""
-    global _active_broker, _active_signal_source
+    global _active_broker, _active_signal_source, _resolved_account_id
     get_paper_broker.cache_clear()
     get_mock_signal_source.cache_clear()
     _active_broker = None
     _active_signal_source = None
+    _resolved_account_id = None
