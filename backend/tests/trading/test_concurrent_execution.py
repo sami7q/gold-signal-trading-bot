@@ -109,6 +109,38 @@ def test_two_accounts_each_execute_the_same_signal_via_execute_ready_signals(
     assert service_b.execute_ready_signals() == []
 
 
+def test_execute_ready_signals_logs_when_a_telegram_signal_is_observed_only(
+    session, seed_account
+):
+    """The real, silent gap found live 2026-09-03: a worker whose own
+    .env is missing TELEGRAM_OBSERVE_ONLY=false inherits the safe-by-
+    default True, and every real Telegram signal was skipped with zero
+    trace anywhere -- no error, no Trade row, nothing to grep for. This
+    is the audit entry that closes that gap, mirroring what
+    process_incoming_message already logged for the synchronous path."""
+    _configure(session, seed_account.id)
+    signal = Signal(
+        symbol=CANONICAL_GOLD_SYMBOL,
+        side=Side.BUY,
+        signal_type=OrderType.MARKET,
+        channel_stop_loss=Decimal("4623"),
+        status=SignalStatus.READY,
+        source="telegram",  # conftest.py forces TELEGRAM_OBSERVE_ONLY=true
+        channel_id="chan-1",
+        first_message_at=datetime.now(UTC),
+    )
+    session.add(signal)
+    session.commit()
+
+    service = TradingService(session, _broker(), account_id=seed_account.id)
+    assert service.execute_ready_signals() == []  # observed only -- never reaches the engine
+
+    events = AuditService(session).recent(limit=10)
+    assert any(
+        e.event_type == "SIGNAL_OBSERVED_ONLY" and str(signal.id) in e.message for e in events
+    )
+
+
 def test_execute_ready_signals_ignores_signals_still_waiting_for_details(session, seed_account):
     """Never tries to "execute" a signal the state machine hasn't decided
     yet (WAITING_FOR_DETAILS etc.) -- that's not a duplicate-vs-real trade

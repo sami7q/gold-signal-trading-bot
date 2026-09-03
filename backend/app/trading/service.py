@@ -130,6 +130,19 @@ class TradingService:
         executed: list[Trade] = []
         for signal in signals:
             if self._is_observed_only(signal.source):
+                # Same event `process_incoming_message` logs for the
+                # synchronous path (see below) -- without this a worker
+                # silently skipping every signal (e.g. a fresh worker's
+                # .env missing TELEGRAM_OBSERVE_ONLY=false, confirmed real
+                # 2026-09-03) left zero trace anywhere: no error, no
+                # Trade row, nothing to grep for.
+                self._audit.log(
+                    AuditEventType.SIGNAL_OBSERVED_ONLY,
+                    f"Signal {signal.id} eligible for account {self._account_id} but "
+                    "TELEGRAM_OBSERVE_ONLY=true -- not sent to the trading engine.",
+                    severity=AuditSeverity.INFO,
+                    metadata={"signal_id": signal.id, "account_id": self._account_id},
+                )
                 continue
             executed.append(self._engine.execute(signal, settings))
         return executed
