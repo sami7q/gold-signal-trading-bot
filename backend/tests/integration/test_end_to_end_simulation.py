@@ -7,7 +7,6 @@ from decimal import Decimal
 
 from sqlmodel import select
 
-from app.accounts.service import is_account_connected
 from app.analytics.service import AnalyticsService
 from app.core.constants import SignalStatus, TradeResult, TradeStatus
 from app.database.models.trade import Trade
@@ -84,9 +83,7 @@ def test_full_scenario_buy_gold_then_sl_then_tp_hit_is_a_win(session, seed_accou
     assert trade.status == TradeStatus.CLOSED_TP
     assert trade.result == TradeResult.WIN
 
-    summary = AnalyticsService(session).get_dashboard_summary(
-        broker, seed_account.id, is_live=is_account_connected(seed_account)
-    )
+    summary = AnalyticsService(session).get_dashboard_summary(seed_account)
     assert summary.statistics.trades_executed == 1
     assert summary.statistics.closed_trades == 1
     assert summary.statistics.wins == 1
@@ -115,9 +112,7 @@ def test_full_scenario_sl_hit_is_a_loss(session, seed_account):
     assert trade.status == TradeStatus.CLOSED_SL
     assert trade.result == TradeResult.LOSS
 
-    summary = AnalyticsService(session).get_dashboard_summary(
-        broker, seed_account.id, is_live=is_account_connected(seed_account)
-    )
+    summary = AnalyticsService(session).get_dashboard_summary(seed_account)
     assert summary.statistics.wins == 0
     assert summary.statistics.losses == 1
     assert summary.statistics.win_rate == Decimal("0")

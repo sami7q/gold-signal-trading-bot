@@ -113,7 +113,15 @@ def main() -> None:
                 except Exception:  # noqa: BLE001 - a broker fault must never crash the loop
                     healthy = False
                 if healthy:
-                    AccountService(session, audit).record_heartbeat(account_id)
+                    balance = equity = None
+                    try:
+                        account_info = broker.get_account()
+                        balance, equity = account_info.balance, account_info.equity
+                    except Exception:  # noqa: BLE001 - stale balance beats a broken loop
+                        pass
+                    AccountService(session, audit).record_heartbeat(
+                        account_id, balance=balance, equity=equity
+                    )
                     consecutive_failures = 0
                 else:
                     consecutive_failures += 1

@@ -92,7 +92,15 @@ async def _poll_open_trades(poll_seconds: int) -> None:
                 except Exception:  # noqa: BLE001 - a broker fault must never block the poll
                     healthy = False
                 if healthy:
-                    AccountService(session, audit).record_heartbeat(account_id)
+                    balance = equity = None
+                    try:
+                        account_info = broker.get_account()
+                        balance, equity = account_info.balance, account_info.equity
+                    except Exception:  # noqa: BLE001 - stale balance beats a broken poll
+                        pass
+                    AccountService(session, audit).record_heartbeat(
+                        account_id, balance=balance, equity=equity
+                    )
         except Exception:  # noqa: BLE001 - one bad poll must never kill the loop
             logger.exception("Periodic trade reconciliation failed")
 

@@ -22,6 +22,7 @@ just confirmed `broker.health().healthy`.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlmodel import Session, select
 
@@ -179,18 +180,37 @@ class AccountService:
         )
         return account
 
-    def record_heartbeat(self, account_id: int) -> None:
+    def record_heartbeat(
+        self,
+        account_id: int,
+        *,
+        balance: Decimal | None = None,
+        equity: Decimal | None = None,
+    ) -> None:
         """Called only after the caller (the hub or a worker, on its own
         poll tick -- see app/lifecycle.py / backend/scripts/worker.py) has
         just confirmed `broker.health().healthy` for its own resolved
         account -- never speculatively. No audit log entry: at a ~10s
         cadence this would drown out everything else in the trail for zero
         diagnostic value beyond what the column's own recency already
-        gives for free."""
+        gives for free.
+
+        `balance`/`equity` (2026-09-03 request) are this account's own
+        broker numbers, from *this same* caller's own broker connection --
+        the dashboard reads them back from here instead of ever asking a
+        broker connection that might belong to a different account (see
+        MT5Account's docstring). Omitted (left `None`) rather than zeroed
+        when the caller couldn't fetch them for some reason, so a
+        transient read failure never overwrites the last known-good value.
+        """
         account = self._session.get(MT5Account, account_id)
         if account is None:
             return
         account.last_heartbeat_at = datetime.now(UTC)
+        if balance is not None:
+            account.last_balance = balance
+        if equity is not None:
+            account.last_equity = equity
         self._session.add(account)
         self._session.commit()
 

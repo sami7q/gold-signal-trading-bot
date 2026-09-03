@@ -18,9 +18,9 @@ from app.analytics.calculations import (
 from app.core.constants import MessageClassification, SignalStatus
 from app.core.decimals import CleanDecimal
 from app.database.models.incoming_message import IncomingMessage
+from app.database.models.mt5_account import MT5Account, is_account_connected
 from app.database.models.signal import Signal
 from app.database.models.trade import Trade
-from app.integrations.broker.base import Broker
 
 _EXECUTABLE_SIGNAL_STATUSES = (
     SignalStatus.READY,
@@ -48,9 +48,9 @@ class AnalyticsService:
     def _all_trades(self, account_id: int) -> list[Trade]:
         return list(self._session.exec(select(Trade).where(Trade.account_id == account_id)))
 
-    def get_dashboard_summary(
-        self, broker: Broker, account_id: int, *, is_live: bool
-    ) -> DashboardSummary:
+    def get_dashboard_summary(self, account: MT5Account) -> DashboardSummary:
+        account_id = account.id
+        assert account_id is not None, "account must be persisted"
         trades = self._all_trades(account_id)
         stats = compute_trade_statistics(trades, today=datetime.now(UTC).date())
 
@@ -75,30 +75,28 @@ class AnalyticsService:
             )
         )
 
-        # Phase 1 has exactly one physical broker connection, bound to
-        # whichever MT5Account is currently is_live -- showing that
-        # connection's real balance/equity while viewing a *different*
-        # (not-live) account would misleadingly imply it has its own live
-        # connection, which it doesn't yet (Phase 2).
-        broker_account = None
-        health = None
-        if is_live:
-            try:
-                health = broker.health()
-                broker_account = broker.get_account() if health.healthy else None
-            except Exception:  # noqa: BLE001
-                health = None
-                broker_account = None
-
+        # Read this account's *own* last-known numbers off its row instead
+        # of ever querying a live broker connection here (concurrent-
+        # execution "Phase 2" fix, 2026-09-03): the HTTP-serving hub
+        # process only ever holds one physical broker connection, its own
+        # -- calling `broker.get_account()` for whichever account is being
+        # *viewed* used to silently return that same connection's numbers
+        # regardless of which account they were displayed under. A
+        # worker's connection lives in a separate OS process with no HTTP
+        # server, so the hub could never reach it live anyway; the stored
+        # fields (see MT5Account, written every heartbeat by whichever
+        # process actually owns this account) are correct for every
+        # account uniformly, at the cost of being at most one heartbeat
+        # cycle old.
         return DashboardSummary(
             total_signals_received=total_signals,
             executable_signals=executable_signals,
             ignored_messages=ignored_messages,
             rejected_signals=rejected_signals,
             statistics=stats,
-            balance=broker_account.balance if broker_account else None,
-            equity=broker_account.equity if broker_account else None,
-            broker_healthy=bool(health and health.healthy),
+            balance=account.last_balance,
+            equity=account.last_equity,
+            broker_healthy=is_account_connected(account),
         )
 
     def get_profit_curve(self, account_id: int) -> list[ProfitCurvePoint]:

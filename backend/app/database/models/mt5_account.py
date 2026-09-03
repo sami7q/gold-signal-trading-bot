@@ -19,6 +19,7 @@ instead (see app/accounts/schemas.py).
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import UniqueConstraint
 from sqlmodel import Field
@@ -70,6 +71,20 @@ class MT5Account(Base, table=True):
     #: process actually connected right now" signal, not a manually-toggled
     #: switch that can silently go stale if a process dies uncleanly.
     last_heartbeat_at: datetime | None = Field(default=None, sa_type=UTCDateTime)
+    #: This account's own broker balance/equity, as of its own last
+    #: heartbeat -- written by whichever process (hub or worker) actually
+    #: holds *this* account's MT5 connection. Fixes a real bug (2026-09-03
+    #: request): the dashboard's `/api/dashboard/summary` used to call
+    #: `broker.get_account()` on the HTTP-serving hub process's own single
+    #: broker connection regardless of which account was being viewed --
+    #: correct only for whichever account IS that hub's own connection, and
+    #: silently showing that same account's numbers under every *other*
+    #: account otherwise (a worker's connection lives in a separate OS
+    #: process with no HTTP server, so the hub could never reach it live).
+    #: Reading these stored fields instead is correct for every account
+    #: uniformly, at the cost of being at most one heartbeat cycle old.
+    last_balance: Decimal | None = Field(default=None)
+    last_equity: Decimal | None = Field(default=None)
     #: Soft-archive (matches ArchivedSignal's idiom) -- refuses while a
     #: process is currently connected to this account (AccountService.archive).
     is_active: bool = True

@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from app.accounts.service import AccountService
+from app.analytics.service import AnalyticsService
 from app.audit.service import AuditService
 from app.core.constants import CANONICAL_GOLD_SYMBOL, OrderType, Side, SignalStatus, TradeStatus
 from app.database.models.signal import Signal
@@ -186,3 +188,79 @@ def test_reconciliation_is_isolated_per_account_under_concurrent_workers(
     session.refresh(trade_b)
     assert trade_a.status == TradeStatus.UNKNOWN  # genuinely unresolved for A's own broker
     assert trade_b.status == TradeStatus.OPEN  # untouched -- out of scope for this call
+
+
+def test_record_heartbeat_stores_this_accounts_own_balance_and_equity(
+    session, seed_user, account_factory
+):
+    """The real bug fixed 2026-09-03: `/api/dashboard/summary` used to call
+    `broker.get_account()` on the *hub's own* single broker connection
+    regardless of which account was being viewed, so every account with a
+    fresh heartbeat showed the hub's own numbers. `record_heartbeat` is now
+    where each process's own broker numbers land, per account."""
+    account = account_factory(session, seed_user, label="A", mt5_login="800005")
+    AccountService(session, AuditService(session)).record_heartbeat(
+        account.id, balance=Decimal("4321.00"), equity=Decimal("4300.50")
+    )
+    session.refresh(account)
+    assert account.last_balance == Decimal("4321.00")
+    assert account.last_equity == Decimal("4300.50")
+
+
+def test_record_heartbeat_with_no_balance_keeps_the_last_known_value(
+    session, seed_user, account_factory
+):
+    """A transient broker-read failure during one poll tick (the caller
+    passes `balance=None` defensively -- see app/lifecycle.py /
+    backend/scripts/worker.py) must never zero out or blank a previously
+    good number -- only a fresh real read ever overwrites it."""
+    account = account_factory(session, seed_user, label="A", mt5_login="800006")
+    service = AccountService(session, AuditService(session))
+    service.record_heartbeat(account.id, balance=Decimal("100"), equity=Decimal("99"))
+    service.record_heartbeat(account.id)  # heartbeat tick, broker read failed this time
+    session.refresh(account)
+    assert account.last_balance == Decimal("100")
+    assert account.last_equity == Decimal("99")
+
+
+def test_dashboard_summary_never_leaks_one_accounts_broker_numbers_into_anothers(
+    session, seed_user, account_factory
+):
+    """Two accounts, each with its own heartbeat-recorded balance/equity --
+    each account's dashboard summary must show *its own* numbers, never
+    the other's, regardless of which one happens to be the calling
+    process's own physical broker connection."""
+    account_a = account_factory(session, seed_user, label="A", mt5_login="800007")
+    account_b = account_factory(session, seed_user, label="B", mt5_login="800008")
+    audit = AuditService(session)
+    AccountService(session, audit).record_heartbeat(
+        account_a.id, balance=Decimal("111.11"), equity=Decimal("111.00")
+    )
+    AccountService(session, audit).record_heartbeat(
+        account_b.id, balance=Decimal("222.22"), equity=Decimal("222.00")
+    )
+    session.refresh(account_a)
+    session.refresh(account_b)
+
+    summary_a = AnalyticsService(session).get_dashboard_summary(account_a)
+    summary_b = AnalyticsService(session).get_dashboard_summary(account_b)
+
+    assert summary_a.balance == Decimal("111.11")
+    assert summary_a.equity == Decimal("111.00")
+    assert summary_a.broker_healthy is True
+    assert summary_b.balance == Decimal("222.22")
+    assert summary_b.equity == Decimal("222.00")
+    assert summary_b.broker_healthy is True
+
+
+def test_dashboard_summary_shows_no_balance_for_an_account_with_no_heartbeat_yet(
+    session, seed_user, account_factory
+):
+    """A genuinely disconnected account (no process has ever resolved to
+    it, or its heartbeat has gone stale) must show no balance at all --
+    never a stale or borrowed number."""
+    account = account_factory(session, seed_user, label="A", mt5_login="800009", connected=False)
+    summary = AnalyticsService(session).get_dashboard_summary(account)
+    assert summary.balance is None
+    assert summary.equity is None
+    assert summary.broker_healthy is False
