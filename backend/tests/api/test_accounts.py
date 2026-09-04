@@ -286,3 +286,28 @@ def test_account_created_as_shared_is_visible_to_the_other_user(
 
     visible = AccountService(session).list_for_user(other.id)
     assert [a.id for a in visible] == [created["id"]]
+
+
+# -- find_by_login: what the backend/scripts/ operator tools address ------
+
+
+def test_find_by_login_returns_every_server_the_login_is_registered_on(
+    session, seed_user, account_factory
+):
+    """`uq_mt5_account_login_server` is case-sensitive, so the same demo
+    account really did end up registered twice on the VPS -- once as
+    `MetaQuotes-Demo`, once as `metaquotes-demo`. The operator scripts must
+    see both and ask which, never silently pick one."""
+    from app.accounts.service import AccountService
+
+    upper = account_factory(
+        session, seed_user, label="Main", mt5_login="111715721", mt5_server="MetaQuotes-Demo"
+    )
+    lower = account_factory(
+        session, seed_user, label="Dup", mt5_login="111715721", mt5_server="metaquotes-demo"
+    )
+
+    service = AccountService(session)
+    assert [a.id for a in service.find_by_login("111715721")] == [upper.id, lower.id]
+    assert [a.id for a in service.find_by_login("111715721", "metaquotes-demo")] == [lower.id]
+    assert service.find_by_login("111715721", "Nope-Demo") == []

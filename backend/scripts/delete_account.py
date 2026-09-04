@@ -40,9 +40,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlmodel import Session, select  # noqa: E402
 
+from app.accounts.service import AccountService  # noqa: E402
 from app.audit.service import AuditService  # noqa: E402
 from app.core.constants import AuditEventType, AuditSeverity  # noqa: E402
-from app.database.models.mt5_account import MT5Account, is_account_connected  # noqa: E402
+from app.database.models.mt5_account import is_account_connected  # noqa: E402
 from app.database.models.trade import Trade  # noqa: E402
 from app.database.models.trading_settings import TradingSettings  # noqa: E402
 from app.database.models.user import User  # noqa: E402
@@ -63,10 +64,7 @@ def main() -> None:
     mt5_server = args[1].strip() if len(args) > 1 else None
 
     with Session(get_engine()) as session:
-        statement = select(MT5Account).where(MT5Account.mt5_login == mt5_login)
-        if mt5_server is not None:
-            statement = statement.where(MT5Account.mt5_server == mt5_server)
-        matches = list(session.exec(statement))
+        matches = AccountService(session).find_by_login(mt5_login, mt5_server)
 
         if not matches:
             where = f"{mt5_login!r}" + (f" on {mt5_server!r}" if mt5_server else "")

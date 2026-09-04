@@ -103,6 +103,23 @@ class AccountService:
         )
         return self._session.exec(statement).first()
 
+    def find_by_login(self, mt5_login: str, mt5_server: str | None = None) -> list[MT5Account]:
+        """Every account registered under this login, newest last -- for
+        the operator scripts in backend/scripts/, which address an account
+        the way a human does ("the 111715721 one"), not by database id.
+
+        Returns a list, never one row, precisely because the (login,
+        server) pair -- not the login alone -- is what's unique
+        (`uq_mt5_account_login_server`), and that constraint is
+        case-sensitive: `MetaQuotes-Demo` and `metaquotes-demo` are two
+        different servers to it, which is how the same demo account really
+        did end up registered twice on the VPS. A caller that got more than
+        one row must ask which, rather than guess."""
+        statement = select(MT5Account).where(MT5Account.mt5_login == mt5_login)
+        if mt5_server is not None:
+            statement = statement.where(MT5Account.mt5_server == mt5_server)
+        return list(self._session.exec(statement.order_by(MT5Account.id.asc())))  # type: ignore[union-attr]
+
     def list_connected(self) -> list[MT5Account]:
         """Every account with a real process connected right now, across
         every user -- global by nature (connection is a VPS-process fact,
