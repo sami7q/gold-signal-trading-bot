@@ -23,6 +23,10 @@ class MT5AccountRead(BaseModel):
     is_live: bool
     last_heartbeat_at: datetime | None
     is_active: bool
+    #: True = every operator sees and drives this account, not just its
+    #: owner (see MT5Account.is_shared). The dashboard shows it as a badge
+    #: and lets it be toggled from the same form as the other fields.
+    is_shared: bool
     #: Never the ciphertext or plaintext -- just whether one has been set.
     has_password: bool = True
 
@@ -38,6 +42,7 @@ class MT5AccountRead(BaseModel):
             is_live=is_account_connected(account),
             last_heartbeat_at=account.last_heartbeat_at,
             is_active=account.is_active,
+            is_shared=account.is_shared,
         )
 
 
@@ -47,6 +52,9 @@ class MT5AccountCreate(BaseModel):
     mt5_server: str = Field(min_length=1)
     mt5_password: str = Field(min_length=1)
     symbol: str = "XAUUSD"
+    #: Private to its creator unless deliberately opted in -- see
+    #: MT5Account.is_shared.
+    is_shared: bool = False
 
 
 class MT5AccountUpdate(BaseModel):
@@ -56,3 +64,4 @@ class MT5AccountUpdate(BaseModel):
     #: Omit to leave the stored password untouched; provide to rotate it.
     mt5_password: str | None = Field(default=None, min_length=1)
     symbol: str | None = None
+    is_shared: bool | None = None

@@ -2,9 +2,10 @@
 
 `get_current_user`: any authenticated request. `get_current_account`: an
 authenticated request that must also specify (via the `X-Account-Id`
-header) one of *that same user's* MT5 accounts -- 404, never 403, on a
-mismatch, so a request never confirms whether an id belongs to someone
-else (see AccountService.get_owned's docstring for the same reasoning).
+header) one of *that same user's* MT5 accounts (or a shared one -- see
+MT5Account.is_shared) -- 404, never 403, on a mismatch, so a request never
+confirms whether an id belongs to someone else (see
+AccountService.get_accessible's docstring for the same reasoning).
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ def get_current_account(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="X-Account-Id header is required.",
         )
-    account = AccountService(session).get_owned(user.id, x_account_id)  # type: ignore[arg-type]
+    account = AccountService(session).get_accessible(user.id, x_account_id)  # type: ignore[arg-type]
     if account is None:
         # Deliberately 404, not 403 -- never confirms whether x_account_id
         # belongs to another user or doesn't exist at all.

@@ -1,6 +1,8 @@
 """A user's MT5 trading account registration (multi-account feature,
 2026-09). `user_id` is the actual isolation boundary -- every account
-endpoint filters by it (see app/api/accounts.py).
+endpoint filters by it (see app/api/accounts.py) -- with exactly one
+deliberate exception: a row flagged `is_shared` is visible to, and usable
+by, every operator (2026-09-04 request, see that field's comment).
 
 Phase 2 (2026-09, see the approved "concurrent execution" plan): real
 concurrent execution across accounts is a real OS-process boundary --
@@ -88,6 +90,17 @@ class MT5Account(Base, table=True):
     #: Soft-archive (matches ArchivedSignal's idiom) -- refuses while a
     #: process is currently connected to this account (AccountService.archive).
     is_active: bool = True
+    #: Deliberate, opt-in hole in the per-user isolation boundary
+    #: (2026-09-04 operator request): the two operators run *one* jointly
+    #: owned demo account, and both dashboard logins must see and drive it.
+    #: True means every user gets exactly the owner's access to this row --
+    #: it appears in their account list, it is accepted as their
+    #: `X-Account-Id`, and they can edit/archive it (see
+    #: AccountService.get_accessible). Default False, so an account stays
+    #: private to `user_id` unless someone deliberately shares it; that
+    #: private-by-default case is still the isolation boundary every
+    #: cross-user test in tests/api/test_accounts.py asserts.
+    is_shared: bool = False
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC), sa_type=UTCDateTime)

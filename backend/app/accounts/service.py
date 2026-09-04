@@ -3,8 +3,13 @@
 also 2026-09 -- see the approved plans for the full rationale). `user_id`
 scoping is the actual isolation boundary between operators; every lookup
 here that returns an existing row must be told which user is asking and
-silently treat another user's row as if it doesn't exist (see `get_owned`)
--- callers must never leak *whether* an id belongs to someone else.
+silently treat another user's row as if it doesn't exist (see
+`get_accessible`) -- callers must never leak *whether* an id belongs to
+someone else. The one deliberate exception is a row flagged `is_shared`
+(2026-09-04 request): a single jointly-operated account that both
+operators must see and drive from their own dashboard logins, so it reads
+as *every* user's own account. Nothing else about the boundary moved -- an
+unshared row is still invisible to everyone but its owner.
 
 Phase 2 replaced the old single global "which account is live" flag
 (`AccountService.set_live()`/`get_live_account()`, both removed) with
@@ -24,6 +29,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.accounts.schemas import MT5AccountCreate, MT5AccountUpdate
@@ -60,20 +66,25 @@ class AccountService:
     # -- lookups -------------------------------------------------------
 
     def list_for_user(self, user_id: int) -> list[MT5Account]:
+        """This user's own accounts, plus every shared one -- a shared
+        account is presented exactly like an owned one (see MT5Account's
+        `is_shared`), so the dashboard needs no separate "shared with me"
+        section and every account-scoped page works for it unchanged."""
         statement = (
             select(MT5Account)
-            .where(MT5Account.user_id == user_id)
+            .where(or_(MT5Account.user_id == user_id, MT5Account.is_shared))  # type: ignore[arg-type]
             .order_by(MT5Account.created_at.asc())  # type: ignore[attr-defined]
         )
         return list(self._session.exec(statement))
 
-    def get_owned(self, user_id: int, account_id: int) -> MT5Account | None:
+    def get_accessible(self, user_id: int, account_id: int) -> MT5Account | None:
         """`None` for both "doesn't exist" and "exists but belongs to
         someone else" -- deliberately indistinguishable to every caller,
         which is what turns this into the actual isolation boundary rather
-        than just a filter."""
+        than just a filter. A shared account (`is_shared`) belongs, for
+        this purpose, to every operator."""
         account = self._session.get(MT5Account, account_id)
-        if account is None or account.user_id != user_id:
+        if account is None or (account.user_id != user_id and not account.is_shared):
             return None
         return account
 
@@ -126,6 +137,7 @@ class AccountService:
             mt5_server=data.mt5_server,
             mt5_password_encrypted=encrypt_mt5_password(data.mt5_password),
             symbol=data.symbol,
+            is_shared=data.is_shared,
         )
         self._session.add(account)
         self._session.commit()

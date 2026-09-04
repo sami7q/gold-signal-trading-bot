@@ -27,9 +27,9 @@ from app.integrations.broker.mt5 import BOT_MAGIC_NUMBER, MT5Broker
 def _settings() -> Settings:
     return Settings(
         mt5_enabled=True,
-        mt5_account="111715721",
+        mt5_account="999001",
         mt5_password="fake-not-real",
-        mt5_server="MetaQuotes-Demo",
+        mt5_server="Test-Server",
         mt5_symbol="XAUUSD",
     )
 

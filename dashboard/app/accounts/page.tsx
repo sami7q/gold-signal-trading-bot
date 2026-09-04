@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Plus, Radio, Archive as ArchiveIcon, Pencil, X } from "lucide-react";
+import { Check, Plus, Radio, Archive as ArchiveIcon, Pencil, Users, X } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { EmptyState, LoadingState, ErrorState } from "@/components/ui/empty-state";
 import { useAccounts, useArchiveAccount, useCreateAccount, useUpdateAccount } from "@/hooks/use-accounts";
 import { useActiveAccountId } from "@/hooks/use-active-account";
@@ -21,9 +22,17 @@ interface FormValues {
   mt5_server: string;
   mt5_password: string;
   symbol: string;
+  is_shared: boolean;
 }
 
-const EMPTY_FORM: FormValues = { label: "", mt5_login: "", mt5_server: "", mt5_password: "", symbol: "XAUUSD" };
+const EMPTY_FORM: FormValues = {
+  label: "",
+  mt5_login: "",
+  mt5_server: "",
+  mt5_password: "",
+  symbol: "XAUUSD",
+  is_shared: false,
+};
 
 function AccountFormFields({
   values,
@@ -90,6 +99,21 @@ function AccountFormFields({
           onChange={(e) => set("symbol", e.target.value)}
         />
       </div>
+      <div className="flex items-start justify-between gap-3 rounded border border-border-soft bg-white/[0.02] p-3 sm:col-span-2">
+        <div>
+          <p className="text-sm text-bone">حساب مشترك بين المشغّلين</p>
+          <p className="mt-1 text-xs text-muted">
+            عند تفعيله يظهر هذا الحساب لكل مستخدمي اللوحة (سامي ومصطفى) بنفس الصلاحيات
+            تمامًا — نفس الصفقات ونفس الإعدادات، وأي تعديل يجريه أحدهما يراه الآخر. اتركه
+            مطفأً ليبقى الحساب خاصًا بك وحدك.
+          </p>
+        </div>
+        <Switch
+          checked={values.is_shared}
+          onChange={(v) => set("is_shared", v)}
+          label="حساب مشترك بين المشغّلين"
+        />
+      </div>
     </div>
   );
 }
@@ -153,6 +177,7 @@ function EditAccountForm({ account, onDone }: { account: MT5Account; onDone: () 
     mt5_server: account.mt5_server,
     mt5_password: "",
     symbol: account.symbol,
+    is_shared: account.is_shared,
   });
 
   function handleSubmit(e: React.FormEvent) {
@@ -162,6 +187,7 @@ function EditAccountForm({ account, onDone }: { account: MT5Account; onDone: () 
       mt5_login: values.mt5_login,
       mt5_server: values.mt5_server,
       symbol: values.symbol,
+      is_shared: values.is_shared,
       ...(values.mt5_password ? { mt5_password: values.mt5_password } : {}),
     };
     updateAccount.mutate({ id: account.id, patch }, { onSuccess: () => onDone() });
@@ -223,6 +249,12 @@ function AccountCard({ account }: { account: MT5Account }) {
             {account.label}
             {isCurrent ? <Badge tone="gold">الحساب الحالي</Badge> : null}
             {account.is_live ? <Badge tone="win">متصل الآن</Badge> : <Badge tone="neutral">غير متصل</Badge>}
+            {account.is_shared ? (
+              <Badge tone="info">
+                <Users className="h-3 w-3" strokeWidth={1.75} />
+                مشترك
+              </Badge>
+            ) : null}
             {!account.is_active ? <Badge tone="warn">مؤرشف</Badge> : null}
           </span>
         }
@@ -287,8 +319,9 @@ export default function AccountsPage() {
         <div>
           <h1 className="text-xl font-semibold text-bone">حسابات MT5</h1>
           <p className="mt-1 text-sm text-muted">
-            كل حساب معزول بالكامل — استراتيجيته وإعداداته الخاصة، لا يراه أحد غيرك. جميعها تستقبل
-            من نفس قناة تيليكرام. شارة &quot;متصل الآن&quot; تعكس اتصالًا فعليًا حيًا بمحطة MT5
+            كل حساب معزول بالكامل — استراتيجيته وإعداداته الخاصة، لا يراه أحد غيرك، إلا إذا
+            فعّلت &quot;حساب مشترك&quot; فيظهر لكل المشغّلين بنفس الصلاحيات. جميعها تستقبل من
+            نفس قناة تيليكرام. شارة &quot;متصل الآن&quot; تعكس اتصالًا فعليًا حيًا بمحطة MT5
             الخاصة بالحساب، وليست تبديلًا يدويًا.
           </p>
         </div>

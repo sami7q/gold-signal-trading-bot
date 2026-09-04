@@ -228,6 +228,11 @@ class AuditEventType(StrEnum):
     ACCOUNT_CREATED = "ACCOUNT_CREATED"
     ACCOUNT_UPDATED = "ACCOUNT_UPDATED"
     ACCOUNT_ARCHIVED = "ACCOUNT_ARCHIVED"
+    #: Hard delete -- the account row and every trade/settings row that
+    #: pointed at it are gone from the database for good. Only ever written
+    #: by backend/scripts/delete_account.py (there is no delete endpoint);
+    #: this trail entry is the sole surviving record that it happened.
+    ACCOUNT_DELETED = "ACCOUNT_DELETED"
     ACCOUNT_SET_LIVE = "ACCOUNT_SET_LIVE"
     #: No MT5Account has is_live=True -- an incoming signal was parsed and
     #: stored but never reached the trading engine. Mirrors

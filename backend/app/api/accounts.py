@@ -1,7 +1,9 @@
 """MT5 account CRUD, scoped to the authenticated user (multi-account
 feature, 2026-09). Every lookup by id goes through
-`AccountService.get_owned`, which is the actual isolation boundary --
-see its docstring.
+`AccountService.get_accessible`, which is the actual isolation boundary --
+see its docstring. A shared account (MT5Account.is_shared, 2026-09-04
+request) passes that boundary for every operator by design: the two of
+them run one jointly-owned account and both need full control of it.
 
 No "set live" endpoint as of the concurrent-execution "Phase 2" update --
 which account is connected is now a fact about which OS process is
@@ -25,10 +27,10 @@ from app.database.session import get_session
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 
-def _load_owned_or_404(
+def _load_accessible_or_404(
     session: Session, user: User, account_id: int
 ):  # noqa: ANN201
-    account = AccountService(session).get_owned(user.id, account_id)  # type: ignore[arg-type]
+    account = AccountService(session).get_accessible(user.id, account_id)  # type: ignore[arg-type]
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
     return account
@@ -62,7 +64,7 @@ def get_account(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[Session, Depends(get_session)],
 ) -> MT5AccountRead:
-    account = _load_owned_or_404(session, user, account_id)
+    account = _load_accessible_or_404(session, user, account_id)
     return MT5AccountRead.from_account(account)
 
 
@@ -73,7 +75,7 @@ def update_account(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[Session, Depends(get_session)],
 ) -> MT5AccountRead:
-    account = _load_owned_or_404(session, user, account_id)
+    account = _load_accessible_or_404(session, user, account_id)
     try:
         account = AccountService(session).update(account, payload)
     except DuplicateAccountError as exc:
@@ -87,7 +89,7 @@ def archive_account(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[Session, Depends(get_session)],
 ) -> MT5AccountRead:
-    account = _load_owned_or_404(session, user, account_id)
+    account = _load_accessible_or_404(session, user, account_id)
     try:
         account = AccountService(session).archive(account)
     except AccountArchiveError as exc:

@@ -3,7 +3,12 @@
 The critical case in this file is isolation: sami must never see, edit,
 archive, or use as X-Account-Id anything belonging to mustafa, and a
 cross-user id must come back 404 (never 403 -- see
-app/accounts/service.py::get_owned's docstring).
+app/accounts/service.py::get_accessible's docstring) -- unless that account
+is deliberately flagged `is_shared`, the one sanctioned hole in the
+boundary (2026-09-04 request: one jointly-operated account both of them
+drive from their own logins). The tests at the bottom of this file pin
+both halves of that: shared means fully usable by the other operator,
+unshared still means invisible.
 
 No "set live" endpoint as of the concurrent-execution "Phase 2" update --
 `is_live` is a heartbeat-derived read-only signal now (see
@@ -179,3 +184,105 @@ def test_multiple_accounts_can_be_connected_at_once_even_across_users(
 
     assert is_account_connected(seed_account)
     assert is_account_connected(other_account)
+
+
+# -- shared accounts (2026-09-04 request) --------------------------------
+# The deliberate exception to everything above: `is_shared` makes one
+# account read as *every* operator's own. Everything not flagged stays
+# private -- that's what all the isolation tests above still cover.
+
+
+def test_shared_account_of_another_user_appears_in_this_user_s_list(
+    raw_client, session, seed_user, seed_account, account_factory, test_credentials
+):
+    other = _other_user(session)
+    shared = account_factory(
+        session, other, label="Joint Axi account", mt5_login="777010", is_shared=True
+    )
+
+    _login(raw_client, test_credentials)
+    body = raw_client.get("/api/accounts").json()
+
+    assert [a["id"] for a in body] == [seed_account.id, shared.id]
+    assert [a["is_shared"] for a in body] == [False, True]
+
+
+def test_shared_account_of_another_user_can_be_read_and_edited(
+    raw_client, session, seed_user, account_factory, test_credentials
+):
+    """A shared account is not read-only for the other operator -- both of
+    them run it, so it behaves exactly like their own (see
+    AccountService.get_accessible)."""
+    other = _other_user(session)
+    shared = account_factory(
+        session, other, label="Joint Axi account", mt5_login="777011", is_shared=True
+    )
+
+    _login(raw_client, test_credentials)
+    assert raw_client.get(f"/api/accounts/{shared.id}").status_code == 200
+
+    response = raw_client.patch(f"/api/accounts/{shared.id}", json={"label": "Renamed jointly"})
+    assert response.status_code == 200
+
+    session.refresh(shared)
+    assert shared.label == "Renamed jointly"
+    assert shared.user_id == other.id  # ownership itself never moves
+
+
+def test_shared_account_is_accepted_as_x_account_id_by_the_other_user(
+    raw_client, session, seed_user, account_factory, test_credentials
+):
+    """The half that actually matters day to day: every account-scoped
+    page (الإعدادات، الصفقات، اللوحة...) must work for the shared account
+    under the other operator's login, not just the /api/accounts list."""
+    other = _other_user(session)
+    shared = account_factory(
+        session, other, label="Joint Axi account", mt5_login="777012", is_shared=True
+    )
+
+    _login(raw_client, test_credentials)
+    response = raw_client.get("/api/settings", headers={"X-Account-Id": str(shared.id)})
+    assert response.status_code == 200
+
+
+def test_unsharing_an_account_hides_it_from_the_other_user_again(
+    raw_client, session, seed_user, account_factory, test_credentials
+):
+    other = _other_user(session)
+    shared = account_factory(
+        session, other, label="Joint Axi account", mt5_login="777013", is_shared=True
+    )
+
+    _login(raw_client, test_credentials)
+    unshare = raw_client.patch(f"/api/accounts/{shared.id}", json={"is_shared": False})
+    assert unshare.status_code == 200
+
+    assert raw_client.get(f"/api/accounts/{shared.id}").status_code == 404
+    assert [a["id"] for a in raw_client.get("/api/accounts").json()] == []
+    assert (
+        raw_client.get("/api/settings", headers={"X-Account-Id": str(shared.id)}).status_code == 404
+    )
+
+
+def test_account_created_as_shared_is_visible_to_the_other_user(
+    raw_client, session, seed_user, test_credentials
+):
+    other = _other_user(session)
+
+    _login(raw_client, test_credentials)
+    created = raw_client.post(
+        "/api/accounts",
+        json={
+            "label": "Joint Axi account",
+            "mt5_login": "555003",
+            "mt5_server": "Axi-Demo",
+            "mt5_password": "some-mt5-password",
+            "is_shared": True,
+        },
+    ).json()
+    assert created["is_shared"] is True
+
+    from app.accounts.service import AccountService
+
+    visible = AccountService(session).list_for_user(other.id)
+    assert [a.id for a in visible] == [created["id"]]

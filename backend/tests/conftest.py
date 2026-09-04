@@ -110,6 +110,7 @@ def make_account(
     mt5_login="999001",
     mt5_server="Test-Server",
     connected=True,
+    is_shared=False,
 ):
     """Not a fixture itself -- call directly from a test that needs more
     than one account (e.g. cross-user isolation tests), where a single
@@ -120,7 +121,11 @@ def make_account(
     concurrent-execution "Phase 2" update: the account's wire-level
     `is_live` is computed from that recency (app/accounts/schemas.py), not
     from the model's own `is_live` column, which is dead as of that update
-    (see MT5Account's docstring)."""
+    (see MT5Account's docstring).
+
+    `is_shared` is the deliberate opt-in hole in the per-user isolation
+    boundary (2026-09-04 request) -- default False, so every existing
+    isolation test keeps exercising a genuinely private account."""
     from datetime import UTC, datetime
 
     from app.core.credentials import encrypt_mt5_password
@@ -133,6 +138,7 @@ def make_account(
         mt5_server=mt5_server,
         mt5_password_encrypted=encrypt_mt5_password("placeholder"),
         last_heartbeat_at=datetime.now(UTC) if connected else None,
+        is_shared=is_shared,
     )
     session.add(account)
     session.commit()

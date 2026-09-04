@@ -319,6 +319,10 @@ export interface MT5Account {
   is_live: boolean;
   last_heartbeat_at: string | null;
   is_active: boolean;
+  //: True = every operator sees and drives this account, not just its
+  //: owner (backend MT5Account.is_shared) -- the one deliberate hole in
+  //: the per-user isolation boundary, for a jointly-run account.
+  is_shared: boolean;
   has_password: boolean;
 }
 
@@ -339,6 +343,7 @@ export interface MT5AccountCreate {
   mt5_server: string;
   mt5_password: string;
   symbol?: string;
+  is_shared?: boolean;
 }
 
 export interface MT5AccountUpdate {
@@ -347,4 +352,5 @@ export interface MT5AccountUpdate {
   mt5_server?: string;
   mt5_password?: string;
   symbol?: string;
+  is_shared?: boolean;
 }
