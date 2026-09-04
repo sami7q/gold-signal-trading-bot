@@ -48,7 +48,7 @@ from app.database.models.user import User  # noqa: E402
 from app.database.session import get_engine  # noqa: E402
 
 OK, BAD, WARN = "[ OK ]", "[FAIL]", "[ ?? ]"
-HEALTH_URL = "http://127.0.0.1:8000/api/health/broker"
+API_BASE = "http://127.0.0.1:8000"
 
 
 def _liveness(account: MT5Account) -> str:
@@ -88,14 +88,22 @@ def _print_account(session: Session, account: MT5Account, viewer: User) -> None:
         )
 
 
+def _api(path: str) -> dict | str:
+    """Parsed JSON from the locally running hub, or a human-readable
+    reason it could not be reached."""
+    try:
+        with urllib.request.urlopen(f"{API_BASE}{path}", timeout=5) as response:  # noqa: S310
+            return json.loads(response.read().decode())  # type: ignore[no-any-return]
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        return f"تعذّر سؤال الباك-إند ({API_BASE}{path}): {exc}"
+
+
 def _broker_health() -> tuple[str, str]:
     """(marker, line) for the active broker -- the check the dashboard
     cannot do for you."""
-    try:
-        with urllib.request.urlopen(HEALTH_URL, timeout=5) as response:  # noqa: S310
-            body = json.loads(response.read().decode())
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        return WARN, f"تعذّر سؤال الباك-إند ({HEALTH_URL}): {exc} — هل GoldBotBackend شغّالة؟"
+    body = _api("/api/health/broker")
+    if isinstance(body, str):
+        return WARN, f"{body} — هل GoldBotBackend شغّالة؟"
     broker, healthy = body.get("broker"), body.get("healthy")
     if broker == "mt5" and healthy:
         return OK, "الوسيط الفعّال: MT5 حقيقي، وصحّته سليمة."
@@ -110,6 +118,10 @@ def _broker_health() -> tuple[str, str]:
 def main() -> None:
     settings = get_settings()
     problems: list[str] = []
+    #: The resolved account's own execution switches, read inside the
+    #: session and reported at the end -- they decide whether a signal
+    #: arriving right now would actually be traded (app/trading/rules.py).
+    gates: dict[str, bool] | None = None
 
     with Session(get_engine()) as session:
         service = AccountService(session)
@@ -166,6 +178,21 @@ def main() -> None:
                 stale = int(HEARTBEAT_STALE_AFTER.total_seconds())
                 print(f"{BAD} هذا الحساب بلا نبض أحدث من {stale} ث — لا عملية متصلة به الآن.")
                 problems.append("الحساب المتداول غير متصل.")
+            own_settings = session.exec(
+                select(TradingSettings).where(TradingSettings.account_id == own.id)
+            ).first()
+            if own_settings is None:
+                print(
+                    f"{WARN} لا صف إعدادات لهذا الحساب بعد — سيبدأ بالقيم الافتراضية "
+                    "(التداول التلقائي مطفأ)، فلن ينفّذ شيئًا حتى تضبطه من اللوحة."
+                )
+                problems.append("الحساب المتداول بلا إعدادات محفوظة.")
+            else:
+                gates = {
+                    "التداول التلقائي": own_settings.auto_trading,
+                    "إشارات الشراء": own_settings.buy_enabled,
+                    "إشارات البيع": own_settings.sell_enabled,
+                }
 
     print("\n" + "=" * 72)
     print("الوسيط الفعّال (الفحص الوحيد الذي يكشف السقوط على الوسيط الورقي)")
@@ -174,6 +201,49 @@ def main() -> None:
     print(f"{marker} {line}")
     if marker != OK:
         problems.append("الوسيط الفعّال ليس MT5 حقيقيًا مؤكَّدًا.")
+
+    print("\n" + "=" * 72)
+    print("مصدر الإشارات ولوحة التحكم")
+    print("=" * 72)
+    source = _api("/api/health/signal-source")
+    if isinstance(source, str):
+        print(f"{WARN} {source}")
+        problems.append("تعذّر فحص مصدر الإشارات.")
+    elif source.get("healthy"):
+        print(
+            f"{OK} {source.get('source')}: متصل ومُصادَق عليه"
+            f" | آخر رسالة: {source.get('last_message_at')}"
+        )
+    else:
+        print(
+            f"{BAD} {source.get('source')}: غير سليم — متصل={source.get('connected')},"
+            f" مُصادَق={source.get('authenticated')}, القناة مضبوطة="
+            f"{source.get('allowed_channel_configured')}, آخر خطأ: {source.get('last_error')}"
+        )
+        problems.append("مصدر الإشارات غير سليم — لن تصل إشارات جديدة.")
+
+    origins = settings.cors_origins
+    remote = [o for o in origins if not o.startswith("http://localhost")]
+    if remote:
+        print(f"{OK} أصول اللوحة المسموح لها (CORS): {', '.join(origins)}")
+        print(f"      افتح اللوحة من: {remote[0]} وسجّل الدخول بكل حساب للتأكّد بعينك.")
+    else:
+        print(f"{BAD} DASHBOARD_CORS_ORIGINS لا يتضمّن دومين اللوحة المنشورة: {origins}")
+        problems.append("CORS لا يسمح لدومين اللوحة — ستفشل طلبات المتصفح.")
+
+    if gates is not None:
+        print("\n" + "=" * 72)
+        print("هل تُنفَّذ إشارة تصل الآن؟ (مفاتيح الحساب المتداول)")
+        print("=" * 72)
+        for name, enabled in gates.items():
+            print(f"{OK if enabled else WARN} {name}: {'مفعّل' if enabled else 'مطفأ'}")
+        if not gates["التداول التلقائي"]:
+            problems.append("التداول التلقائي مطفأ — لن تُنفَّذ أي صفقة.")
+        if settings.telegram_observe_only:
+            print(f"{WARN} TELEGRAM_OBSERVE_ONLY=true — الإشارات تُسجَّل ولا تُنفَّذ إطلاقًا.")
+            problems.append("TELEGRAM_OBSERVE_ONLY=true يمنع التنفيذ.")
+        else:
+            print(f"{OK} TELEGRAM_OBSERVE_ONLY=false — إشارات القناة تصل إلى محرّك التنفيذ.")
 
     print("\n" + "=" * 72)
     if problems:
