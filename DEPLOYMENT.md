@@ -109,6 +109,9 @@ nssm start GoldBot
 6. **أعد تشغيل الهَب وحده:** `Stop-ScheduledTask -TaskName GoldBotBackend` ثم
    `Start-ScheduledTask -TaskName GoldBotBackend`.
 7. **تحقّق أن الاتصال حقيقي — لا تكتفِ بشارة "متصل الآن":**
+   `.venv\Scripts\python scripts\check_accounts.py` يطبع الصورة كاملة (من يرى أي حساب،
+   أي صف تطابقه هذه العملية، هل النبض حديث، وهل الوسيط MT5 أم ورقي) وينتهي بحكم
+   "جاهز / غير جاهز بعد". لا يكتب في قاعدة البيانات شيئًا. أو يدويًا:
    `Invoke-RestMethod http://localhost:8000/api/health/broker` لازم يرجع `broker = mt5`. لو رجع
    `paper` فالاتصال بالمحطة فشل وسقط البوت تلقائيًا على الوسيط الورقي (`app/lifecycle.py`) —
    وهو ما زال يكتب نبضًا ورصيدًا وهميًا، فتظهر الشارة خضراء وهي كاذبة.
