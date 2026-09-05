@@ -117,6 +117,10 @@ def main() -> None:
 
     with Session(get_engine()) as session:
         account = _resolve(session, args[0] if args else None)
+        own = AccountService(session).resolve_own_process_account(
+            env.mt5_account, env.mt5_server
+        )
+        audits_own_account = own is not None and own.id == account.id
         assert account.id is not None
         settings = session.exec(
             select(TradingSettings).where(TradingSettings.account_id == account.id)
@@ -139,13 +143,24 @@ def main() -> None:
         print(f"  إشارات البيع            : {'مفعّلة' if settings.sell_enabled else 'مطفأة'}")
         print(f"  أقصى صفقات مفتوحة معًا  : {settings.max_open_trades}")
         print(f"  الوضع المسجَّل (mode)     : {settings.mode}")
-        print(f"      (لا يمنع التنفيذ — البوابة الفعلية هي TRADING_MODE={env.trading_mode} "
-              "في .env، وهي ما يفحصه الوسيط عند الاتصال)")
+        if audits_own_account:
+            print(f"      (لا يمنع التنفيذ — البوابة الفعلية هي TRADING_MODE={env.trading_mode} "
+                  "في .env هذه العملية، وهي ما يفحصه الوسيط عند الاتصال)")
+        else:
+            # Another account is driven by a different process with its own
+            # env file (a worker's GOLDBOT_ENV_FILE), so this process's
+            # TRADING_MODE says nothing about it -- printing it here would
+            # invite reading a demo hub's setting as that account's.
+            print("      (لا يمنع التنفيذ — البوابة الفعلية هي TRADING_MODE في ملف .env الخاص "
+                  "بالعملية التي تدير هذا الحساب، وهو ملف آخر لا تقرأه هذه العملية)")
 
         print("\n-- الهدف والانزلاق --")
         print(f"  حجم اللوت الأساسي       : {fmt(settings.lot_size)}")
         print(f"  الهدف                   : {fmt(settings.target_pips)} نقطة")
-        print(f"  تسامح الانزلاق (.env)   : {fmt(env.mt5_max_slippage_pips)} نقطة")
+        if audits_own_account:
+            print(f"  تسامح الانزلاق (.env)   : {fmt(env.mt5_max_slippage_pips)} نقطة")
+        else:
+            print("  تسامح الانزلاق          : من ملف .env الخاص بعملية هذا الحساب (غير مقروء هنا)")
 
         print("\n-- وقف الخسارة --")
         print(f"  إلزامي من القناة        : {_yes(settings.require_stop_loss)}")
@@ -195,7 +210,8 @@ def main() -> None:
         print(_money_row("الهدف", settings.target_pips, next_lot))
         print(_money_row("أقصى ستوب القناة", settings.max_channel_stop_pips, next_lot))
         print(_money_row("الوقف الاحتياطي", settings.auto_sl_fallback_pips, next_lot))
-        print(_money_row("تسامح الانزلاق", env.mt5_max_slippage_pips, next_lot))
+        if audits_own_account:
+            print(_money_row("تسامح الانزلاق", env.mt5_max_slippage_pips, next_lot))
         print("  كل قيمة معروضة: ذهب بخانتين / بثلاث خانات")
 
         # -- combinations that quietly stop or distort trading -----------
