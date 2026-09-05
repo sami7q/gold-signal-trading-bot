@@ -220,10 +220,13 @@ def test_only_the_opening_leg_in_history_does_not_guess_a_close():
     assert broker.get_position("42") is None
 
 
-def test_open_order_carries_the_bot_magic_number():
-    """Distinguishes bot-placed orders from manual trades on the same
-    account -- proven directly against the order_request dict `open_buy`
-    sends, without needing a real order to actually go through."""
+def _capture_buy_order(broker_settings=None) -> tuple[dict, object]:
+    """Sends one BUY through a fake `MetaTrader5` module and hands back the
+    exact order_request dict the adapter built, plus the result -- lets a
+    test assert on what MT5 would actually receive without a real order
+    going anywhere. The fake symbol is 2-digit Gold (digits=2, point=0.01),
+    matching the real broker metadata app/trading/pips.py is calibrated
+    against, so 1 pip = $0.10 here."""
     fake = FakeMT5()
     captured: dict = {}
 
@@ -256,7 +259,9 @@ def test_open_order_carries_the_bot_magic_number():
 
     fake.symbol_info = lambda symbol: FakeSymbolInfo()
 
-    broker = _broker_with_fake(fake)
+    broker = MT5Broker(broker_settings or _settings())
+    broker._mt5 = fake  # noqa: SLF001 - bypassing connect() for isolated unit tests
+    broker._connected = True  # noqa: SLF001
 
     from app.core.constants import Side
     from app.integrations.broker.base import OpenTradeRequest
@@ -271,9 +276,39 @@ def test_open_order_carries_the_bot_magic_number():
             client_reference="1:v1",
         )
     )
+    return captured, result
 
-    assert result.success is True
+
+def test_open_order_carries_the_bot_magic_number():
+    """Distinguishes bot-placed orders from manual trades on the same
+    account -- proven directly against the order_request dict `open_buy`
+    sends, without needing a real order to actually go through."""
+    captured, result = _capture_buy_order()
+
+    assert result.success is True  # type: ignore[attr-defined]
     assert captured["magic"] == BOT_MAGIC_NUMBER
+
+
+def test_open_order_tolerates_the_configured_slippage():
+    """2026-09-05 operator request: a market that moved between reading the
+    quote and the server filling it must still be traded, not lost to a
+    requote. MT5 takes that allowance in *points*, so the pips setting is
+    converted -- 10 pips on 2-digit Gold (1 pip = $0.10, 1 point = $0.01)
+    is $1.00, i.e. 100 points."""
+    captured, _ = _capture_buy_order()
+
+    assert captured["deviation"] == 100
+
+
+def test_slippage_of_zero_means_no_drift_tolerated():
+    """The pre-2026-09-05 behavior stays reachable: 0 pips sends MT5 the
+    same 0 deviation it defaults to, refusing any fill off the quoted
+    price."""
+    settings = _settings()
+    settings.mt5_max_slippage_pips = Decimal("0")
+    captured, _ = _capture_buy_order(settings)
+
+    assert captured["deviation"] == 0
 
 
 @pytest.mark.parametrize("bad_reason", [FakeMT5.DEAL_REASON_CLIENT, FakeMT5.DEAL_REASON_MOBILE])

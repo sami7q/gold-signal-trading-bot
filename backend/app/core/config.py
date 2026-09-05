@@ -64,6 +64,17 @@ class Settings(BaseSettings):
     mt5_server: str = ""
     mt5_terminal_path: str = ""
     mt5_symbol: str = "XAUUSD"
+    #: How far the actual fill may drift from the price this bot quoted a
+    #: moment earlier before the broker refuses the order (MT5's own
+    #: `deviation`, which this is converted into broker points for --
+    #: expressed in pips here so it means the same thing to an operator as
+    #: every other pip setting in the app). 2026-09-05 operator request:
+    #: a market that moved a dollar between reading the quote and the
+    #: server filling it should still be traded, not lost to a requote --
+    #: 10 pips is $1.00 on a 2-digit-Gold broker. Set to 0 for the
+    #: pre-2026-09-05 behavior (MT5's default: no drift tolerated at all,
+    #: which silently turned fast markets into FAILED trades).
+    mt5_max_slippage_pips: Decimal = Decimal("10")
 
     #: Fernet key (base64, `Fernet.generate_key()`) used to encrypt every
     #: MT5Account row's password at rest -- see app/core/credentials.py.

@@ -139,6 +139,32 @@ export function arSignalType(type: string): string {
   return SIGNAL_TYPE_AR[type] ?? type;
 }
 
+// Mirrors backend RejectionReason (app/core/constants.py). A FAILED trade
+// carries the broker's own raw error text here instead of one of these
+// codes, so arRejectionReason falls back to showing it verbatim -- an
+// unreadable broker message still beats hiding why a trade never opened.
+const REJECTION_REASON_AR: Record<string, string> = {
+  AUTO_TRADING_DISABLED: "التداول التلقائي مطفأ",
+  BUY_DISABLED: "إشارات الشراء مطفأة",
+  SELL_DISABLED: "إشارات البيع مطفأة",
+  STOP_LOSS_REQUIRED: "القناة لم ترسل وقف خسارة",
+  STOP_LOSS_INVALID: "وقف خسارة غير صالح",
+  STOP_LOSS_TOO_WIDE: "وقف الخسارة أبعد من الحد المسموح",
+  DUPLICATE_SIGNAL: "إشارة مكرّرة — لها صفقة بالفعل",
+  MAX_OPEN_TRADES_REACHED: "بلغت حد الصفقات المفتوحة",
+  DAILY_TRADE_LIMIT_REACHED: "بلغت حد الصفقات اليومي",
+  BROKER_UNAVAILABLE: "الوسيط غير متاح",
+  INVALID_LOT_SIZE: "حجم اللوت غير صالح",
+  INVALID_TARGET: "هدف النقاط غير صالح",
+  UNSUPPORTED_SYMBOL: "رمز غير مدعوم",
+  UNSUPPORTED_SIGNAL_TYPE: "نوع أمر غير مدعوم (معلّق)",
+  SIGNAL_EXPIRED: "انتهت صلاحية الإشارة قبل وصول وقف الخسارة",
+};
+
+export function arRejectionReason(reason: string): string {
+  return REJECTION_REASON_AR[reason] ?? reason;
+}
+
 const TRADING_MODE_AR: Record<string, string> = {
   SIMULATION: "محاكاة",
   DEMO: "تجريبي",

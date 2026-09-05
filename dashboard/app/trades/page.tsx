@@ -7,7 +7,7 @@ import { Select, Input, Label } from "@/components/ui/input";
 import { ResultBadge, TradeStatusBadge } from "@/components/ui/badge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { useTrades, type TradeFilters } from "@/hooks/use-trades";
-import { arSide, formatDateTime, formatMoney, formatPrice } from "@/lib/format";
+import { arRejectionReason, arSide, formatDateTime, formatMoney, formatPrice } from "@/lib/format";
 import type { TradeResult, TradeStatus } from "@/types/api";
 
 const STATUS_OPTIONS: Array<{ value: TradeStatus | "ALL"; label: string }> = [
@@ -92,7 +92,7 @@ export default function TradesPage() {
           <EmptyState icon={Inbox} title="لا توجد صفقات تطابق هذه الفلاتر" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1100px] text-left text-sm">
+            <table className="w-full min-w-[1300px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border-soft text-[11px] uppercase tracking-wide text-muted-dim">
                   <th className="px-3 py-2 font-medium">الرقم</th>
@@ -109,6 +109,7 @@ export default function TradesPage() {
                   <th className="px-3 py-2 text-right font-medium">الربح</th>
                   <th className="px-3 py-2 font-medium">الحالة</th>
                   <th className="px-3 py-2 font-medium">النتيجة</th>
+                  <th className="px-3 py-2 font-medium">سبب الرفض</th>
                 </tr>
               </thead>
               <tbody className="font-data">
@@ -142,6 +143,9 @@ export default function TradesPage() {
                     </td>
                     <td className="px-3 py-2">
                       <ResultBadge result={trade.result} />
+                    </td>
+                    <td className="px-3 py-2 font-sans text-xs text-warn">
+                      {trade.failure_reason ? arRejectionReason(trade.failure_reason) : <span className="text-muted-dim">—</span>}
                     </td>
                   </tr>
                 ))}

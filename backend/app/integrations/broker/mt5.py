@@ -31,6 +31,7 @@ from app.integrations.broker.base import (
     Quote,
     SymbolInfo,
 )
+from app.trading import pips
 
 logger = get_logger(__name__)
 
@@ -226,6 +227,13 @@ class MT5Broker(Broker):
             "volume": float(request.lot),
             "type": mt5.ORDER_TYPE_BUY if side is Side.BUY else mt5.ORDER_TYPE_SELL,
             "price": float(entry_price),
+            # Without this MT5 defaults to 0: the fill must land on exactly
+            # the price read microseconds earlier or the order is refused
+            # (requote). A signal is then lost to a market that simply
+            # moved -- the 2026-09-05 operator request this exists for.
+            "deviation": pips.pip_distance_to_points(
+                symbol_info, self._settings.mt5_max_slippage_pips
+            ),
             "sl": float(request.stop_loss) if request.stop_loss is not None else 0.0,
             "tp": float(request.take_profit),
             "comment": request.client_reference[:31],

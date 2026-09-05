@@ -38,6 +38,14 @@ def pip_distance_to_price(symbol_info: SymbolInfo, pips: Decimal) -> Decimal:
     return pip_size(symbol_info) * Decimal(pips)
 
 
+def pip_distance_to_points(symbol_info: SymbolInfo, pips: Decimal) -> int:
+    """A pip distance in *broker points* -- the unit MT5's own order
+    `deviation` field speaks, and the only place in the app that needs it.
+    Rounded to a whole number because MT5 takes an integer there."""
+    points = pip_distance_to_price(symbol_info, pips) / symbol_info.point
+    return int(points.to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def price_distance_to_pips(symbol_info: SymbolInfo, price_distance: Decimal) -> Decimal:
     """Inverse of `pip_distance_to_price` -- how many pips a raw price
     distance represents. `price_distance` may be negative (the caller
