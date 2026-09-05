@@ -51,6 +51,49 @@ _COUNTS_TOWARD_DAILY_PLAN: frozenset[TradeStatus] = frozenset(
 )
 
 
+def todays_trades(session: Session, now: datetime, account_id: int) -> list[Trade]:
+    """Every real (broker-confirmed) trade opened on `now`'s Asia/Baghdad
+    calendar day for this account, oldest first -- see
+    app/trading/daily_lot_plan.py. SQLite can't compare timezone-aware
+    dates portably, so this pulls a generous UTC window (guaranteed to
+    fully contain the Baghdad day) and filters precisely in Python.
+
+    Module-level rather than a TradingEngine method so the operator audit
+    script (backend/scripts/check_settings.py) can report the lot the
+    engine would really pick, through this exact query, without
+    constructing an engine (and therefore a broker) just to ask."""
+    today = trading_day(now)
+    window_start = datetime.combine(today, datetime.min.time(), tzinfo=UTC) - timedelta(hours=6)
+    window_end = window_start + timedelta(hours=36)
+    statement = (
+        select(Trade)
+        .where(Trade.status.in_(_COUNTS_TOWARD_DAILY_PLAN))  # type: ignore[attr-defined]
+        .where(Trade.account_id == account_id)
+        .where(Trade.created_at >= window_start)
+        .where(Trade.created_at <= window_end)
+        .order_by(Trade.created_at.asc())  # type: ignore[attr-defined]
+    )
+    candidates = list(session.exec(statement))
+    return [t for t in candidates if trading_day(t.created_at) == today]
+
+
+def last_trade(session: Session, account_id: int) -> Trade | None:
+    """This account's single most recent real (broker-confirmed) trade --
+    see app/trading/loss_recovery.py. Not calendar-day scoped, unlike
+    `todays_trades` above. Ordered by `id`, not `created_at`: two trades
+    can land on the exact same wall-clock microsecond (observed in tests),
+    which would make a `created_at` ordering ambiguous -- the
+    auto-increment primary key is guaranteed to reflect actual
+    insertion/execution order instead."""
+    statement = (
+        select(Trade)
+        .where(Trade.status.in_(_COUNTS_TOWARD_DAILY_PLAN))  # type: ignore[attr-defined]
+        .where(Trade.account_id == account_id)
+        .order_by(Trade.id.desc())  # type: ignore[union-attr]
+    )
+    return session.exec(statement).first()
+
+
 class TradingEngine:
     def __init__(self, session: Session, broker: Broker, audit: AuditService | None = None) -> None:
         self._session = session
@@ -79,44 +122,6 @@ class TradingEngine:
             Trade.account_id == account_id,
         )
         return len(list(self._session.exec(statement)))
-
-    def _todays_trades(self, now: datetime, account_id: int) -> list[Trade]:
-        """Every real (broker-confirmed) trade opened on `now`'s Asia/
-        Baghdad calendar day for this account, oldest first -- see
-        app/trading/daily_lot_plan.py. SQLite can't compare timezone-aware
-        dates portably, so this pulls a generous UTC window (guaranteed to
-        fully contain the Baghdad day) and filters precisely in Python."""
-        today = trading_day(now)
-        window_start = datetime.combine(today, datetime.min.time(), tzinfo=UTC) - timedelta(
-            hours=6
-        )
-        window_end = window_start + timedelta(hours=36)
-        statement = (
-            select(Trade)
-            .where(Trade.status.in_(_COUNTS_TOWARD_DAILY_PLAN))  # type: ignore[attr-defined]
-            .where(Trade.account_id == account_id)
-            .where(Trade.created_at >= window_start)
-            .where(Trade.created_at <= window_end)
-            .order_by(Trade.created_at.asc())  # type: ignore[attr-defined]
-        )
-        candidates = list(self._session.exec(statement))
-        return [t for t in candidates if trading_day(t.created_at) == today]
-
-    def _last_trade(self, account_id: int) -> Trade | None:
-        """This account's single most recent real (broker-confirmed) trade
-        -- see app/trading/loss_recovery.py. Not calendar-day scoped,
-        unlike `_todays_trades` above. Ordered by `id`, not `created_at`:
-        two trades can land on the exact same wall-clock microsecond
-        (observed in tests), which would make a `created_at` ordering
-        ambiguous -- the auto-increment primary key is guaranteed to
-        reflect actual insertion/execution order instead."""
-        statement = (
-            select(Trade)
-            .where(Trade.status.in_(_COUNTS_TOWARD_DAILY_PLAN))  # type: ignore[attr-defined]
-            .where(Trade.account_id == account_id)
-            .order_by(Trade.id.desc())  # type: ignore[union-attr]
-        )
-        return self._session.exec(statement).first()
 
     def execute(self, signal: Signal, settings: TradingSettings) -> Trade:
         assert signal.id is not None, "signal must be persisted before execution"
@@ -156,7 +161,7 @@ class TradingEngine:
         now = datetime.now(UTC)
         if settings.daily_lot_plan_enabled:
             plan = next_trade_lot(
-                self._todays_trades(now, settings.account_id), now=now, settings=settings
+                todays_trades(self._session, now, settings.account_id), now=now, settings=settings
             )
             effective_lot: Decimal = (
                 plan.lot if plan.allowed and plan.lot is not None else settings.lot_size
@@ -164,7 +169,7 @@ class TradingEngine:
             daily_plan_rejection = None if plan.allowed else plan.explanation
         elif settings.loss_recovery_enabled:
             recovery = next_recovery_lot(
-                self._last_trade(settings.account_id), settings=settings
+                last_trade(self._session, settings.account_id), settings=settings
             )
             effective_lot = recovery.lot
             daily_plan_rejection = None
