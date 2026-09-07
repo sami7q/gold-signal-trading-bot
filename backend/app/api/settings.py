@@ -76,6 +76,11 @@ def get_pip_preview(
     if pips_value <= 0:
         raise HTTPException(status_code=422, detail="target_pips must be greater than zero")
 
+    # The preview must ask about the symbol *this* account's broker knows
+    # (see app/trading/engine.py::broker_symbol_for) -- asking for the
+    # canonical name on a broker that lists Gold as GOLD returns nothing
+    # and the preview silently degrades to "broker unavailable".
+    symbol = account.symbol or CANONICAL_GOLD_SYMBOL
     try:
         health = broker.health()
     except Exception:  # noqa: BLE001
@@ -85,7 +90,7 @@ def get_pip_preview(
     symbol_info = None
     if healthy:
         try:
-            symbol_info = broker.get_symbol(CANONICAL_GOLD_SYMBOL)
+            symbol_info = broker.get_symbol(symbol)
         except Exception:  # noqa: BLE001
             symbol_info = None
 
@@ -109,7 +114,7 @@ def get_pip_preview(
     example_entry: Decimal | None = None
     calculated_tp: Decimal | None = None
     try:
-        quote = broker.get_quote(CANONICAL_GOLD_SYMBOL)
+        quote = broker.get_quote(symbol)
         example_entry = quote.ask
         calculated_tp = pips.compute_take_profit(
             entry_price=quote.ask, pips=pips_value, symbol_info=symbol_info, side=Side.BUY

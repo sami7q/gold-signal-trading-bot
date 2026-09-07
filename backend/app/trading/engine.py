@@ -25,6 +25,7 @@ from app.core.constants import (
 )
 from app.core.decimals import fmt
 from app.core.logging import get_logger
+from app.database.models.mt5_account import MT5Account
 from app.database.models.signal import Signal
 from app.database.models.trade import Trade
 from app.database.models.trading_settings import TradingSettings
@@ -49,6 +50,28 @@ _COUNTS_TOWARD_DAILY_PLAN: frozenset[TradeStatus] = frozenset(
         TradeStatus.CLOSED_MANUAL,
     }
 )
+
+
+def broker_symbol_for(session: Session, account_id: int, fallback: str) -> str:
+    """The name *this account's broker* knows the instrument by.
+
+    A signal's `symbol` is the canonical `XAUUSD` the parser normalises
+    every channel message to -- an internal identity, not something a
+    broker is obliged to recognise. XM lists Gold as `GOLD`, and asking it
+    for `XAUUSD` fails, which the rules engine can only report as
+    BROKER_UNAVAILABLE (2026-09-07: every signal was rejected on the XM
+    account for exactly that, while the same signal filled on Axi seconds
+    earlier). `MT5Account.symbol` has always existed to carry the
+    per-broker name; this is what finally reads it.
+
+    Trades keep storing the canonical symbol -- it identifies the
+    instrument, while the broker's name for it is a property of the account
+    and is shown there.
+    """
+    account = session.get(MT5Account, account_id)
+    if account is not None and account.symbol:
+        return account.symbol
+    return fallback
 
 
 def todays_trades(session: Session, now: datetime, account_id: int) -> list[Trade]:
@@ -126,6 +149,7 @@ class TradingEngine:
     def execute(self, signal: Signal, settings: TradingSettings) -> Trade:
         assert signal.id is not None, "signal must be persisted before execution"
         execution_key = self.build_execution_key(settings.account_id, signal.id)
+        broker_symbol = broker_symbol_for(self._session, settings.account_id, signal.symbol)
 
         existing = self._find_trade(execution_key)
         if existing is not None:
@@ -148,13 +172,13 @@ class TradingEngine:
         if broker_health is not None and broker_health.healthy:
             try:
                 account = self._broker.get_account()
-                symbol_info = self._broker.get_symbol(signal.symbol)
+                symbol_info = self._broker.get_symbol(broker_symbol)
                 # Fetched here (not just later, right before order placement)
                 # so the rules engine can screen the channel's Stop Loss
                 # against a current price (rule 7b). A fresh quote is still
                 # re-fetched right before order submission below -- this
                 # one is only for that coarse quality check.
-                quote = self._broker.get_quote(signal.symbol)
+                quote = self._broker.get_quote(broker_symbol)
             except Exception:  # noqa: BLE001
                 broker_health = BrokerHealth(healthy=False, detail="broker query failed")
 
@@ -227,7 +251,7 @@ class TradingEngine:
 
         pending_trade: Trade | None = None
         try:
-            quote = self._broker.get_quote(signal.symbol)
+            quote = self._broker.get_quote(broker_symbol)
             # BUY fills/targets off the ask, SELL off the bid -- same mirror
             # as everywhere else this distinction shows up (broker adapters,
             # rules.py rule 7b).
@@ -266,7 +290,7 @@ class TradingEngine:
             )
 
             request = OpenTradeRequest(
-                symbol=signal.symbol,
+                symbol=broker_symbol,
                 side=signal.side,
                 lot=effective_lot,
                 stop_loss=signal.channel_stop_loss,

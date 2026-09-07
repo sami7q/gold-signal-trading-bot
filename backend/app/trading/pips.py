@@ -27,8 +27,19 @@ from app.integrations.broker.base import SymbolInfo
 _FRACTIONAL_DIGITS = {3, 5}
 
 
+def is_gold_symbol(name: str) -> bool:
+    """Whether a *broker's* symbol name denotes Gold. Brokers disagree on
+    the name for the one instrument this bot trades -- XAUUSD on most,
+    plain GOLD on XM, sometimes with a suffix like XAUUSD.r or GOLD# --
+    and the 2-digit pip convention below hangs on recognising it. Matching
+    only the canonical `XAUUSD` silently gave a 10x-wrong pip size on any
+    broker that names it anything else."""
+    upper = name.upper()
+    return upper.startswith(("XAU", "GOLD")) or upper == CANONICAL_GOLD_SYMBOL
+
+
 def pip_size(symbol_info: SymbolInfo) -> Decimal:
-    is_gold = symbol_info.symbol.upper() == CANONICAL_GOLD_SYMBOL
+    is_gold = is_gold_symbol(symbol_info.symbol)
     if symbol_info.digits in _FRACTIONAL_DIGITS or (is_gold and symbol_info.digits == 2):
         return symbol_info.point * 10
     return symbol_info.point
