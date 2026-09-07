@@ -279,6 +279,63 @@ def _capture_buy_order(broker_settings=None) -> tuple[dict, object]:
     return captured, result
 
 
+def test_zero_fill_price_is_read_back_from_the_position():
+    """A Market-Execution broker can report the order DONE with `price`
+    still 0 (seen on Axi for real). Recording that 0 would make the entry
+    price -- and every distance measured from it -- nonsense, so the
+    adapter asks the broker what actually filled."""
+    fake = FakeMT5()
+
+    def fake_order_send(request):  # noqa: ANN001
+        @dataclass
+        class Result:
+            retcode: int = 10009
+            order: int = 555
+            price: float = 0.0  # the broker never filled this field in
+            volume: float = 1.0
+
+        return Result()
+
+    fake.TRADE_ACTION_DEAL = 1
+    fake.ORDER_TIME_GTC = 0
+    fake.ORDER_FILLING_IOC = 1
+    fake.TRADE_RETCODE_DONE = 10009
+    fake.order_send = fake_order_send
+    fake.symbol_info_tick = lambda symbol: type("T", (), {"bid": 4616.20, "ask": 4616.22})()
+    fake.open_positions[555] = FakePosition(
+        ticket=555, symbol="XAUUSD", type=1, volume=1.0, price_open=4616.20, sl=4626.0, tp=4610.0
+    )
+
+    class FakeSymbolInfo:
+        volume_min = 0.01
+        volume_max = 100.0
+        volume_step = 0.01
+        digits = 2
+        point = 0.01
+        trade_contract_size = 100.0
+
+    fake.symbol_info = lambda symbol: FakeSymbolInfo()
+
+    broker = _broker_with_fake(fake)
+
+    from app.core.constants import Side
+    from app.integrations.broker.base import OpenTradeRequest
+
+    execution = broker.open_sell(
+        OpenTradeRequest(
+            symbol="XAUUSD",
+            side=Side.SELL,
+            lot=Decimal("1.0"),
+            stop_loss=Decimal("4626"),
+            take_profit=Decimal("4610"),
+            client_reference="1:v1",
+        )
+    )
+
+    assert execution.success is True
+    assert execution.entry_price == Decimal("4616.20")
+
+
 def test_open_order_carries_the_bot_magic_number():
     """Distinguishes bot-placed orders from manual trades on the same
     account -- proven directly against the order_request dict `open_buy`

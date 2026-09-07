@@ -246,11 +246,29 @@ class MT5Broker(Broker):
             error = getattr(result, "comment", None) or str(mt5.last_error())
             return BrokerExecution(success=False, error=f"MT5 order rejected: {error}")
 
+        filled_price = Decimal(str(result.price))
+        if filled_price <= 0:
+            # A Market-Execution broker can return TRADE_RETCODE_DONE with
+            # `price` still 0 -- the real fill price then exists only on the
+            # resulting position/deal (seen for real on Axi: "Trade 25
+            # opened: SELL XAUUSD @ 0", 2026-09-07). Recording 0 makes the
+            # dashboard's entry price, and every distance measured from it,
+            # nonsense -- so ask the broker what actually filled.
+            opened = self.get_position(str(result.order))
+            if opened is not None and opened.entry_price > 0:
+                filled_price = opened.entry_price
+            else:
+                logger.warning(
+                    "MT5 returned a filled order with no price and the position could not "
+                    "be read back; entry price will be missing",
+                    extra={"broker_order_id": str(result.order)},
+                )
+
         return BrokerExecution(
             success=True,
             broker_order_id=str(result.order),
             broker_position_id=str(result.order),
-            entry_price=Decimal(str(result.price)),
+            entry_price=filled_price if filled_price > 0 else None,
             executed_lot=Decimal(str(result.volume)),
         )
 
