@@ -14,6 +14,7 @@ from decimal import Decimal
 from sqlmodel import Session, select
 
 from app.audit.service import AuditService
+from app.core.config import get_settings
 from app.core.constants import (
     OPEN_TRADE_STATUSES,
     STRATEGY_VERSION,
@@ -52,8 +53,10 @@ _COUNTS_TOWARD_DAILY_PLAN: frozenset[TradeStatus] = frozenset(
 )
 
 
-def broker_symbol_for(session: Session, account_id: int, fallback: str) -> str:
-    """The name *this account's broker* knows the instrument by.
+def broker_symbol_for(
+    session: Session, account_id: int, fallback: str, env_symbol: str | None = None
+) -> str:
+    """The name *this process's broker* knows the instrument by.
 
     A signal's `symbol` is the canonical `XAUUSD` the parser normalises
     every channel message to -- an internal identity, not something a
@@ -61,13 +64,22 @@ def broker_symbol_for(session: Session, account_id: int, fallback: str) -> str:
     for `XAUUSD` fails, which the rules engine can only report as
     BROKER_UNAVAILABLE (2026-09-07: every signal was rejected on the XM
     account for exactly that, while the same signal filled on Axi seconds
-    earlier). `MT5Account.symbol` has always existed to carry the
-    per-broker name; this is what finally reads it.
+    earlier).
 
-    Trades keep storing the canonical symbol -- it identifies the
-    instrument, while the broker's name for it is a property of the account
-    and is shown there.
+    `env_symbol` (this process's own `MT5_SYMBOL`) wins when set, because
+    it is the only one of the three that has been *proven*: `MT5Broker.
+    connect()` resolves it, selects it, and refuses to start without a live
+    tick for it, so a connected process's env symbol is necessarily a name
+    its broker accepts. `MT5Account.symbol` is operator-typed and can be
+    stale -- on the very day this was written the XM row still said
+    `XAUUSD` while its worker's env had long said `GOLD` -- so it is the
+    second choice, and the canonical name the last.
+
+    Trades keep storing the canonical symbol: it identifies the instrument,
+    while the broker's name for it is a property of the account.
     """
+    if env_symbol:
+        return env_symbol
     account = session.get(MT5Account, account_id)
     if account is not None and account.symbol:
         return account.symbol
@@ -149,7 +161,9 @@ class TradingEngine:
     def execute(self, signal: Signal, settings: TradingSettings) -> Trade:
         assert signal.id is not None, "signal must be persisted before execution"
         execution_key = self.build_execution_key(settings.account_id, signal.id)
-        broker_symbol = broker_symbol_for(self._session, settings.account_id, signal.symbol)
+        broker_symbol = broker_symbol_for(
+            self._session, settings.account_id, signal.symbol, get_settings().mt5_symbol
+        )
 
         existing = self._find_trade(execution_key)
         if existing is not None:

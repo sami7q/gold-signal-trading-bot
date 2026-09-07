@@ -201,7 +201,9 @@ class TradingService:
     ) -> Signal:
         assert settings.auto_sl_fallback_pips is not None
         # Same per-broker naming as execution -- see broker_symbol_for.
-        symbol = broker_symbol_for(self._session, settings.account_id, signal.symbol)
+        symbol = broker_symbol_for(
+            self._session, settings.account_id, signal.symbol, get_settings().mt5_symbol
+        )
         try:
             broker_health = self._broker.health()
             symbol_info = self._broker.get_symbol(symbol) if broker_health.healthy else None

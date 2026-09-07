@@ -31,13 +31,28 @@ def _symbol_info(name: str) -> SymbolInfo:
     )
 
 
-def test_broker_symbol_comes_from_the_account(session, seed_user, account_factory):
+def test_the_processes_own_env_symbol_wins(session, seed_user, account_factory):
+    """`MT5_SYMBOL` is the only one of the three that is proven: connect()
+    resolves it, selects it and refuses to start without a live tick for
+    it. The account row is operator-typed and can be stale -- on the day
+    this was written the XM row still said XAUUSD while its worker's env
+    had long said GOLD, and every one of its signals was rejected."""
     account = account_factory(session, seed_user, label="XM", mt5_login="777020")
+    account.symbol = CANONICAL_GOLD_SYMBOL
+    session.add(account)
+    session.commit()
+
+    assert broker_symbol_for(session, account.id, CANONICAL_GOLD_SYMBOL, "GOLD") == "GOLD"
+
+
+def test_broker_symbol_falls_back_to_the_account(session, seed_user, account_factory):
+    account = account_factory(session, seed_user, label="XM", mt5_login="777022")
     account.symbol = "GOLD"
     session.add(account)
     session.commit()
 
     assert broker_symbol_for(session, account.id, CANONICAL_GOLD_SYMBOL) == "GOLD"
+    assert broker_symbol_for(session, account.id, CANONICAL_GOLD_SYMBOL, "") == "GOLD"
 
 
 def test_falls_back_to_the_canonical_symbol_when_the_account_has_none(
