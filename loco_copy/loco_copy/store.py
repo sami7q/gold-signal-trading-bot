@@ -276,6 +276,16 @@ class Store:
     def users(self) -> list[sqlite3.Row]:
         return list(self._db.execute("SELECT id, username, display_name FROM users ORDER BY id"))
 
+    def delete_user(self, username: str) -> bool:
+        """Removes the login and signs it out everywhere. Returns False if there was no such user."""
+        with self.tx() as db:
+            row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+            if row is None:
+                return False
+            db.execute("DELETE FROM sessions WHERE user_id=?", (row["id"],))
+            db.execute("DELETE FROM users WHERE id=?", (row["id"],))
+            return True
+
     def create_session(self, token_hash: str, user_id: int, expires_at: int) -> None:
         with self.tx() as db:
             db.execute("DELETE FROM sessions WHERE expires_at < ?", (now_ms(),))

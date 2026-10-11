@@ -281,6 +281,14 @@ def cmd_add_user(s: Settings, a: argparse.Namespace) -> None:
     print(f"Dashboard user '{a.username}' saved.")
 
 
+def cmd_delete_user(s: Settings, a: argparse.Namespace) -> None:
+    store = Store(s.db_path)
+    if not store.delete_user(a.username):
+        raise SystemExit(f"No dashboard user '{a.username}'.")
+    left = ", ".join(r["username"] for r in store.users()) or "none -- create one with add-user"
+    print(f"Dashboard user '{a.username}' deleted and signed out. Remaining: {left}")
+
+
 def cmd_import_users(s: Settings, a: argparse.Namespace) -> None:
     """Copy dashboard logins (with their existing password hashes) from the old gold-bot database."""
     import sqlite3  # noqa: PLC0415
@@ -327,6 +335,9 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("username")
     au.add_argument("--display-name", default=None)
     au.set_defaults(fn=cmd_add_user)
+    du = sub.add_parser("delete-user", help="remove a dashboard login and end its sessions")
+    du.add_argument("username")
+    du.set_defaults(fn=cmd_delete_user)
     iu = sub.add_parser("import-users", help="copy dashboard logins from the old gold-bot database")
     iu.add_argument("path", help="path to goldbot.db")
     iu.set_defaults(fn=cmd_import_users)

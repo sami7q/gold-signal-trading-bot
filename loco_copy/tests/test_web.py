@@ -48,6 +48,16 @@ def test_login_me_logout(ctx):
     assert c.get("/api/auth/me").status_code == 401
 
 
+def test_deleted_user_is_signed_out(ctx):
+    s, c = ctx
+    login(c)
+    assert c.get("/api/auth/me").status_code == 200
+    store = Store(s.db_path)
+    assert store.delete_user("sami") and not store.delete_user("sami")
+    assert c.get("/api/auth/me").status_code == 401  # the live session died with the user
+    assert login(c).status_code == 401
+
+
 def test_brute_force_is_throttled(ctx):
     _s, c = ctx
     for _ in range(5):
