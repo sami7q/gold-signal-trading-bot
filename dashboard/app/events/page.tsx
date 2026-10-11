@@ -1,13 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import { Activity } from "lucide-react";
+import { Fragment, useState } from "react";
+import { Activity, ChevronDown } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Label, Select } from "@/components/ui/input";
-import { DecisionBadge, EventTypeBadge, SideBadge } from "@/components/ui/badge";
+import { DecisionBadge, EventTypeBadge, LeaderBadge, SideBadge } from "@/components/ui/badge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
+import { EventDetail } from "@/components/trade/event-detail";
+import { LeaderSelect } from "@/components/trade/leader-select";
 import { useEvents } from "@/hooks/use-loco";
-import { arRejection, formatDateTime, formatMs, formatNumber, formatPrice } from "@/lib/format";
+import { arRejection, cn, formatDateTime, formatMs, formatNumber, formatPrice } from "@/lib/format";
+import { urlParam } from "@/lib/url";
 
 const FILTERS = [
   { value: "", label: "كل القرارات" },
@@ -20,17 +23,22 @@ const FILTERS = [
   { value: "FAILED", label: "فشل" },
 ];
 
+const COLUMNS = 12;
+
 export default function EventsPage() {
   const [decision, setDecision] = useState("");
-  const query = useEvents(decision || undefined, 500);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [leader, setLeader] = useState(() => urlParam("leader") ?? "");
+  const query = useEvents(decision || undefined, 500, leader || undefined);
+  const toggle = (id: number) => setOpenId((cur) => (cur === id ? null : id));
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-5">
       <div>
-        <h1 className="text-xl font-semibold text-bone">حركات Loco</h1>
+        <h1 className="text-xl font-semibold text-bone">حركات المتداولين</h1>
         <p className="mt-1 text-sm text-muted">
-          كل حركة يقوم بها Loco (فتح، تعزيز، تقليص، إغلاق، انعكاس) وقرار البوت فيها مع السبب. التعزيز يُسجَّل ولا
-          يُنسخ أبدًا، والإغلاقات لا تُمنع أبدًا.
+          كل حركة يقوم بها أي متداول ننسخه (فتح، تعزيز، تقليص، إغلاق، انعكاس) وقرار البوت فيها مع السبب. اضغط على أي
+          حركة لترى أمره كاملًا، مركزه قبل وبعد، وصفقتنا المقابلة. التعزيز يُسجَّل ولا يُنسخ، والإغلاقات لا تُمنع أبدًا.
         </p>
       </div>
 
@@ -44,6 +52,7 @@ export default function EventsPage() {
               ))}
             </Select>
           </div>
+          <LeaderSelect value={leader} onChange={setLeader} />
         </div>
 
         {query.isLoading ? (
@@ -51,39 +60,73 @@ export default function EventsPage() {
         ) : query.isError ? (
           <ErrorState message={(query.error as Error).message} />
         ) : !query.data?.length ? (
-          <EmptyState icon={Activity} title="لا توجد حركات بعد" description="Loco يفتح تقريبًا صفقة إلى صفقتين يوميًا." />
+          <EmptyState icon={Activity} title="لا توجد حركات بعد" description="كل حركة يقوم بها أي متداول تظهر هنا خلال ثوانٍ." />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="@container overflow-x-auto">
             <table className="w-full min-w-[1100px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border-soft text-[11px] text-muted-dim">
+                  <th className="w-8 px-2 py-2" aria-label="التفاصيل" />
                   <th className="px-3 py-2 font-medium">الوقت</th>
+                  <th className="px-3 py-2 font-medium">المتداول</th>
                   <th className="px-3 py-2 font-medium">العملة</th>
                   <th className="px-3 py-2 font-medium">الحركة</th>
                   <th className="px-3 py-2 font-medium">الاتجاه</th>
-                  <th className="px-3 py-2 text-right font-medium">سعر Loco</th>
+                  <th className="px-3 py-2 text-right font-medium">سعره</th>
                   <th className="px-3 py-2 text-right font-medium">النسبة</th>
                   <th className="px-3 py-2 text-right font-medium">زمن الالتقاط</th>
                   <th className="px-3 py-2 font-medium">القرار</th>
+                  <th className="px-3 py-2 font-medium">صفقتنا</th>
                   <th className="px-3 py-2 font-medium">السبب</th>
                 </tr>
               </thead>
               <tbody className="font-data whitespace-nowrap">
-                {query.data.map((e) => (
-                  <tr key={e.id} className="border-b border-border-soft/60 last:border-0 hover:bg-white/[0.02]">
-                    <td className="px-3 py-2 text-muted">{formatDateTime(e.detected_at)}</td>
-                    <td className="px-3 py-2 text-bone">{e.coin}</td>
-                    <td className="px-3 py-2"><EventTypeBadge type={e.type} /></td>
-                    <td className="px-3 py-2"><SideBadge side={e.side} /></td>
-                    <td className="px-3 py-2 text-right text-bone">{formatPrice(e.leader_px)}</td>
-                    <td className="px-3 py-2 text-right text-muted">{e.fraction ? `${formatNumber(Number(e.fraction) * 100, 1)}%` : "—"}</td>
-                    <td className="px-3 py-2 text-right text-muted">{formatMs(e.lag_ms)}</td>
-                    <td className="px-3 py-2"><DecisionBadge decision={e.decision} /></td>
-                    <td dir="auto" className="max-w-[22rem] truncate px-3 py-2 text-start font-sans text-xs text-warn" title={e.detail ?? undefined}>
-                      {e.rejection ? arRejection(e.rejection) : <span className="text-muted-dim">{e.detail ?? "—"}</span>}
-                    </td>
-                  </tr>
-                ))}
+                {query.data.map((e) => {
+                  const open = openId === e.id;
+                  return (
+                    <Fragment key={e.id}>
+                      <tr
+                        onClick={() => toggle(e.id)}
+                        className={cn(
+                          "cursor-pointer border-b border-border-soft/60 hover:bg-white/[0.03]",
+                          open && "bg-gold/[0.06] hover:bg-gold/[0.08]",
+                        )}
+                      >
+                        <td className="px-2 py-2">
+                          <button
+                            type="button"
+                            aria-expanded={open}
+                            aria-label={open ? "إخفاء التفاصيل" : "عرض التفاصيل"}
+                            onClick={(ev) => { ev.stopPropagation(); toggle(e.id); }}
+                            className="flex h-6 w-6 items-center justify-center rounded text-muted hover:text-gold-bright focus-visible:outline focus-visible:outline-1 focus-visible:outline-gold"
+                          >
+                            <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180 text-gold-bright")} />
+                          </button>
+                        </td>
+                        <td className="px-3 py-2 text-muted">{formatDateTime(e.detected_at)}</td>
+                        <td className="px-3 py-2 font-sans"><LeaderBadge leader={e.leader} /></td>
+                        <td className="px-3 py-2 text-bone">{e.coin}</td>
+                        <td className="px-3 py-2"><EventTypeBadge type={e.type} /></td>
+                        <td className="px-3 py-2"><SideBadge side={e.side} /></td>
+                        <td className="px-3 py-2 text-right text-bone">{formatPrice(e.leader_px)}</td>
+                        <td className="px-3 py-2 text-right text-muted">{e.fraction ? `${formatNumber(Number(e.fraction) * 100, 1)}%` : "—"}</td>
+                        <td className="px-3 py-2 text-right text-muted">{formatMs(e.lag_ms)}</td>
+                        <td className="px-3 py-2"><DecisionBadge decision={e.decision} /></td>
+                        <td className="px-3 py-2 text-muted">{e.copy_id ? `#${e.copy_id}` : "—"}</td>
+                        <td dir="auto" className="max-w-[22rem] truncate px-3 py-2 text-start font-sans text-xs text-warn" title={e.detail ?? undefined}>
+                          {e.rejection ? arRejection(e.rejection) : <span className="text-muted-dim">{e.detail ?? "—"}</span>}
+                        </td>
+                      </tr>
+                      {open ? (
+                        <tr className="border-b border-border-soft">
+                          <td colSpan={COLUMNS} className="whitespace-normal p-0">
+                            <EventDetail id={e.id} />
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

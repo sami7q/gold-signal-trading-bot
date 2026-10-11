@@ -271,7 +271,8 @@ class BybitBroker(Broker):
         return [ClosedTrade(symbol=r["symbol"], side=-1 if r.get("side") == "Buy" else 1, qty=_dec(r.get("closedSize")),
                             avg_exit_price=_dec(r.get("avgExitPrice")), realized_pnl=_dec(r.get("closedPnl")),
                             closed_at_ms=int(r.get("updatedTime") or r.get("createdTime") or 0),
-                            is_liquidation=r.get("execType") == "BustTrade") for r in rows]
+                            is_liquidation=r.get("execType") == "BustTrade", open_fee=_dec(r.get("openFee")))
+                for r in rows]
 
     def health(self) -> Health:
         try:

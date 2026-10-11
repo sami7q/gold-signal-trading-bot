@@ -2,15 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ArrowLeftRight, Radar, Activity, LineChart, SlidersHorizontal, ScrollText, X } from "lucide-react";
+import { LayoutDashboard, ArrowLeftRight, Radar, Activity, LineChart, SlidersHorizontal, ScrollText, Users, X } from "lucide-react";
 import { cn } from "@/lib/format";
 import { UserMenu } from "@/components/shell/user-menu";
 
 const NAV_ITEMS = [
   { href: "/", label: "نظرة عامة", icon: LayoutDashboard },
-  { href: "/loco", label: "مراكز Loco", icon: Radar },
+  { href: "/leaders", label: "المتداولين", icon: Users },
+  { href: "/loco", label: "مراكز المتداولين", icon: Radar },
   { href: "/trades", label: "صفقاتنا", icon: ArrowLeftRight },
-  { href: "/events", label: "حركات Loco", icon: Activity },
+  { href: "/events", label: "حركات المتداولين", icon: Activity },
   { href: "/analytics", label: "التحليلات", icon: LineChart },
   { href: "/logs", label: "السجلات", icon: ScrollText },
   { href: "/settings", label: "التحكم والإعدادات", icon: SlidersHorizontal },
@@ -75,7 +76,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       </nav>
 
       <div className="border-t border-border-soft px-4 py-3 text-[11px] leading-relaxed text-muted-dim">
-        ينسخ صفقات محفظة Loco على Hyperliquid إلى حساب Bybit واحد — لحظيًا، حسب الوضع المفعّل في صفحة التحكم.
+        ينسخ صفقات متداولين على Hyperliquid إلى Bybit — لحظيًا، حسب الوضع المفعّل في صفحة التحكم.
       </div>
     </aside>
   );

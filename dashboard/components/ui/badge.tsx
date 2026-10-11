@@ -1,4 +1,4 @@
-import { arCopyStatus, arDecision, arEventType, arMode, arSeverity, arSide, cn } from "@/lib/format";
+import { arCopyStatus, arDecision, arEventType, arMode, arSeverity, arSide, cn, leaderName } from "@/lib/format";
 
 type Tone = "neutral" | "gold" | "win" | "loss" | "warn" | "info";
 
@@ -77,4 +77,9 @@ export function SeverityBadge({ severity }: { severity: string }) {
 
 export function ModeBadge({ mode }: { mode: string }) {
   return <Badge tone={MODE_TONE[mode] ?? "neutral"}>{arMode(mode)}</Badge>;
+}
+
+/** Which copied leader a row belongs to. Loco in gold, every other leader in a neutral tone. */
+export function LeaderBadge({ leader }: { leader: string }) {
+  return <Badge tone={leader === "loco" ? "gold" : "info"}>{leaderName(leader)}</Badge>;
 }

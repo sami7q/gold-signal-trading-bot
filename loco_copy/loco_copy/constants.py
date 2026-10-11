@@ -59,6 +59,12 @@ class Rejection(StrEnum):
     #: One-way mode holds one position per symbol, so a still-open copy from an earlier episode on the same
     #: coin blocks a new one (otherwise the two would silently merge on the exchange).
     COIN_ALREADY_OPEN = "COIN_ALREADY_OPEN"
+    #: Two leaders on one exchange account: a symbol another lane really holds would merge with ours.
+    COIN_HELD_BY_OTHER_LEADER = "COIN_HELD_BY_OTHER_LEADER"
+    #: This leader's lane is switched off on the dashboard (new opens only -- exits always follow).
+    LANE_PAUSED = "LANE_PAUSED"
+    #: Lane mode is EXECUTE but ALLOW_EXECUTE__<LABEL> is false: the open is recorded as observed, never sent.
+    EXECUTION_NOT_ALLOWED = "EXECUTION_NOT_ALLOWED"
     BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
     MAX_OPEN_POSITIONS = "MAX_OPEN_POSITIONS"
     INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"

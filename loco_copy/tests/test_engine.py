@@ -88,6 +88,17 @@ async def test_reduce_maths_follow_the_same_fraction(harness):
     assert h.paper.position("HYPEUSDT").qty == Decimal("375.00")
 
 
+async def test_realized_pnl_is_net_of_both_fees(harness):
+    # 2026-10-11 BTC copy showed +138.07 while the account made +83.08: the opening fee was never subtracted
+    h = harness()
+    h.paper._fee = Decimal("0.001")
+    await h.fill(F(0, "HYPE", "B", 40, 8, 0))  # we buy 500 @ 40 -> opening fee 20
+    h.paper.set_price("HYPEUSDT", Decimal("40.2"))
+    await h.fill(F(1000, "HYPE", "A", "40.2", 8, 8))  # Loco closes, we sell 500 @ 40.2 -> closing fee 20.1
+    c = h.store.get_copy("HYPE", 1)
+    assert c.fees == Decimal("40.1") and c.realized_pnl == Decimal("59.9")  # 100 gross - 20 - 20.1
+
+
 async def test_close_follows_and_cancels_tp(harness):
     h = harness()
     await h.fill(F(0, "HYPE", "B", 40, 8, 0))

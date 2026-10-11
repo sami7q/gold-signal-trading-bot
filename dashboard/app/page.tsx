@@ -26,10 +26,10 @@ import type { Overview } from "@/types/api";
 
 function Alerts({ data }: { data: Overview }) {
   const items: string[] = [];
-  if (!data.bot.running) items.push("البوت متوقف على السيرفر — لا يتابع Loco الآن.");
-  else if (!data.bot.ws_connected) items.push("الاتصال اللحظي بـ Loco منقطع — البوت يحاول إعادة الاتصال.");
+  if (!data.bot.running) items.push("البوت متوقف على السيرفر — لا يتابع المتداولين الآن.");
+  else if (!data.bot.ws_connected) items.push("الاتصال اللحظي بـ Hyperliquid منقطع — البوت يحاول إعادة الاتصال.");
   if (data.risk.kill_switch) items.push("الإيقاف الطارئ مفعّل — لا تُفتح صفقات جديدة (الإغلاقات مستمرة).");
-  if (data.risk.leader_breaker) items.push("قاطع تراجع Loco مفعّل — تراجع حسابه أكثر من الحد المسموح.");
+  if (data.risk.leader_breaker) items.push("قاطع تراجع أحد المتداولين مفعّل — تراجع حسابه أكثر من الحد المسموح.");
   if (data.risk.daily_loss_hit) items.push("بلغ حد الخسارة اليومي — لا صفقات جديدة حتى بداية اليوم التالي (UTC).");
   if (!items.length) return null;
   return (
@@ -57,8 +57,16 @@ export default function OverviewPage() {
       <div>
         <h1 className="text-xl font-semibold text-bone">نظرة عامة</h1>
         <p className="mt-1 text-sm text-muted">
-          نسخ صفقات Loco إلى {brokerLabel(data?.account.broker, data?.account.env)} — الوضع الحالي:{" "}
-          <span className="text-bone">{data ? arMode(data.mode.mode) : "—"}</span>
+          نسخ صفقات المتداولين إلى {brokerLabel(data?.account.broker, data?.account.env)} —{" "}
+          {data?.lanes?.length
+            ? data.lanes.map((l, i) => (
+                <span key={l.label}>
+                  {i ? " · " : ""}
+                  {l.name}: <span className="text-bone">{l.paused ? "موقوف" : arMode(l.mode)}</span>
+                </span>
+              ))
+            : <span className="text-bone">{data ? arMode(data.mode.mode) : "—"}</span>}
+          . الأرقام أدناه لكل المتداولين معًا.
         </p>
       </div>
 
@@ -77,7 +85,7 @@ export default function OverviewPage() {
               tone={pnlTone(stats.realized_pnl_today)}
               sub={`${stats.closed_today} صفقة أُغلقت اليوم`}
             />
-            <StatCard label="المراكز المفتوحة" value={stats.open_copies} sub={`Loco لديه ${data.leader.open_positions} مركز`} />
+            <StatCard label="المراكز المفتوحة" value={stats.open_copies} sub={`${data.leader.name ?? "Loco"} لديه ${data.leader.open_positions} مركز`} />
             <StatCard label="إجمالي الصفقات" value={stats.trades_total} sub={`${stats.take_profits} هدف ربح · ${stats.liquidations} تصفية`} />
             <StatCard label="الرابحة" value={stats.wins} tone="win" />
             <StatCard label="الخاسرة" value={stats.losses} tone="loss" />
@@ -85,8 +93,8 @@ export default function OverviewPage() {
             <StatCard label="صافي الربح المحقق" value={formatMoney(stats.realized_pnl_total)} tone={pnlTone(stats.realized_pnl_total)} />
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatCard label="حساب Loco" value={formatUsd(data.leader.account_value)} sub={`لقطة ${formatRelativeTime(data.leader.snapshot_at)}`} />
-            <StatCard label="سرعة الالتقاط (24س)" value={formatMs(data.metrics_24h.detect_p50_ms)} sub="من صفقة Loco حتى وصولها للبوت" />
+            <StatCard label={`حساب ${data.leader.name ?? "Loco"}`} value={formatUsd(data.leader.account_value)} sub={`لقطة ${formatRelativeTime(data.leader.snapshot_at)}`} />
+            <StatCard label="سرعة الالتقاط (24س)" value={formatMs(data.metrics_24h.detect_p50_ms)} sub="من صفقة المتداول حتى وصولها للبوت" />
             <StatCard label="سرعة التنفيذ (24س)" value={formatMs(data.metrics_24h.order_p50_ms)} sub="من الالتقاط حتى التنفيذ" />
             <StatCard
               label="صفقات المراقبة"
@@ -140,14 +148,14 @@ export default function OverviewPage() {
 
         <Card>
           <CardHeader
-            title="آخر حركات Loco"
+            title="آخر حركات المتداولين"
             subtitle="وقرار البوت في كل حركة"
             action={<Link href="/events" className="text-xs text-gold hover:text-gold-bright">عرض الكل ←</Link>}
           />
           {events.isLoading ? (
             <LoadingState />
           ) : !events.data?.length ? (
-            <EmptyState icon={Activity} title="لا توجد حركات بعد" description="Loco يفتح تقريبًا صفقة إلى صفقتين يوميًا." />
+            <EmptyState icon={Activity} title="لا توجد حركات بعد" description="كل حركة يقوم بها أي متداول تظهر هنا خلال ثوانٍ." />
           ) : (
             <ul className="divide-y divide-border-soft/60">
               {events.data.map((e) => (
@@ -177,7 +185,7 @@ export default function OverviewPage() {
         {copies.isLoading ? (
           <LoadingState />
         ) : !copies.data?.length ? (
-          <EmptyState icon={Inbox} title="لا توجد صفقات بعد" description="أول صفقة جديدة يفتحها Loco بعد تفعيل النسخ ستظهر هنا." />
+          <EmptyState icon={Inbox} title="لا توجد صفقات بعد" description="أول صفقة جديدة يفتحها أي متداول بعد تفعيل النسخ ستظهر هنا." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-left text-sm">

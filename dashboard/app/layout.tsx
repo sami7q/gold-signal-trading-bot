@@ -18,7 +18,7 @@ const plexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: "LOCO — نسخ صفقات",
-  description: "لوحة تحكم بوت نسخ صفقات Loco من Hyperliquid إلى Bybit.",
+  description: "لوحة تحكم بوت نسخ صفقات المتداولين من Hyperliquid إلى Bybit.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

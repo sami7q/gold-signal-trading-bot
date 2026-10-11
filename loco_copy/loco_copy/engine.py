@@ -41,14 +41,24 @@ async def run_inline[R](fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
     return fn(*args, **kwargs)
 
 
-def open_client_id(coin: str, episode: int) -> str:
-    return f"loco:{coin}:{episode}:open"
+def open_client_id(coin: str, episode: int, leader: str = "loco") -> str:
+    """`<label>:<coin>:<episode>:open` -- lane `loco` keeps the v2 ids, so recovery of old orders still works."""
+    return f"{leader}:{coin}:{episode}:open"
+
+
+#: symbol -> label of another lane that really holds it on the same exchange account (shared-account layout).
+HeldElsewhere = Callable[[str], str | None]
+
+
+def _nobody_else(_symbol: str) -> str | None:
+    return None
 
 
 class CopyEngine:
     def __init__(self, *, store: Store, broker: Broker, settings: Settings, risk: RiskGuard, notifier: Notifier,
                  mapper: SymbolMapper, tracker: LeaderTracker, instruments: dict[str, InstrumentInfo],
-                 clock: Callable[[], int] = _now_ms, run_sync: RunSync = asyncio.to_thread) -> None:
+                 clock: Callable[[], int] = _now_ms, run_sync: RunSync = asyncio.to_thread,
+                 held_elsewhere: HeldElsewhere = _nobody_else) -> None:
         self._store = store
         self._broker = broker
         self._s = settings
@@ -59,6 +69,8 @@ class CopyEngine:
         self.instruments = instruments
         self._clock = clock
         self._run = run_sync
+        self._held_elsewhere = held_elsewhere
+        self.leader = settings.lane
 
     def use_settings(self, settings: Settings) -> None:
         """Runtime mode switch from the dashboard (watch / observe / execute)."""
@@ -68,8 +80,9 @@ class CopyEngine:
 
     async def handle(self, event: LeaderEvent) -> Decision:
         if event.type == EventType.ADD:
-            self._store.insert_event(event, Decision.IGNORED_ADD)
-            self._n.info("IGNORED_ADD", coin=event.coin, episode=event.episode_id, px=str(event.leader_px))
+            self._event(event, Decision.IGNORED_ADD)
+            self._n.info("IGNORED_ADD", leader=self.leader, coin=event.coin, episode=event.episode_id,
+                         px=str(event.leader_px))
             return Decision.IGNORED_ADD
         if event.type == EventType.OPEN:
             return await self._open(event)
@@ -103,12 +116,13 @@ class CopyEngine:
             sizing = size_order(equity=account.equity, mark=mark, side=e.side, instrument=inst,
                                 risk_per_trade=self._s.risk_per_trade, leverage=self._s.leverage,
                                 tp_roi=self._s.take_profit_roi, max_notional=self._s.max_notional_per_coin)
-        live = self._store.live_copies()
-        observed_open = [c for c in self._store.copies_with_status(CopyStatus.OBSERVED_ONLY) if c.closed_at is None]
+        live = self._store.live_copies(leader=self.leader)
+        observed_open = [c for c in self._store.copies_with_status(CopyStatus.OBSERVED_ONLY, leader=self.leader)
+                         if c.closed_at is None]
         bctx = BrokerContext(
             side=e.side, leader_px=leader_px, mark=mark, max_entry_drift=self._s.max_entry_drift,
             tp_roi=self._s.take_profit_roi, leverage=self._s.leverage,
-            copy_exists_for_episode=self._store.get_copy(e.coin, e.episode_id) is not None,
+            copy_exists_for_episode=self._store.get_copy(e.coin, e.episode_id, leader=self.leader) is not None,
             open_copy_on_coin=any(c.coin == e.coin for c in live + observed_open),
             broker_healthy=bool(health and health.healthy), open_copies=len(live + observed_open),
             max_open_positions=self._s.max_open_positions, account=account,
@@ -117,23 +131,31 @@ class CopyEngine:
         rejection = broker_checks(bctx)
         if rejection is not None or sizing is None or mark is None:
             return self._reject(e, rejection or Rejection.BROKER_UNAVAILABLE)
+        holder = self._held_elsewhere(sym.symbol)
+        if holder is not None:
+            # One exchange account in one-way mode holds one position per symbol: ours would merge with theirs.
+            return self._reject(e, Rejection.COIN_HELD_BY_OTHER_LEADER, holder=holder)
 
         copy = Copy(coin=e.coin, symbol=sym.symbol, episode_id=e.episode_id, side=e.side,
                     status=CopyStatus.SUBMITTING, qty_initial=sizing.qty, qty_open=Decimal(0),
                     leader_entry_px=leader_px, tp_price=sizing.tp_price, margin=sizing.margin,
-                    latency_detect_ms=e.detected_at_ms - e.leader_time_ms)
+                    latency_detect_ms=e.detected_at_ms - e.leader_time_ms, leader=self.leader)
 
-        if self._s.copy_observe_only:
+        gated = not self._s.copy_observe_only and not self._s.allow_execute
+        if self._s.copy_observe_only or gated:
             copy.status, copy.qty_open, copy.entry_price = CopyStatus.OBSERVED_ONLY, sizing.qty, mark
             copy.opened_at = self._clock()
             copy.slippage_bps = e.side * (mark / leader_px - 1) * 10_000
             self._store.insert_copy(copy)
-            self._store.insert_event(e, Decision.OBSERVED_ONLY, detail=f"qty={sizing.qty} tp={sizing.tp_price}")
-            self._n.info("OBSERVED_ONLY", coin=e.coin, episode=e.episode_id, side=e.side, qty=str(sizing.qty),
-                         mark=str(mark), leader_px=str(leader_px), tp=str(sizing.tp_price))
+            # The execution gate (botup.md v3 §5.3): EXECUTE without ALLOW_EXECUTE__<LABEL> is recorded, never sent.
+            self._event(e, Decision.OBSERVED_ONLY, rejection=str(Rejection.EXECUTION_NOT_ALLOWED) if gated else None,
+                        detail=("execution gate: " if gated else "") + f"qty={sizing.qty} tp={sizing.tp_price}")
+            self._n.info("OBSERVED_ONLY", leader=self.leader, coin=e.coin, episode=e.episode_id, side=e.side,
+                         qty=str(sizing.qty), mark=str(mark), leader_px=str(leader_px), tp=str(sizing.tp_price),
+                         gated=gated)
             return Decision.OBSERVED_ONLY
 
-        client_id = open_client_id(e.coin, e.episode_id)
+        client_id = open_client_id(e.coin, e.episode_id, self.leader)
         copy = self._store.insert_copy(copy)
         if not self._store.insert_order(copy_id=copy.id, client_id=client_id, kind=OrderKind.OPEN,
                                         requested_qty=sizing.qty):
@@ -161,8 +183,8 @@ class CopyEngine:
             copy.status, copy.close_reason, copy.closed_at = CopyStatus.FAILED, res.error, self._clock()
             self._store.update_copy(copy)
             self._store.finish_order(client_id, OrderStatus.FAILED, error=res.error)
-            self._store.insert_event(e, Decision.FAILED, detail=res.error)
-            self._n.warning("OPEN_FAILED", coin=e.coin, episode=e.episode_id, error=res.error)
+            self._event(e, Decision.FAILED, detail=res.error)
+            self._n.warning("OPEN_FAILED", leader=self.leader, coin=e.coin, episode=e.episode_id, error=res.error)
             return Decision.FAILED
 
         filled_at = res.filled_at_ms or self._clock()
@@ -170,6 +192,7 @@ class CopyEngine:
         copy.entry_price, copy.qty_initial, copy.qty_open = res.avg_price, res.filled_qty, res.filled_qty
         copy.margin = res.filled_qty * res.avg_price / self._s.leverage
         copy.fees += res.fee
+        copy.realized_pnl -= res.fee  # realized_pnl is net of every fee paid, the opening one included
         copy.opened_at = filled_at
         copy.slippage_bps = e.side * (res.avg_price / copy.leader_entry_px - 1) * 10_000
         copy.latency_order_ms = filled_at - e.detected_at_ms
@@ -184,30 +207,36 @@ class CopyEngine:
         self._store.update_copy(copy)
         self._store.finish_order(client_id, OrderStatus.FILLED, filled_qty=res.filled_qty, avg_price=res.avg_price,
                                  fee=res.fee, filled_at_ms=filled_at)
-        self._store.insert_event(e, Decision.COPIED, detail=f"qty={res.filled_qty} px={res.avg_price}")
-        self._n.info("COPY_OPENED", coin=e.coin, symbol=copy.symbol, episode=e.episode_id, side=e.side,
-                     qty=str(res.filled_qty), entry=str(res.avg_price), tp=str(copy.tp_price),
+        self._event(e, Decision.COPIED, detail=f"qty={res.filled_qty} px={res.avg_price}")
+        self._n.info("COPY_OPENED", leader=self.leader, coin=e.coin, symbol=copy.symbol, episode=e.episode_id,
+                     side=e.side, qty=str(res.filled_qty), entry=str(res.avg_price), tp=str(copy.tp_price),
                      slippage_bps=str(round(copy.slippage_bps, 2)), latency_ms=copy.latency_order_ms)
         return Decision.COPIED
 
-    def _reject(self, e: LeaderEvent, why: Rejection) -> Decision:
-        self._store.insert_event(e, Decision.REJECTED, rejection=str(why))
+    def _event(self, e: LeaderEvent, decision: Decision, *, rejection: str | None = None,
+               detail: str | None = None) -> None:
+        self._store.insert_event(e, decision, rejection=rejection, detail=detail, leader=self.leader)
+
+    def _reject(self, e: LeaderEvent, why: Rejection, *, holder: str | None = None) -> Decision:
+        self._event(e, Decision.REJECTED, rejection=str(why), detail=f"held by {holder}" if holder else None)
         level = "WARNING" if why in (Rejection.SYMBOL_NOT_LISTED, Rejection.BROKER_UNAVAILABLE) else "INFO"
-        self._n.emit(level, "OPEN_REJECTED", coin=e.coin, episode=e.episode_id, reason=str(why))
+        self._n.emit(level, "OPEN_REJECTED", leader=self.leader, coin=e.coin, episode=e.episode_id, reason=str(why),
+                     **({"held_by": holder} if holder else {}))
         return Decision.REJECTED
 
     # -- REDUCE / CLOSE / FLIP ---------------------------------------------------------------------------------
 
     async def _exit(self, e: LeaderEvent) -> Decision:
-        copy = self._store.get_copy(e.coin, e.episode_id)
+        copy = self._store.get_copy(e.coin, e.episode_id, leader=self.leader)
         if e.type == EventType.REDUCE and not self._s.follow_reduces:
-            self._store.insert_event(e, Decision.IGNORED_REDUCE)
+            self._event(e, Decision.IGNORED_REDUCE)
             return Decision.IGNORED_REDUCE
         if copy is None or copy.closed_at is not None or copy.status not in (CopyStatus.OPEN,
                                                                              CopyStatus.OBSERVED_ONLY):
             detail = None if copy is None else f"copy is {copy.status}"
-            self._store.insert_event(e, Decision.NO_MATCHING_COPY, detail=detail)
-            self._n.info("NO_MATCHING_COPY", coin=e.coin, episode=e.episode_id, type=str(e.type), detail=detail)
+            self._event(e, Decision.NO_MATCHING_COPY, detail=detail)
+            self._n.info("NO_MATCHING_COPY", leader=self.leader, coin=e.coin, episode=e.episode_id, type=str(e.type),
+                         detail=detail)
             return Decision.NO_MATCHING_COPY
         inst = self.instruments.get(copy.symbol)
         if inst is None:
@@ -216,7 +245,7 @@ class CopyEngine:
         if e.type == EventType.REDUCE and e.fraction is not None:
             qty = reduce_qty(copy.qty_open, e.fraction, inst)
         if qty <= 0:
-            self._store.insert_event(e, Decision.FOLLOWED, detail="reduce below one qty step: nothing to send")
+            self._event(e, Decision.FOLLOWED, detail="reduce below one qty step: nothing to send")
             return Decision.FOLLOWED
         closing = qty >= copy.qty_open
         reason = {EventType.FLIP: "FLIP", EventType.CLOSE: "CLOSE"}.get(e.type, "REDUCE")
@@ -225,25 +254,27 @@ class CopyEngine:
 
         if copy.status == CopyStatus.OBSERVED_ONLY:
             self._book_exit(copy, qty, exit_px, Decimal(0), closing, reason, CopyStatus.OBSERVED_ONLY)
-            self._store.insert_event(e, Decision.OBSERVED_ONLY, detail=f"{reason} qty={qty}")
+            self._event(e, Decision.OBSERVED_ONLY, detail=f"{reason} qty={qty}")
             return Decision.OBSERVED_ONLY
 
         kind = OrderKind.CLOSE if closing else OrderKind.REDUCE
-        client_id = f"loco:{e.coin}:{e.episode_id}:close" if closing else f"loco:{e.coin}:{e.episode_id}:reduce:{e.tid}"
+        base = f"{self.leader}:{e.coin}:{e.episode_id}"
+        client_id = f"{base}:close" if closing else f"{base}:reduce:{e.tid}"
         res = await self._send_exit(copy, qty, client_id, kind)
         if res is None:  # already applied earlier (idempotent replay of the same event)
-            self._store.insert_event(e, Decision.FOLLOWED, detail="already applied")
+            self._event(e, Decision.FOLLOWED, detail="already applied")
             return Decision.FOLLOWED
         if not res.success or res.avg_price is None:
-            self._store.insert_event(e, Decision.FAILED, detail=res.error)
-            self._n.critical("EXIT_FAILED", coin=e.coin, symbol=copy.symbol, episode=e.episode_id,
+            self._event(e, Decision.FAILED, detail=res.error)
+            self._n.critical("EXIT_FAILED", leader=self.leader, coin=e.coin, symbol=copy.symbol, episode=e.episode_id,
                              type=str(e.type), error=res.error)
             return Decision.FAILED
         self._book_exit(copy, res.filled_qty, res.avg_price, res.fee, closing, reason, CopyStatus.CLOSED_LEADER)
         if copy.closed_at is not None:
             await self._safe(self._broker.cancel_take_profit, copy.symbol)
-        self._store.insert_event(e, Decision.FOLLOWED, detail=f"{reason} qty={res.filled_qty} px={res.avg_price}")
-        self._n.info("COPY_EXIT", coin=e.coin, symbol=copy.symbol, episode=e.episode_id, reason=reason,
+        self._event(e, Decision.FOLLOWED, detail=f"{reason} qty={res.filled_qty} px={res.avg_price}")
+        self._n.info("COPY_EXIT", leader=self.leader, coin=e.coin, symbol=copy.symbol, episode=e.episode_id,
+                     reason=reason,
                      qty=str(res.filled_qty), px=str(res.avg_price), closed=copy.closed_at is not None,
                      pnl=str(copy.realized_pnl))
         return Decision.FOLLOWED
@@ -284,12 +315,13 @@ class CopyEngine:
 
     async def force_close(self, copy: Copy, *, reason: str, status: CopyStatus) -> bool:
         """Reduce-only close of everything we hold for this copy (used by the reconciler / kill --close-all)."""
-        client_id = f"loco:{copy.coin}:{copy.episode_id}:{reason.lower()}"
+        client_id = f"{copy.leader}:{copy.coin}:{copy.episode_id}:{reason.lower()}"
         res = await self._send_exit(copy, copy.qty_open, client_id, OrderKind.CLOSE)
         if res is None:
             return True
         if not res.success or res.avg_price is None:
-            self._n.critical("FORCE_CLOSE_FAILED", coin=copy.coin, symbol=copy.symbol, reason=reason, error=res.error)
+            self._n.critical("FORCE_CLOSE_FAILED", leader=copy.leader, coin=copy.coin, symbol=copy.symbol,
+                             reason=reason, error=res.error)
             return False
         self._book_exit(copy, res.filled_qty, res.avg_price, res.fee, True, reason, status)
         await self._safe(self._broker.cancel_take_profit, copy.symbol)
@@ -309,8 +341,8 @@ class CopyEngine:
 
     async def recover(self) -> None:
         """At start-up: settle anything that was in flight when the process stopped."""
-        for copy in self._store.copies_with_status(CopyStatus.SUBMITTING):
-            client_id = open_client_id(copy.coin, copy.episode_id)
+        for copy in self._store.copies_with_status(CopyStatus.SUBMITTING, leader=self.leader):
+            client_id = open_client_id(copy.coin, copy.episode_id, self.leader)
             res = await self._safe(self._broker.order_by_client_id, client_id)
             inst = self.instruments.get(copy.symbol)
             if res is not None and res.success and res.avg_price is not None and inst is not None:
@@ -330,6 +362,8 @@ class CopyEngine:
                 self._store.finish_order(client_id, OrderStatus.FAILED, error="not found after restart")
                 self._n.warning("SUBMITTING_NOT_FOUND", coin=copy.coin, episode=copy.episode_id)
         for row in self._store.orders_with_status(OrderStatus.SENT):
+            if not row["client_id"].startswith(f"{self.leader}:"):
+                continue  # another lane's order: that lane's engine (and broker) settles it
             res = await self._safe(self._broker.order_by_client_id, row["client_id"])
             if res is not None and res.success:
                 self._store.finish_order(row["client_id"], OrderStatus.FILLED, filled_qty=res.filled_qty,

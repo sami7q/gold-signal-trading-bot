@@ -1,6 +1,6 @@
-"""Loco's trades from Hyperliquid (botup.md §5.1). Public API, no keys.
+"""The copied leaders' trades from Hyperliquid (botup.md §5.1, v3 §5.4). Public API, no keys.
 
-- WebSocket `userFills` for the leader. Pings every 30 s (the pong counts as a frame for the latency breaker).
+- One WebSocket, `userFills` for every leader. Pings every 30 s (the pong counts as a frame for the latency breaker).
   Reconnects with backoff 1 s -> 30 s cap; after every (re)connect the REST backfill fills any gap.
 - The first WS frame (`isSnapshot: true`) is history: the app stores it and only processes fills newer than
   what it has already seen.
@@ -23,7 +23,7 @@ import httpx
 import websockets
 
 from loco_copy.models import LeaderFill, LeaderSnapshot
-from loco_copy.tracker import is_main_perp
+from loco_copy.tracker import chain_order, is_main_perp
 
 FillHandler = Callable[[LeaderFill, bool], Awaitable[None]]  # (fill, is_history_frame)
 FrameHandler = Callable[[], None]
@@ -114,11 +114,11 @@ class HyperliquidClient:
             t = max(int(x["time"]) for x in page) + 1
         seen: set[int] = set()
         uniq = []
-        for f in sorted(out, key=lambda f: (f.time_ms, f.tid)):
+        for f in out:
             if f.tid not in seen:
                 seen.add(f.tid)
                 uniq.append(f)
-        return uniq
+        return chain_order(uniq)
 
     async def all_mids(self) -> dict[str, Decimal]:
         raw = await self.info({"type": "allMids"}, 2)
@@ -130,18 +130,23 @@ class HyperliquidClient:
 
 
 class HyperliquidFeed:
-    def __init__(self, *, ws_url: str, user: str, client: HyperliquidClient, on_fill: FillHandler,
-                 on_frame: FrameHandler, last_seen_ms: Callable[[], int | None],
+    """One WebSocket for every copied leader (botup.md v3 §5.4): one `userFills` subscription per address, and
+    each frame is routed by its `user` field to that leader's handler. Frames for an address we did not
+    subscribe to are dropped (and reported)."""
+
+    def __init__(self, *, ws_url: str, users: dict[str, FillHandler], client: HyperliquidClient,
+                 on_frame: FrameHandler, last_seen_ms: Callable[[str], int | None],
                  on_connected: Callable[[], None] | None = None,
-                 on_error: Callable[[str], None] | None = None) -> None:
+                 on_error: Callable[[str], None] | None = None,
+                 on_unknown_user: Callable[[str], None] | None = None) -> None:
         self._ws_url = ws_url
-        self._user = user
+        self._handlers = {address.lower(): handler for address, handler in users.items()}
         self._client = client
-        self._on_fill = on_fill
         self._on_frame = on_frame
         self._last_seen = last_seen_ms
         self._on_connected = on_connected
         self._on_error = on_error
+        self._on_unknown_user = on_unknown_user
         self.connected = False
         self.reconnects = 0
 
@@ -151,8 +156,9 @@ class HyperliquidFeed:
             try:
                 async with websockets.connect(self._ws_url, ping_interval=None, close_timeout=5,
                                               max_size=50 * 1024 * 1024) as ws:
-                    await ws.send(json.dumps({"method": "subscribe",
-                                              "subscription": {"type": "userFills", "user": self._user}}))
+                    for user in self._handlers:
+                        await ws.send(json.dumps({"method": "subscribe",
+                                                  "subscription": {"type": "userFills", "user": user}}))
                     self.connected = True
                     if self._on_connected:
                         self._on_connected()
@@ -181,19 +187,29 @@ class HyperliquidFeed:
             await ws.send(json.dumps({"method": "ping"}))
 
     async def _backfill(self) -> None:
-        last = self._last_seen()
-        if last is None:
-            return
-        for fill in await self._client.fills_since(self._user, last + 1):
-            await self._on_fill(fill, False)
+        """Per leader, from the last fill that leader's lane saw."""
+        for user, handler in self._handlers.items():
+            last = self._last_seen(user)
+            if last is None:
+                continue
+            for fill in await self._client.fills_since(user, last + 1):
+                await handler(fill, False)
 
     async def _dispatch(self, message: str | bytes) -> None:
         msg = json.loads(message)
         if msg.get("channel") != "userFills":
             return
         data = msg.get("data") or {}
+        user = str(data.get("user") or "").lower()
+        handler = self._handlers.get(user)
+        if handler is None and not user and len(self._handlers) == 1:
+            handler = next(iter(self._handlers.values()))  # a frame without `user` can only be the one leader
+        if handler is None:
+            if self._on_unknown_user:
+                self._on_unknown_user(user or "?")
+            return
         is_history = bool(data.get("isSnapshot"))
         received = now_ms()
         fills = [f for f in (parse_fill(x, received) for x in data.get("fills", []) or []) if f is not None]
-        for fill in sorted(fills, key=lambda f: (f.time_ms, f.tid)):
-            await self._on_fill(fill, is_history)
+        for fill in chain_order(fills):
+            await handler(fill, is_history)

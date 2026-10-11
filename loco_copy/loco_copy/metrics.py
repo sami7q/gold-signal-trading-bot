@@ -38,8 +38,9 @@ class Metrics:
     rejections: dict[str, int]
 
 
-def compute(store: Store, since_ms: int) -> Metrics:
-    events = store.events_since(since_ms)
+def compute(store: Store, since_ms: int, *, leader: str | None = None) -> Metrics:
+    """`leader=None`: every lane together."""
+    events = store.events_since(since_ms, leader=leader)
     opens = [e for e in events if e["type"] == EventType.OPEN]
     copied = [e for e in opens if e["decision"] in (Decision.COPIED, Decision.OBSERVED_ONLY)]
     not_listed = sum(e["rejection"] == Rejection.SYMBOL_NOT_LISTED for e in opens)
@@ -49,7 +50,7 @@ def compute(store: Store, since_ms: int) -> Metrics:
         if e["rejection"]:
             rejections[e["rejection"]] = rejections.get(e["rejection"], 0) + 1
     detect = [float(e["detected_at_ms"] - e["leader_time_ms"]) for e in opens]
-    copies = store.copies(since_ms=since_ms)
+    copies = store.copies(since_ms=since_ms, leader=leader)
     order_lat = [float(c.latency_order_ms) for c in copies if c.latency_order_ms is not None]
     slip = [float(c.slippage_bps) for c in copies if c.slippage_bps is not None]
     return Metrics(

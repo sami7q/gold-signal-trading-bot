@@ -14,10 +14,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from loco_copy.config import PROJECT_ROOT, Settings, get_settings
+from loco_copy.config import DEFAULT_LABEL, PROJECT_ROOT, Settings, get_settings, with_mode_override
 from loco_copy.constants import CopyStatus
 from loco_copy.metrics import compute
-from loco_copy.store import Store, now_ms
+from loco_copy.store import Store, lane_key, now_ms
 
 DURATION = re.compile(r"^(\d+)([smhd])$")
 UNIT_MS = {"s": 1000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}
@@ -60,6 +60,17 @@ def side(s: int) -> str:
     return "LONG" if s > 0 else "SHORT"
 
 
+def lane_label(s: Settings, label: str | None) -> str:
+    label = (label or s.labels[0]).lower()
+    if label not in s.labels:
+        raise SystemExit(f"Unknown leader {label!r}. Leaders: {', '.join(s.labels)}")
+    return label
+
+
+def mode_of(s: Settings) -> str:
+    return "WATCH" if not s.copy_enabled else "OBSERVE" if s.copy_observe_only else "EXECUTE"
+
+
 # -- commands -------------------------------------------------------------------------------------------------
 
 
@@ -97,17 +108,21 @@ def cmd_status(s: Settings, _a: argparse.Namespace) -> None:
           f"leader breaker {'TRIPPED' if risk.leader_breaker_tripped() else 'ok'}")
     warn = store.logs_since(now_ms() - 86_400_000, min_level="WARNING")
     print(f"warnings (24h)     : {len(warn)}" + (f"  last: {warn[-1]['type']}" if warn else ""))
+    print()
+    _leaders_table(s, store)
 
 
-def cmd_loco(s: Settings, _a: argparse.Namespace) -> None:
+def cmd_positions(s: Settings, a: argparse.Namespace) -> None:
+    label = lane_label(s, getattr(a, "leader", None))
     store = Store(s.db_path)
-    snap = store.get_state("leader_snapshot")
+    snap = store.get_state(lane_key("leader_snapshot", label))
     if not snap:
-        raise SystemExit("No leader snapshot yet -- start the bot (loco-copy run) first.")
-    ours = {c.coin: c for c in store.copies(open_only=True)}
-    ours |= {c.coin: c for c in store.copies_with_status(CopyStatus.OBSERVED_ONLY) if c.closed_at is None}
-    tracker = store.get_state("tracker") or {}
-    print(f"Loco snapshot {age(snap['taken_at_ms'])} -- account value {snap['account_value']}")
+        raise SystemExit(f"No snapshot of {label} yet -- start the bot (loco-copy run) first.")
+    ours = {c.coin: c for c in store.copies(open_only=True, leader=label)}
+    ours |= {c.coin: c for c in store.copies_with_status(CopyStatus.OBSERVED_ONLY, leader=label)
+             if c.closed_at is None}
+    tracker = store.get_state(lane_key("tracker", label)) or {}
+    print(f"{label} snapshot {age(snap['taken_at_ms'])} -- account value {snap['account_value']}")
     rows = []
     for coin in sorted(set(snap["positions"]) | set(ours)):
         pos = Decimal(snap["positions"].get(coin, "0"))
@@ -116,28 +131,58 @@ def cmd_loco(s: Settings, _a: argparse.Namespace) -> None:
         rows.append([coin, side(1 if pos > 0 else -1) if pos else "flat", pos, snap["entry_px"].get(coin, "-"),
                      "yes" if synced else "NO (pre-existing/drift)",
                      f"{side(c.side)} {c.qty_open} @ {c.entry_price} [{c.status}]" if c else "-"])
-    table(rows, ["coin", "loco side", "loco size", "loco entry", "copyable", "ours"])
+    table(rows, ["coin", "leader side", "leader size", "leader entry", "copyable", "ours"])
+
+
+def _leaders_table(s: Settings, store: Store) -> None:
+    from loco_copy.notify import Notifier  # noqa: PLC0415
+    from loco_copy.risk import RiskGuard  # noqa: PLC0415
+
+    rt = (store.get_state("runtime") or {}).get("lanes") or {}
+    rows = []
+    for label in s.labels:
+        lane = s.for_lane(label)
+        eff = with_mode_override(lane, store.get_state(lane_key("mode_override", label)))
+        guard = RiskGuard(store, lane, Notifier(store, echo=False))
+        snap = store.get_state(lane_key("leader_snapshot", label)) or {}
+        lrt = rt.get(label, {})
+        rows.append([label, lane.leader_address, mode_of(eff), "open" if lane.allow_execute else "closed",
+                     "PAUSED" if guard.paused() else "on", "TRIPPED" if guard.leader_breaker_tripped() else "ok",
+                     lrt.get("equity", "-"), lrt.get("account", "-"), len(store.copies(open_only=True, leader=label)),
+                     age(snap.get("taken_at_ms"))])
+    table(rows, ["leader", "address", "mode", "exec gate", "switch", "breaker", "equity", "account", "open",
+                 "snapshot"])
+
+
+def cmd_leaders(s: Settings, _a: argparse.Namespace) -> None:
+    _leaders_table(s, Store(s.db_path))
+
+
+def cmd_backup(s: Settings, _a: argparse.Namespace) -> None:
+    target = s.data_dir / "backups" / f"loco-{time.strftime('%Y%m%d-%H%M%S')}.db"
+    print(f"Backed up to {Store(s.db_path).backup(target)}")
 
 
 def cmd_trades(s: Settings, a: argparse.Namespace) -> None:
     store = Store(s.db_path)
     rows = []
-    for c in store.copies(since_ms=a.since, open_only=a.open):
-        rows.append([c.id, fmt_ts(c.opened_at), c.coin, c.symbol, side(c.side), c.status, c.qty_initial,
+    for c in store.copies(since_ms=a.since, open_only=a.open, leader=a.leader):
+        rows.append([c.id, c.leader, fmt_ts(c.opened_at), c.coin, c.symbol, side(c.side), c.status, c.qty_initial,
                      c.leader_entry_px, c.entry_price or "-",
                      f"{c.slippage_bps:.1f}" if c.slippage_bps is not None else "-",
                      c.latency_order_ms if c.latency_order_ms is not None else "-", c.tp_price or "-",
                      c.exit_price_avg or "-", f"{c.realized_pnl:.2f}", c.close_reason or ""])
-    table(rows, ["id", "opened (UTC)", "coin", "symbol", "side", "status", "qty", "loco px", "our px", "slip bps",
-                 "order ms", "tp", "exit", "pnl", "reason"])
+    table(rows, ["id", "leader", "opened (UTC)", "coin", "symbol", "side", "status", "qty", "leader px", "our px",
+                 "slip bps", "order ms", "tp", "exit", "pnl", "reason"])
 
 
 def cmd_events(s: Settings, a: argparse.Namespace) -> None:
     store = Store(s.db_path)
-    rows = [[fmt_ts(e["detected_at_ms"]), e["coin"], e["episode_id"], e["type"], side(e["side"]) if e["side"] else "-",
+    rows = [[fmt_ts(e["detected_at_ms"]), e["leader"], e["coin"], e["episode_id"], e["type"],
+             side(e["side"]) if e["side"] else "-",
              e["fraction"] or "", e["leader_px"], e["detected_at_ms"] - e["leader_time_ms"], e["decision"],
-             e["rejection"] or "", e["detail"] or ""] for e in store.events_since(a.since)]
-    table(rows, ["detected (UTC)", "coin", "ep", "type", "side", "frac", "loco px", "lag ms", "decision",
+             e["rejection"] or "", e["detail"] or ""] for e in store.events_since(a.since, leader=a.leader)]
+    table(rows, ["detected (UTC)", "leader", "coin", "ep", "type", "side", "frac", "loco px", "lag ms", "decision",
                  "rejection", "detail"])
 
 
@@ -146,6 +191,14 @@ def cmd_kill(s: Settings, a: argparse.Namespace) -> None:
     from loco_copy.risk import RiskGuard  # noqa: PLC0415
 
     store = Store(s.db_path)
+    if a.leader:  # one leader only: pause his lane (his exits are still followed)
+        label = lane_label(s, a.leader)
+        RiskGuard(store, s.for_lane(label), Notifier(store, echo=False)).set_paused(True, by="loco-copy kill")
+        if a.close_all:
+            store.set_state(lane_key("close_all_requested", label), True)
+            print(f"Asked the running bot to close every {label} copy (reduce-only).")
+        print(f"Leader {label} paused: no new copies of him. Others are untouched.")
+        return
     RiskGuard(store, s, Notifier(store, echo=False)).engage_kill("loco-copy kill")
     s.stop_file.parent.mkdir(parents=True, exist_ok=True)
     s.stop_file.touch()
@@ -164,33 +217,38 @@ async def _close_all_offline(s: Settings, store: Store) -> None:
     from loco_copy.app import App, close_all  # noqa: PLC0415
 
     app = App(s)
-    await app.build_broker()
-    from loco_copy.engine import CopyEngine  # noqa: PLC0415
-
-    engine = CopyEngine(store=app.store, broker=app.broker, settings=s, risk=app.risk, notifier=app.n,
-                        mapper=app.mapper, tracker=app.tracker, instruments=app.instruments)
-    await close_all(app.store, engine, app.n)
+    await app.build_brokers()
+    app.build_lanes()
+    for lane in app.lanes.values():
+        await close_all(app.store, lane.engine, app.n)
     app.save_runtime()
     await app.client.close()
     print("Closed every open copy (reduce-only).")
 
 
-def cmd_resume(s: Settings, _a: argparse.Namespace) -> None:
+def cmd_resume(s: Settings, a: argparse.Namespace) -> None:
     from loco_copy.notify import Notifier  # noqa: PLC0415
-    from loco_copy.risk import RiskGuard  # noqa: PLC0415
+    from loco_copy.risk import RiskGuard, release_everything  # noqa: PLC0415
 
     store = Store(s.db_path)
-    RiskGuard(store, s, Notifier(store, echo=False)).release()
-    print("Kill switch released (data/STOP removed, leader breaker reset).")
+    if a.leader:
+        label = lane_label(s, a.leader)
+        guard = RiskGuard(store, s.for_lane(label), Notifier(store, echo=False))
+        guard.set_paused(False, by="loco-copy resume")
+        guard.reset_breaker()
+        print(f"Leader {label} resumed (switch on, his leader breaker reset). The global kill switch is unchanged.")
+        return
+    release_everything(store, s, Notifier(store, echo=False))
+    print("Kill switch released (data/STOP removed, every leader breaker reset). Paused leaders stay paused.")
 
 
 def cmd_report(s: Settings, a: argparse.Namespace) -> None:
     store = Store(s.db_path)
-    m = compute(store, a.since)
+    m = compute(store, a.since, leader=a.leader)
     out = s.data_dir / "exports"
     out.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y-%m-%d_%H%M%S")
-    copies = store.copies(since_ms=a.since)
+    copies = store.copies(since_ms=a.since, leader=a.leader)
     with open(out / f"trades_{stamp}.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["id", "opened_utc", "closed_utc", "coin", "symbol", "side", "status", "qty", "leader_px",
@@ -205,7 +263,7 @@ def cmd_report(s: Settings, a: argparse.Namespace) -> None:
 
     lines = [
         f"# loco-copy report — {stamp}", "",
-        f"Window: since {fmt_ts(a.since)} UTC. Broker `{s.broker}` / `{s.broker_env}`, "
+        f"Window: since {fmt_ts(a.since)} UTC. Leader: {a.leader or 'all'}. Broker `{s.broker}` / `{s.broker_env}`, "
         f"observe_only={s.copy_observe_only}.", "",
         "| Metric | Value | Target | Status |", "|---|---|---|---|",
         f"| Detection latency p50 / p95 | {m.detect_p50_ms} / {m.detect_p95_ms} ms | < 1000 / < 3000 ms | "
@@ -255,7 +313,8 @@ def cmd_set_key(s: Settings, a: argparse.Namespace) -> None:
     import keyring  # noqa: PLC0415
 
     env = a.target.removeprefix("bybit-")
-    service = f"loco-copy-bybit-{env}"
+    label = lane_label(s, a.leader) if a.leader else DEFAULT_LABEL
+    service = f"loco-copy-bybit-{env}" if label == DEFAULT_LABEL else f"loco-copy-bybit-{env}-{label}"
     key = getpass.getpass(f"Bybit {env} API key (hidden): ").strip()
     secret = getpass.getpass(f"Bybit {env} API secret (hidden): ").strip()
     if not key or not secret:
@@ -263,6 +322,8 @@ def cmd_set_key(s: Settings, a: argparse.Namespace) -> None:
     keyring.set_password(service, "api_key", key)
     keyring.set_password(service, "api_secret", secret)
     print(f"Stored in the OS keyring under '{service}'. Never put keys in .env or git.")
+    if label != DEFAULT_LABEL:
+        print(f"Leader {label} now trades on its own account (restart the bot to use it).")
 
 
 def cmd_api(s: Settings, _a: argparse.Namespace) -> None:
@@ -306,20 +367,32 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run", help="start the bot (feed + engine + reconciler)").set_defaults(fn=cmd_run)
     sub.add_parser("status", help="health at a glance").set_defaults(fn=cmd_status)
-    sub.add_parser("loco", help="Loco's positions (last snapshot) next to ours").set_defaults(fn=cmd_loco)
+    sub.add_parser("leaders", help="every copied leader: mode, gate, switch, account, open copies").set_defaults(
+        fn=cmd_leaders)
+    sub.add_parser("loco", help="Loco's positions (last snapshot) next to ours").set_defaults(fn=cmd_positions)
+    pos = sub.add_parser("positions", help="a leader's positions (last snapshot) next to ours")
+    pos.add_argument("--leader", default=None)
+    pos.set_defaults(fn=cmd_positions)
+    sub.add_parser("backup", help="consistent copy of the database into data/backups").set_defaults(fn=cmd_backup)
     t = sub.add_parser("trades", help="copy trades")
     t.add_argument("--open", action="store_true")
+    t.add_argument("--leader", default=None)
     t.add_argument("--since", type=since_ms, default=since_ms("7d"))
     t.set_defaults(fn=cmd_trades)
     e = sub.add_parser("events", help="every Loco event and the decision taken")
     e.add_argument("--since", type=since_ms, default=since_ms("1d"))
+    e.add_argument("--leader", default=None)
     e.set_defaults(fn=cmd_events)
     k = sub.add_parser("kill", help="engage the kill switch")
     k.add_argument("--close-all", action="store_true", help="also close every copy (reduce-only)")
+    k.add_argument("--leader", default=None, help="pause one leader only (his exits are still followed)")
     k.set_defaults(fn=cmd_kill)
-    sub.add_parser("resume", help="release the kill switch").set_defaults(fn=cmd_resume)
+    rs = sub.add_parser("resume", help="release the kill switch (or, with --leader, switch one leader back on)")
+    rs.add_argument("--leader", default=None)
+    rs.set_defaults(fn=cmd_resume)
     r = sub.add_parser("report", help="CSV + markdown: live metrics vs targets")
     r.add_argument("--since", type=since_ms, default=since_ms("7d"))
+    r.add_argument("--leader", default=None)
     r.set_defaults(fn=cmd_report)
     rp = sub.add_parser("replay", help="recorded Loco fills through the real pipeline with PaperBroker")
     rp.add_argument("--from", dest="from_", type=parse_when, default=0, help="ISO date/time (UTC) or e.g. 90d")
@@ -329,6 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.set_defaults(fn=cmd_replay)
     sk = sub.add_parser("set-key", help="store Bybit API key/secret in the OS keyring")
     sk.add_argument("target", choices=["bybit-demo", "bybit-live"])
+    sk.add_argument("--leader", default=None, help="keys of that leader's own Bybit (sub-)account")
     sk.set_defaults(fn=cmd_set_key)
     sub.add_parser("api", help="start the dashboard API (localhost only, behind the tunnel)").set_defaults(fn=cmd_api)
     au = sub.add_parser("add-user", help="create or reset a dashboard login")

@@ -26,7 +26,7 @@ from loco_copy.reconcile import Reconciler
 from loco_copy.risk import RiskGuard
 from loco_copy.store import Store
 from loco_copy.symbols import SymbolMapper
-from loco_copy.tracker import LeaderTracker, is_main_perp
+from loco_copy.tracker import LeaderTracker, chain_order, is_main_perp
 
 Candle = tuple[int, Decimal, Decimal, Decimal, Decimal]
 CandleSource = Callable[[str, int, int], list[Candle]]  # (coin, open_ms, close_ms) -> candles
@@ -91,8 +91,7 @@ def episode_ends(fills: list[LeaderFill]) -> dict[tuple[str, int], int]:
 async def run_replay(fills: list[LeaderFill], candles: CandleSource, settings: Settings, *,
                      start_ms: int = 0, end_ms: int | None = None, fee_rate: Decimal = Decimal("0.0008"),
                      start_equity: Decimal | None = None) -> ReplayResult:
-    fills = sorted((f for f in fills if f.time_ms >= start_ms and (end_ms is None or f.time_ms <= end_ms)),
-                   key=lambda f: (f.time_ms, f.tid))
+    fills = chain_order([f for f in fills if f.time_ms >= start_ms and (end_ms is None or f.time_ms <= end_ms)])
     ends = episode_ends(fills)
     now = [fills[0].time_ms if fills else 0]
 

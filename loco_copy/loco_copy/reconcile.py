@@ -45,10 +45,18 @@ def classify_close(copy: Copy, closes: list[ClosedTrade]) -> tuple[CopyStatus, C
 
 
 class Reconciler:
+    """One per lane. `account_symbols` returns every symbol any lane on the same exchange account has a live
+    copy on: a position another lane holds there is known, not an orphan. `check_orphans` is true for one lane
+    per account, so a real orphan is reported once."""
+
     def __init__(self, *, store: Store, broker: Broker, settings: Settings, notifier: Notifier,
                  tracker: LeaderTracker, risk: RiskGuard, engine: CopyEngine, run_sync: RunSync,
-                 clock: Callable[[], int] = _now_ms) -> None:
+                 clock: Callable[[], int] = _now_ms, account_symbols: Callable[[], set[str]] | None = None,
+                 check_orphans: bool = True) -> None:
         self._store = store
+        self.leader = settings.lane
+        self._account_symbols = account_symbols or (lambda: {c.symbol for c in store.live_copies(leader=self.leader)})
+        self._check_orphans = check_orphans
         self._broker = broker
         self._s = settings
         self._n = notifier
@@ -71,19 +79,21 @@ class Reconciler:
             self._n.warning("RECONCILE_BROKER_UNAVAILABLE", error=str(exc))
             return
 
-        open_copies = self._store.copies_with_status(CopyStatus.OPEN)
+        open_copies = self._store.copies_with_status(CopyStatus.OPEN, leader=self.leader)
         for copy in open_copies:
             pos = positions.get(copy.symbol)
             if pos is None:
                 await self._resolve_vanished(copy)
             elif pos.qty != copy.qty_open or pos.side != copy.side:
-                self._n.warning("POSITION_MISMATCH", coin=copy.coin, symbol=copy.symbol, db_qty=str(copy.qty_open),
+                self._n.warning("POSITION_MISMATCH", leader=self.leader, coin=copy.coin, symbol=copy.symbol,
+                                db_qty=str(copy.qty_open),
                                 exchange_qty=str(pos.qty), exchange_side=pos.side)
 
-        tracked = {c.symbol for c in self._store.live_copies()}
-        for sym, pos in positions.items():
-            if sym not in tracked:
-                self._n.critical("ORPHAN_POSITION", symbol=sym, side=pos.side, qty=str(pos.qty))
+        if self._check_orphans:
+            tracked = self._account_symbols()
+            for sym, pos in positions.items():
+                if sym not in tracked:
+                    self._n.critical("ORPHAN_POSITION", symbol=sym, side=pos.side, qty=str(pos.qty))
 
         await self._missed_exits()
 
@@ -98,19 +108,23 @@ class Reconciler:
             copy.status, copy.closed_at, copy.close_reason = status, self._clock(), "position gone, no close record"
             copy.qty_open = Decimal(0)
             self._store.update_copy(copy)
-            self._n.critical("COPY_UNKNOWN", coin=copy.coin, symbol=copy.symbol, episode=copy.episode_id)
+            self._n.critical("COPY_UNKNOWN", leader=self.leader, coin=copy.coin, symbol=copy.symbol,
+                             episode=copy.episode_id)
             return
-        pnl = sum((c.realized_pnl for c in closes), Decimal(0))
+        # we booked the opening fee when the copy opened; the exchange's figure may include it again
+        pnl = sum((c.realized_pnl + c.open_fee for c in closes), Decimal(0))
         self._engine.book_exchange_close(copy, qty=copy.qty_open, px=last.avg_exit_price, pnl=pnl, status=status,
                                          reason=status.removeprefix("CLOSED_"))
         level = "INFO" if status == CopyStatus.CLOSED_TP else "WARNING"
-        self._n.emit(level, f"COPY_{status}", coin=copy.coin, symbol=copy.symbol, episode=copy.episode_id,
+        self._n.emit(level, f"COPY_{status}", leader=self.leader, coin=copy.coin, symbol=copy.symbol,
+                     episode=copy.episode_id,
                      exit=str(last.avg_exit_price), pnl=str(pnl))
 
     async def _missed_exits(self) -> None:
         now = self._clock()
-        live = self._store.copies_with_status(CopyStatus.OPEN)
-        observed = [c for c in self._store.copies_with_status(CopyStatus.OBSERVED_ONLY) if c.closed_at is None]
+        live = self._store.copies_with_status(CopyStatus.OPEN, leader=self.leader)
+        observed = [c for c in self._store.copies_with_status(CopyStatus.OBSERVED_ONLY, leader=self.leader)
+                    if c.closed_at is None]
         alive_ids = set()
         for copy in live + observed:
             st = self._tracker.state(copy.coin)
@@ -128,7 +142,7 @@ class Reconciler:
                 continue
             ok = await self._engine.force_close(copy, reason="RECONCILED", status=CopyStatus.CLOSED_RECONCILED)
             if ok:
-                self._n.critical("MISSED_EXIT_AUTO_CLOSED", coin=copy.coin, symbol=copy.symbol,
+                self._n.critical("MISSED_EXIT_AUTO_CLOSED", leader=self.leader, coin=copy.coin, symbol=copy.symbol,
                                  episode=copy.episode_id, waited_s=(now - since) // 1000)
                 self._episode_over_since.pop(copy.id, None)
         for cid in list(self._episode_over_since):

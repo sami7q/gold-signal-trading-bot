@@ -49,7 +49,7 @@ function LoginForm() {
           <span className="font-data text-2xl font-semibold tracking-tight text-gold-bright">
             LOCO
           </span>
-          <span className="text-sm font-medium text-muted">نسخ صفقات Loco إلى Bybit</span>
+          <span className="text-sm font-medium text-muted">نسخ صفقات المتداولين إلى Bybit</span>
         </div>
 
         <form

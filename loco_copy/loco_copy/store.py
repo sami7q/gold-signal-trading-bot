@@ -17,30 +17,48 @@ from typing import Any
 from loco_copy.constants import LIVE_STATUSES, CopyStatus, Decision, OrderStatus
 from loco_copy.models import Copy, LeaderEvent, LeaderFill
 
-SCHEMA_VERSION = 2  # v2 (2026-10-11): dashboard users + sessions -- purely additive, upgraded in place
+SCHEMA_VERSION = 3  # v3 (2026-10-11): every fill / event / copy carries its leader lane (botup.md v3 §5.2)
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS fills (
-    tid INTEGER PRIMARY KEY, coin TEXT NOT NULL, side TEXT NOT NULL, px TEXT NOT NULL, sz TEXT NOT NULL,
-    start_position TEXT NOT NULL, time_ms INTEGER NOT NULL, oid INTEGER, received_at_ms INTEGER NOT NULL
+_FILLS = """
+CREATE TABLE IF NOT EXISTS {name} (
+    leader TEXT NOT NULL, tid INTEGER NOT NULL, coin TEXT NOT NULL, side TEXT NOT NULL, px TEXT NOT NULL,
+    sz TEXT NOT NULL, start_position TEXT NOT NULL, time_ms INTEGER NOT NULL, oid INTEGER,
+    received_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (leader, tid)  -- a trade between two copied leaders has the same tid on both sides
 );
+"""
+_COPIES = """
+CREATE TABLE IF NOT EXISTS {name} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, leader TEXT NOT NULL, coin TEXT NOT NULL, symbol TEXT NOT NULL,
+    episode_id INTEGER NOT NULL, side INTEGER NOT NULL, status TEXT NOT NULL, qty_initial TEXT NOT NULL,
+    qty_open TEXT NOT NULL, entry_price TEXT, tp_price TEXT, exit_price_avg TEXT,
+    exit_qty_total TEXT NOT NULL DEFAULT '0', realized_pnl TEXT NOT NULL DEFAULT '0',
+    fees TEXT NOT NULL DEFAULT '0', funding TEXT NOT NULL DEFAULT '0', margin TEXT, opened_at INTEGER,
+    closed_at INTEGER, close_reason TEXT, leader_entry_px TEXT NOT NULL, slippage_bps TEXT,
+    latency_detect_ms INTEGER, latency_order_ms INTEGER,
+    UNIQUE(leader, coin, episode_id)
+);
+"""
+_COPY_COLS = ("id", "coin", "symbol", "episode_id", "side", "status", "qty_initial", "qty_open", "entry_price",
+              "tp_price", "exit_price_avg", "exit_qty_total", "realized_pnl", "fees", "funding", "margin",
+              "opened_at", "closed_at", "close_reason", "leader_entry_px", "slippage_bps", "latency_detect_ms",
+              "latency_order_ms")
+_FILL_COLS = ("tid", "coin", "side", "px", "sz", "start_position", "time_ms", "oid", "received_at_ms")
+
+#: v2 state keys that belong to one lane: renamed `<key>:loco` by the v3 migration.
+LANE_STATE_KEYS = ("tracker", "last_fill_ms", "leader_snapshot", "leader_peak", "leader_breaker_tripped",
+                   "paper_broker", "mode_override", "day_start_date", "day_start_equity")
+
+_SCHEMA = _FILLS.format(name="fills") + _COPIES.format(name="copies") + """
+CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_fills_time ON fills(time_ms);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, coin TEXT NOT NULL, episode_id INTEGER NOT NULL, type TEXT NOT NULL,
     side INTEGER NOT NULL, fraction TEXT, leader_px TEXT NOT NULL, leader_time_ms INTEGER NOT NULL,
-    detected_at_ms INTEGER NOT NULL, tid INTEGER NOT NULL, decision TEXT NOT NULL, rejection TEXT, detail TEXT
+    detected_at_ms INTEGER NOT NULL, tid INTEGER NOT NULL, decision TEXT NOT NULL, rejection TEXT, detail TEXT,
+    leader TEXT NOT NULL DEFAULT 'loco'
 );
 CREATE INDEX IF NOT EXISTS ix_events_detected ON events(detected_at_ms);
-CREATE TABLE IF NOT EXISTS copies (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, coin TEXT NOT NULL, symbol TEXT NOT NULL, episode_id INTEGER NOT NULL,
-    side INTEGER NOT NULL, status TEXT NOT NULL, qty_initial TEXT NOT NULL, qty_open TEXT NOT NULL,
-    entry_price TEXT, tp_price TEXT, exit_price_avg TEXT, exit_qty_total TEXT NOT NULL DEFAULT '0',
-    realized_pnl TEXT NOT NULL DEFAULT '0', fees TEXT NOT NULL DEFAULT '0', funding TEXT NOT NULL DEFAULT '0',
-    margin TEXT, opened_at INTEGER, closed_at INTEGER, close_reason TEXT, leader_entry_px TEXT NOT NULL,
-    slippage_bps TEXT, latency_detect_ms INTEGER, latency_order_ms INTEGER,
-    UNIQUE(coin, episode_id)
-);
 CREATE INDEX IF NOT EXISTS ix_copies_status ON copies(status);
 CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT, copy_id INTEGER REFERENCES copies(id), client_id TEXT NOT NULL UNIQUE,
@@ -71,6 +89,11 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def lane_key(key: str, lane: str) -> str:
+    """State key of one lane: `tracker:3ea`, `mode_override:loco` ..."""
+    return f"{key}:{lane}"
+
+
 def _d(v: Any) -> Decimal | None:
     return None if v is None else Decimal(v)
 
@@ -94,14 +117,59 @@ class Store:
         row = self._db.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             self._db.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row["version"] == 1:
-            self._db.execute("UPDATE schema_version SET version=?", (SCHEMA_VERSION,))  # v2 tables made above
+        elif row["version"] in (1, 2):
+            self._migrate_to_v3()  # v1 -> v2 was additive (users / sessions, created above)
         elif row["version"] != SCHEMA_VERSION:
             raise RuntimeError(f"database schema v{row['version']} != code v{SCHEMA_VERSION}")
+        self._db.execute("CREATE INDEX IF NOT EXISTS ix_events_leader ON events(leader, detected_at_ms)")
         self._db.commit()
+
+    def _migrate_to_v3(self) -> None:
+        """v2 -> v3 in one transaction: everything that exists belongs to lane `loco` (botup.md v3 §5.2).
+        SQLite cannot change a primary key or a UNIQUE constraint in place, so `fills` and `copies` are
+        rebuilt (copy ids are kept: orders point at them)."""
+        db = self._db
+        db.commit()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            if db.execute("SELECT version FROM schema_version").fetchone()["version"] == SCHEMA_VERSION:
+                db.commit()  # the bot and the API start together: the other one migrated while we waited
+                return
+            if "leader" not in {r["name"] for r in db.execute("PRAGMA table_info(events)")}:
+                db.execute("ALTER TABLE events ADD COLUMN leader TEXT NOT NULL DEFAULT 'loco'")
+            cols = ", ".join(_FILL_COLS)
+            db.execute(_FILLS.format(name="fills_v3"))
+            db.execute(f"INSERT INTO fills_v3 (leader, {cols}) SELECT 'loco', {cols} FROM fills")
+            db.execute("DROP TABLE fills")
+            db.execute("ALTER TABLE fills_v3 RENAME TO fills")
+            db.execute("CREATE INDEX IF NOT EXISTS ix_fills_time ON fills(time_ms)")
+            cols = ", ".join(_COPY_COLS)
+            db.execute(_COPIES.format(name="copies_v3"))
+            db.execute(f"INSERT INTO copies_v3 (leader, {cols}) SELECT 'loco', {cols} FROM copies")
+            db.execute("DROP TABLE copies")
+            db.execute("ALTER TABLE copies_v3 RENAME TO copies")
+            db.execute("CREATE INDEX IF NOT EXISTS ix_copies_status ON copies(status)")
+            for key in LANE_STATE_KEYS:
+                db.execute("UPDATE state SET key=? WHERE key=? AND NOT EXISTS (SELECT 1 FROM state WHERE key=?)",
+                           (f"{key}:loco", key, f"{key}:loco"))
+            db.execute("UPDATE schema_version SET version=?", (SCHEMA_VERSION,))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
     def close(self) -> None:
         self._db.close()
+
+    def backup(self, target: Path) -> Path:
+        """SQLite online backup: consistent even while the bot is writing."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        dst = sqlite3.connect(str(target))
+        try:
+            self._db.backup(dst)
+        finally:
+            dst.close()
+        return target
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -114,43 +182,54 @@ class Store:
 
     # -- fills ------------------------------------------------------------------------------------------------
 
-    def insert_fill(self, f: LeaderFill) -> bool:
-        """True if this tid is new (dedupe key)."""
+    def insert_fill(self, f: LeaderFill, *, leader: str = "loco") -> bool:
+        """True if this (leader, tid) is new (dedupe key)."""
         with self.tx() as db:
             cur = db.execute(
-                "INSERT OR IGNORE INTO fills VALUES (?,?,?,?,?,?,?,?,?)",
-                (f.tid, f.coin, f.side, str(f.px), str(f.sz), str(f.start_position), f.time_ms, f.oid,
+                f"INSERT OR IGNORE INTO fills (leader, {', '.join(_FILL_COLS)}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (leader, f.tid, f.coin, f.side, str(f.px), str(f.sz), str(f.start_position), f.time_ms, f.oid,
                  f.received_at_ms))
             return cur.rowcount == 1
 
-    def has_fill(self, tid: int) -> bool:
-        return self._db.execute("SELECT 1 FROM fills WHERE tid=?", (tid,)).fetchone() is not None
+    def has_fill(self, tid: int, *, leader: str = "loco") -> bool:
+        return self._db.execute("SELECT 1 FROM fills WHERE leader=? AND tid=?", (leader, tid)).fetchone() is not None
 
-    def max_fill_time(self) -> int | None:
-        row = self._db.execute("SELECT MAX(time_ms) AS m FROM fills").fetchone()
+    def max_fill_time(self, *, leader: str | None = None) -> int | None:
+        q, args = "SELECT MAX(time_ms) AS m FROM fills", []
+        if leader is not None:
+            q, args = q + " WHERE leader=?", [leader]
+        row = self._db.execute(q, args).fetchone()
         return row["m"] if row and row["m"] is not None else None
 
     # -- events -----------------------------------------------------------------------------------------------
 
     def insert_event(self, e: LeaderEvent, decision: Decision, rejection: str | None = None,
-                     detail: str | None = None) -> int:
+                     detail: str | None = None, *, leader: str = "loco") -> int:
         with self.tx() as db:
             cur = db.execute(
                 "INSERT INTO events (coin, episode_id, type, side, fraction, leader_px, leader_time_ms, "
-                "detected_at_ms, tid, decision, rejection, detail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "detected_at_ms, tid, decision, rejection, detail, leader) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (e.coin, e.episode_id, str(e.type), e.side, _s(e.fraction), str(e.leader_px), e.leader_time_ms,
-                 e.detected_at_ms, e.tid, str(decision), rejection, detail))
+                 e.detected_at_ms, e.tid, str(decision), rejection, detail, leader))
             return int(cur.lastrowid or 0)
 
-    def events_since(self, since_ms: int) -> list[sqlite3.Row]:
-        return list(self._db.execute(
-            "SELECT * FROM events WHERE detected_at_ms >= ? ORDER BY id", (since_ms,)))
+    def events_since(self, since_ms: int, *, leader: str | None = None) -> list[sqlite3.Row]:
+        q = "SELECT * FROM events WHERE detected_at_ms >= ?"
+        args: list[Any] = [since_ms]
+        if leader is not None:
+            q, args = q + " AND leader=?", [*args, leader]
+        return list(self._db.execute(q + " ORDER BY id", args))
 
-    def recent_events(self, *, limit: int, decision: str | None = None) -> list[sqlite3.Row]:
-        order = "ORDER BY detected_at_ms DESC, id DESC LIMIT ?"
+    def recent_events(self, *, limit: int, decision: str | None = None,
+                      leader: str | None = None) -> list[sqlite3.Row]:
+        where: list[str] = []
+        args: list[Any] = []
         if decision:
-            return list(self._db.execute(f"SELECT * FROM events WHERE decision=? {order}", (decision, limit)))
-        return list(self._db.execute(f"SELECT * FROM events {order}", (limit,)))
+            where, args = [*where, "decision=?"], [*args, decision]
+        if leader:
+            where, args = [*where, "leader=?"], [*args, leader]
+        q = "SELECT * FROM events" + (f" WHERE {' AND '.join(where)}" if where else "")
+        return list(self._db.execute(f"{q} ORDER BY detected_at_ms DESC, id DESC LIMIT ?", [*args, limit]))
 
     def recent_logs(self, *, limit: int, min_level: str | None = None) -> list[sqlite3.Row]:
         if min_level == "WARNING":
@@ -169,9 +248,10 @@ class Store:
     def insert_copy(self, c: Copy) -> Copy:
         with self.tx() as db:
             cur = db.execute(
-                "INSERT INTO copies (coin, symbol, episode_id, side, status, qty_initial, qty_open, entry_price, "
-                "tp_price, margin, opened_at, leader_entry_px, latency_detect_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (c.coin, c.symbol, c.episode_id, c.side, c.status, str(c.qty_initial), str(c.qty_open),
+                "INSERT INTO copies (leader, coin, symbol, episode_id, side, status, qty_initial, qty_open, "
+                "entry_price, tp_price, margin, opened_at, leader_entry_px, latency_detect_ms) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (c.leader, c.coin, c.symbol, c.episode_id, c.side, c.status, str(c.qty_initial), str(c.qty_open),
                  _s(c.entry_price), _s(c.tp_price), _s(c.margin), c.opened_at, str(c.leader_entry_px),
                  c.latency_detect_ms))
             c.id = int(cur.lastrowid or 0)
@@ -185,29 +265,67 @@ class Store:
         with self.tx() as db:
             db.execute(f"UPDATE copies SET {', '.join(f'{k}=?' for k in cols)} WHERE id=?", (*values, c.id))
 
-    def get_copy(self, coin: str, episode_id: int) -> Copy | None:
-        r = self._db.execute("SELECT * FROM copies WHERE coin=? AND episode_id=?", (coin, episode_id)).fetchone()
+    def get_copy(self, coin: str, episode_id: int, *, leader: str = "loco") -> Copy | None:
+        r = self._db.execute("SELECT * FROM copies WHERE leader=? AND coin=? AND episode_id=?",
+                             (leader, coin, episode_id)).fetchone()
         return self._row_to_copy(r) if r else None
 
-    def copies_with_status(self, *statuses: str) -> list[Copy]:
-        q = f"SELECT * FROM copies WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY id"
-        return [self._row_to_copy(r) for r in self._db.execute(q, statuses)]
+    def copy_by_id(self, copy_id: int) -> Copy | None:
+        r = self._db.execute("SELECT * FROM copies WHERE id=?", (copy_id,)).fetchone()
+        return self._row_to_copy(r) if r else None
 
-    def live_copies(self) -> list[Copy]:
-        return self.copies_with_status(*LIVE_STATUSES)
+    # -- read-only lookups for the dashboard's detail views ---------------------------------------------------
 
-    def open_copy_for_coin(self, coin: str) -> Copy | None:
+    def orders_for_copy(self, copy_id: int) -> list[sqlite3.Row]:
+        return list(self._db.execute("SELECT * FROM orders WHERE copy_id=? ORDER BY id", (copy_id,)))
+
+    def episode_events(self, coin: str, episode_id: int, *, leader: str = "loco") -> list[sqlite3.Row]:
+        return list(self._db.execute(
+            "SELECT * FROM events WHERE leader=? AND coin=? AND episode_id=? ORDER BY leader_time_ms, id",
+            (leader, coin, episode_id)))
+
+    def event_by_id(self, event_id: int) -> sqlite3.Row | None:
+        r: sqlite3.Row | None = self._db.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        return r
+
+    def fill_by_tid(self, tid: int, *, leader: str = "loco") -> sqlite3.Row | None:
+        r: sqlite3.Row | None = self._db.execute("SELECT * FROM fills WHERE leader=? AND tid=?",
+                                                 (leader, tid)).fetchone()
+        return r
+
+    def coin_fills_between(self, coin: str, start_ms: int, end_ms: int, *, leader: str = "loco") -> list[sqlite3.Row]:
+        return list(self._db.execute(
+            "SELECT * FROM fills WHERE time_ms BETWEEN ? AND ? AND leader=? AND coin=? ORDER BY time_ms",
+            (start_ms, end_ms, leader, coin)))
+
+    def logs_between(self, start_ms: int, end_ms: int) -> list[sqlite3.Row]:
+        return list(self._db.execute("SELECT * FROM log WHERE ts BETWEEN ? AND ? ORDER BY id", (start_ms, end_ms)))
+
+    def copies_with_status(self, *statuses: str, leader: str | None = None) -> list[Copy]:
+        """`leader=None` means every lane."""
+        q = f"SELECT * FROM copies WHERE status IN ({','.join('?' * len(statuses))})"
+        args: list[Any] = list(statuses)
+        if leader is not None:
+            q, args = q + " AND leader=?", [*args, leader]
+        return [self._row_to_copy(r) for r in self._db.execute(q + " ORDER BY id", args)]
+
+    def live_copies(self, *, leader: str | None = None) -> list[Copy]:
+        return self.copies_with_status(*LIVE_STATUSES, leader=leader)
+
+    def open_copy_for_coin(self, coin: str, *, leader: str = "loco") -> Copy | None:
         r = self._db.execute(
-            f"SELECT * FROM copies WHERE coin=? AND status IN ({','.join('?' * len(LIVE_STATUSES))})",
-            (coin, *LIVE_STATUSES)).fetchone()
+            f"SELECT * FROM copies WHERE leader=? AND coin=? AND status IN ({','.join('?' * len(LIVE_STATUSES))})",
+            (leader, coin, *LIVE_STATUSES)).fetchone()
         return self._row_to_copy(r) if r else None
 
-    def copies(self, *, since_ms: int = 0, open_only: bool = False) -> list[Copy]:
+    def copies(self, *, since_ms: int = 0, open_only: bool = False, leader: str | None = None) -> list[Copy]:
         q = "SELECT * FROM copies WHERE COALESCE(opened_at, 0) >= ?"
         args: list[Any] = [since_ms]
         if open_only:
             q += f" AND status IN ({','.join('?' * len(LIVE_STATUSES))})"
             args += list(LIVE_STATUSES)
+        if leader is not None:
+            q, args = q + " AND leader=?", [*args, leader]
         return [self._row_to_copy(r) for r in self._db.execute(q + " ORDER BY id", args)]
 
     # -- orders -----------------------------------------------------------------------------------------------

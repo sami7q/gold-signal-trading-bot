@@ -51,6 +51,22 @@ async def test_tp_and_liquidation_resolution(harness):
     assert btc.status == CopyStatus.CLOSED_LIQ and btc.realized_pnl < 0
 
 
+async def test_exchange_close_counts_the_opening_fee_once(harness):
+    # gross (41 - 40) x 500 = 500, opening fee 20, closing fee 20.5 -> the account made 459.5
+    for bybit_style in (False, True):
+        h = harness()
+        h.paper._fee = Decimal("0.001")
+        await h.fill(F(0, "HYPE", "B", 40, 8, 0))
+        h.paper.set_price("HYPEUSDT", Decimal("41"))  # TP 41: the exchange closes on its own
+        if bybit_style:  # Bybit's closedPnl nets BOTH fees and reports the opening one separately
+            row = ClosedTrade("HYPEUSDT", 1, Decimal(500), Decimal(41), Decimal("459.5"), T0 + 1, False,
+                              open_fee=Decimal(20))
+            h.paper.closed_trades = lambda _symbol, _since, row=row: [row]
+        await h.recon.run_once()
+        c = h.store.get_copy("HYPE", 1)
+        assert c.status == CopyStatus.CLOSED_TP and c.realized_pnl == Decimal("459.5"), bybit_style
+
+
 def test_classify_manual_and_unknown():
     c = Copy(coin="X", symbol="XUSDT", episode_id=1, side=1, status="OPEN", qty_initial=Decimal(1),
              qty_open=Decimal(1), leader_entry_px=Decimal(100), tp_price=Decimal("102.5"))

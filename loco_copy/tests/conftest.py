@@ -30,7 +30,9 @@ def F(t: int, coin: str, side: str, px: Any, sz: Any, start: Any, tid: int | Non
 
 
 def make_settings(tmp: Path, **overrides: Any) -> Settings:
-    base: dict[str, Any] = dict(copy_enabled=True, copy_observe_only=False, data_dir=tmp, _env_file=None)
+    # allow_execute: the execution gate is open in the harness; tests of the gate close it explicitly
+    base: dict[str, Any] = dict(copy_enabled=True, copy_observe_only=False, allow_execute=True, data_dir=tmp,
+                                _env_file=None)
     base.update(overrides)
     return Settings(**base)
 

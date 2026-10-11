@@ -110,6 +110,8 @@ class ClosedTrade:
     realized_pnl: Decimal
     closed_at_ms: int
     is_liquidation: bool
+    #: Opening fee already inside `realized_pnl` (Bybit's closedPnl nets both fees; the paper broker's does not).
+    open_fee: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,3 +147,5 @@ class Copy:
     latency_detect_ms: int | None = None
     latency_order_ms: int | None = None
     exit_qty_total: Decimal = field(default=Decimal(0))
+    #: Lane label of the leader this copies (botup.md v3).
+    leader: str = "loco"

@@ -1,8 +1,10 @@
+from dataclasses import replace
 from decimal import Decimal
+from itertools import pairwise
 
 from loco_copy.constants import EventType
 from loco_copy.models import LeaderSnapshot
-from loco_copy.tracker import LeaderTracker, is_main_perp
+from loco_copy.tracker import LeaderTracker, chain_order, is_main_perp
 from tests.conftest import T0, F
 
 
@@ -56,7 +58,7 @@ def test_pre_existing_position_never_copied_even_when_added_to_or_reduced():
     t.seed(LeaderSnapshot({"HYPE": Decimal(5)}, {}, Decimal(0), T0))
     ev = run(t, [F(1, "HYPE", "B", 40, 1, 5), F(2, "HYPE", "A", 41, 3, 6)])
     assert ev == [] and not t.is_synced("HYPE")
-    ev = run(t, [F(3, "HYPE", "A", 42, 3, 3)])  # flat once -> synced
+    ev = run(t, [F(3, "HYPE", "A", 42, 3, 3)])  # flat once -> synced; nothing to close, we never opened it
     assert ev == [] and t.is_synced("HYPE")
     assert types(run(t, [F(4, "HYPE", "B", 43, 1, 0)])) == [EventType.OPEN]
 
@@ -91,8 +93,67 @@ def test_snapshot_drift_needs_two_snapshots_then_resyncs_and_blocks_copies():
     assert t.on_snapshot(snap) == []  # first disagreement: maybe a fill still in flight
     drift = t.on_snapshot(LeaderSnapshot({"BTC": Decimal(3)}, {}, Decimal(0), T0 + 30_000))
     assert len(drift) == 1 and t.position("BTC") == 3 and not t.is_synced("BTC")
-    assert run(t, [F(40_000, "BTC", "A", 99, 3, 3)]) == []  # flat once
+    closed = run(t, [F(40_000, "BTC", "A", 99, 3, 3)])  # flat once: our copy of episode 1 must go now
+    assert types(closed) == [EventType.CLOSE] and closed[0].episode_id == 1 and t.is_synced("BTC")
     assert types(run(t, [F(41_000, "BTC", "B", 98, 1, 0)])) == [EventType.OPEN]
+
+
+# -- 2026-10-11, BTC: one short order filled in 15 pieces, delivered scrambled; the close was then missed --------
+
+# (tid, startPosition, sz) exactly as Hyperliquid sent them, in the (time, tid) order the bot used to process them
+BTC_OPEN_672 = [(49315850254644, "-0.01936", "0.003"), (51531519551723, "-0.03036", "0.003"),
+                (233538180697405, "0.0", "0.00566"), (498961892425840, "-0.01366", "0.0057"),
+                (623619207145292, "-0.00566", "0.008"), (636056239837631, "-0.02236", "0.008")]
+BTC_OPEN_819 = [(257965078715348, "-0.04556", "0.003"), (270508563871242, "-0.03336", "0.0062"),
+                (304823110836511, "-0.07346", "0.003"), (362271003012298, "-0.05156", "0.0189"),
+                (449348291469194, "-0.04256", "0.003"), (581768322782115, "-0.07046", "0.003"),
+                (750298189534454, "-0.07646", "0.42354"), (765598178810024, "-0.04856", "0.003"),
+                (888818450628965, "-0.03956", "0.003")]
+
+
+def _burst(t, rows, oid=570582805792):
+    return [replace(F(t, "BTC", "A", 83933, sz, start, tid=tid), oid=oid) for tid, start, sz in rows]
+
+
+def test_chain_order_restores_one_order_split_into_scrambled_fills():
+    ordered = chain_order(_burst(819, BTC_OPEN_819) + _burst(672, BTC_OPEN_672))
+    assert ordered[0].start_position == 0 and ordered[-1].new_position == Decimal("-0.5")
+    assert all(a.new_position == b.start_position for a, b in pairwise(ordered))
+
+
+def test_real_btc_short_is_opened_and_closed_with_loco():
+    t = LeaderTracker()
+    events, drifts = [], []
+    close = [F(1_282_694, "BTC", "B", 83772, "0.5", "-0.5")]
+    for burst in (_burst(672, BTC_OPEN_672), _burst(819, BTC_OPEN_819), close):
+        for f in chain_order(burst):
+            ev, drift = t.on_fill(f)
+            events += ev
+            drifts += [drift] if drift else []
+    assert drifts == []
+    # the other 14 pieces belong to the opening order: no ADD noise, just the open and the close
+    assert types(events) == [EventType.OPEN, EventType.CLOSE]
+    assert events[-1].episode_id == events[0].episode_id and events[-1].leader_px == 83772
+
+
+def test_a_later_order_in_the_same_direction_is_still_an_add():
+    t = LeaderTracker()
+    later = replace(F(5000, "BTC", "A", 84000, "0.1", "-0.03336"), oid=999)
+    ev = run(t, [*chain_order(_burst(672, BTC_OPEN_672)), later])
+    assert types(ev) == [EventType.OPEN, EventType.ADD]
+
+
+def test_close_is_followed_even_after_drift_mid_episode():
+    # what happened live: the (time, tid) order caused drift right after the open -> coin unsynced -> the close
+    # produced no event and the reconciler had to close our copy 61 s later
+    t = LeaderTracker()
+    events = run(t, sorted(_burst(672, BTC_OPEN_672), key=lambda f: f.tid) + sorted(_burst(819, BTC_OPEN_819),
+                                                                                    key=lambda f: f.tid))
+    assert types(events) == [EventType.OPEN] and not t.is_synced("BTC")
+    t.on_snapshot(LeaderSnapshot({"BTC": Decimal("-0.5")}, {}, Decimal(0), T0 + 40_000))
+    t.on_snapshot(LeaderSnapshot({"BTC": Decimal("-0.5")}, {}, Decimal(0), T0 + 60_000))
+    closed = run(t, [F(1_282_694, "BTC", "B", 83772, "0.5", "-0.5")])
+    assert types(closed) == [EventType.CLOSE] and closed[0].episode_id == events[0].episode_id
 
 
 def test_snapshot_skips_coins_with_fills_after_the_request():

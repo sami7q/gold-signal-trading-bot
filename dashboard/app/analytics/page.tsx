@@ -8,9 +8,11 @@ import { StatCard } from "@/components/ui/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { Label, Select } from "@/components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
+import { LeaderSelect } from "@/components/trade/leader-select";
 import { useAnalytics } from "@/hooks/use-loco";
 import { arCopyStatus, arRejection, formatDateTime, formatMoney, formatMs, formatNumber, formatPercent, pnlTone } from "@/lib/format";
 import type { Metrics } from "@/types/api";
+import { urlParam } from "@/lib/url";
 
 const CHART_TEXT = "#8b8f98";
 const GOLD = "#c9a227";
@@ -35,7 +37,8 @@ function goNoGo(m: Metrics): Check[] {
 
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
-  const query = useAnalytics(days);
+  const [leader, setLeader] = useState(() => urlParam("leader") ?? "");
+  const query = useAnalytics(days, leader || undefined);
   const data = query.data;
   const m = data?.metrics;
 
@@ -46,7 +49,9 @@ export default function AnalyticsPage() {
           <h1 className="text-xl font-semibold text-bone">التحليلات</h1>
           <p className="mt-1 text-sm text-muted">الأداء من الصفقات المغلقة فعليًا، ومقاييس الانتقال من التجريبي إلى الحقيقي.</p>
         </div>
-        <div>
+        <div className="flex flex-wrap items-end gap-3">
+          <LeaderSelect value={leader} onChange={setLeader} />
+          <div>
           <Label>الفترة</Label>
           <Select value={days} onChange={(e) => setDays(Number(e.target.value))}>
             <option value={7}>آخر 7 أيام</option>
@@ -54,6 +59,7 @@ export default function AnalyticsPage() {
             <option value={90}>آخر 90 يومًا</option>
             <option value={3650}>كل الفترة</option>
           </Select>
+          </div>
         </div>
       </div>
 
@@ -65,8 +71,8 @@ export default function AnalyticsPage() {
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard label="صافي الربح" value={formatMoney(m.realized_pnl)} tone={pnlTone(m.realized_pnl)} />
-            <StatCard label="حركات فتح لـ Loco" value={m.leader_opens} sub={`نُسخ ${m.copied_opens} · غير مدرجة ${m.not_listed}`} />
-            <StatCard label="هدف ربح / مع Loco" value={`${m.take_profits} / ${m.leader_exits}`} tone="win" />
+            <StatCard label="حركات فتح المتداول" value={m.leader_opens} sub={`نُسخ ${m.copied_opens} · غير مدرجة ${m.not_listed}`} />
+            <StatCard label="هدف ربح / مع المتداول" value={`${m.take_profits} / ${m.leader_exits}`} tone="win" />
             <StatCard label="تصفيات" value={m.liquidations} tone={m.liquidations ? "loss" : "default"} />
           </div>
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { arMode, brokerLabel, cn, formatRelativeTime, formatUsd } from "@/lib/format";
+import type { Mode } from "@/types/api";
 import { useOverview } from "@/hooks/use-loco";
 
 function Dot({ tone, pulse }: { tone: "win" | "loss" | "muted" | "gold"; pulse?: boolean }) {
@@ -37,7 +38,8 @@ export function StatusStrip() {
   }
 
   const feedOk = data.bot.running && data.bot.ws_connected;
-  const mode = data.mode.mode;
+  const lanes: Array<{ label: string; name: string; mode: Mode; paused: boolean }> =
+    data.lanes ?? [{ label: "loco", name: "Loco", mode: data.mode.mode, paused: false }];
 
   return (
     <div className="flex h-9 items-center gap-5 overflow-x-auto border-b border-border-soft bg-ink/60 px-4 text-xs">
@@ -46,7 +48,7 @@ export function StatusStrip() {
         {data.bot.running ? "يعمل" : "متوقف"}
       </StripItem>
 
-      <StripItem label="Loco">
+      <StripItem label="Hyperliquid">
         <span title={`آخر إشارة اتصال ${formatRelativeTime(data.bot.last_frame_at)}`}>
           <Dot tone={feedOk ? "win" : "loss"} pulse={feedOk} />
         </span>
@@ -59,10 +61,19 @@ export function StatusStrip() {
         </span>
       </StripItem>
 
-      <StripItem label="الوضع">
-        <Dot tone={mode === "EXECUTE" ? "gold" : "muted"} pulse={mode === "EXECUTE"} />
-        <span className={cn("font-medium", mode === "EXECUTE" ? "text-gold-bright" : "text-bone")}>{arMode(mode)}</span>
-      </StripItem>
+      {lanes.map((lane) => (
+        <StripItem key={lane.label} label={lane.name}>
+          <Dot tone={lane.paused ? "loss" : lane.mode === "EXECUTE" ? "gold" : "muted"} pulse={!lane.paused && lane.mode === "EXECUTE"} />
+          <span
+            className={cn(
+              "font-medium",
+              lane.paused ? "text-loss-bright" : lane.mode === "EXECUTE" ? "text-gold-bright" : "text-bone",
+            )}
+          >
+            {lane.paused ? "موقوف" : arMode(lane.mode)}
+          </span>
+        </StripItem>
+      ))}
 
       {data.risk.kill_switch ? (
         <StripItem label="الإيقاف الطارئ">
