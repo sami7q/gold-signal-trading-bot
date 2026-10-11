@@ -1,0 +1,8 @@
+# Vercel builds only the dashboard (Root Directory = dashboard). Upload nothing else:
+# the bot code, its .env files and local data never leave this machine.
+/*
+!/dashboard
+/dashboard/node_modules
+/dashboard/.next
+/dashboard/.env*
+/dashboard/.vercel

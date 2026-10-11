@@ -1,152 +1,95 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Inbox } from "lucide-react";
 import { Card } from "@/components/ui/card";
-import { Select, Input, Label } from "@/components/ui/input";
-import { ResultBadge, TradeStatusBadge } from "@/components/ui/badge";
+import { Label, Select } from "@/components/ui/input";
+import { CopyStatusBadge, SideBadge } from "@/components/ui/badge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
-import { useTrades, type TradeFilters } from "@/hooks/use-trades";
-import { arRejectionReason, arSide, formatDateTime, formatMoney, formatPrice } from "@/lib/format";
-import type { TradeResult, TradeStatus } from "@/types/api";
+import { useCopies } from "@/hooks/use-loco";
+import { formatDateTime, formatMoney, formatMs, formatNumber, formatPrice, pnlClass } from "@/lib/format";
 
-const STATUS_OPTIONS: Array<{ value: TradeStatus | "ALL"; label: string }> = [
-  { value: "ALL", label: "كل الحالات" },
+const FILTERS = [
+  { value: "", label: "الكل" },
   { value: "OPEN", label: "مفتوحة" },
-  { value: "CLOSED_TP", label: "مغلقة — هدف ربح" },
-  { value: "CLOSED_SL", label: "مغلقة — وقف خسارة" },
-  { value: "CLOSED_MANUAL", label: "مغلقة — يدويًا" },
-  { value: "REJECTED", label: "مرفوضة" },
+  { value: "CLOSED", label: "مغلقة" },
+  { value: "CLOSED_TP", label: "هدف الربح" },
+  { value: "CLOSED_LIQ", label: "تصفية" },
+  { value: "OBSERVED_ONLY", label: "مراقبة فقط" },
   { value: "FAILED", label: "فشلت" },
 ];
 
-const RESULT_OPTIONS: Array<{ value: TradeResult | "ALL"; label: string }> = [
-  { value: "ALL", label: "أي نتيجة" },
-  { value: "WIN", label: "ربح" },
-  { value: "LOSS", label: "خسارة" },
-  { value: "BREAKEVEN", label: "تعادل" },
-];
-
 export default function TradesPage() {
-  const [status, setStatus] = useState<TradeStatus | "ALL">("ALL");
-  const [result, setResult] = useState<TradeResult | "ALL">("ALL");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-
-  const filters: TradeFilters = useMemo(
-    () => ({
-      status: status === "ALL" ? undefined : status,
-      result: result === "ALL" ? undefined : result,
-      dateFrom: dateFrom ? new Date(dateFrom).toISOString() : undefined,
-      dateTo: dateTo ? new Date(dateTo).toISOString() : undefined,
-    }),
-    [status, result, dateFrom, dateTo],
-  );
-
-  const tradesQuery = useTrades(filters);
+  const [status, setStatus] = useState("");
+  const query = useCopies(status || undefined, 500);
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-5">
+    <div className="mx-auto flex max-w-7xl flex-col gap-5">
       <div>
-        <h1 className="text-xl font-semibold text-bone">الصفقات</h1>
-        <p className="mt-1 text-sm text-muted">كل صفقة أنشأها المحرك، بما فيها المحاولات المرفوضة.</p>
+        <h1 className="text-xl font-semibold text-bone">صفقاتنا</h1>
+        <p className="mt-1 text-sm text-muted">
+          كل صفقة نسخها البوت من Loco: سعره مقابل سعرنا، الانزلاق، سرعة التنفيذ، والنتيجة. صفقات &quot;مراقبة
+          فقط&quot; محسوبة افتراضيًا ولم تُرسل للوسيط.
+        </p>
       </div>
 
       <Card>
         <div className="flex flex-wrap items-end gap-4 border-b border-border-soft px-4 py-3">
           <div>
             <Label>الحالة</Label>
-            <Select value={status} onChange={(e) => setStatus(e.target.value as TradeStatus | "ALL")}>
-              {STATUS_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
+            <Select value={status} onChange={(e) => setStatus(e.target.value)}>
+              {FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>{f.label}</option>
               ))}
             </Select>
           </div>
-          <div>
-            <Label>النتيجة</Label>
-            <Select value={result} onChange={(e) => setResult(e.target.value as TradeResult | "ALL")}>
-              {RESULT_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div>
-            <Label>من</Label>
-            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-40" />
-          </div>
-          <div>
-            <Label>إلى</Label>
-            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-40" />
-          </div>
+          {query.data ? <p className="pb-1.5 text-xs text-muted-dim">{query.data.length} صفقة</p> : null}
         </div>
 
-        {tradesQuery.isLoading ? (
+        {query.isLoading ? (
           <LoadingState />
-        ) : tradesQuery.isError ? (
-          <ErrorState message={(tradesQuery.error as Error).message} />
-        ) : !tradesQuery.data?.length ? (
-          <EmptyState icon={Inbox} title="لا توجد صفقات تطابق هذه الفلاتر" />
+        ) : query.isError ? (
+          <ErrorState message={(query.error as Error).message} />
+        ) : !query.data?.length ? (
+          <EmptyState icon={Inbox} title="لا توجد صفقات تطابق هذا الفلتر" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1300px] text-left text-sm">
+            <table className="w-full min-w-[1200px] text-left text-sm">
               <thead>
-                <tr className="border-b border-border-soft text-[11px] uppercase tracking-wide text-muted-dim">
-                  <th className="px-3 py-2 font-medium">الرقم</th>
+                <tr className="border-b border-border-soft text-[11px] text-muted-dim">
+                  <th className="px-3 py-2 font-medium">#</th>
                   <th className="px-3 py-2 font-medium">الفتح</th>
-                  <th className="px-3 py-2 font-medium">الإغلاق</th>
                   <th className="px-3 py-2 font-medium">الرمز</th>
                   <th className="px-3 py-2 font-medium">الاتجاه</th>
-                  <th className="px-3 py-2 text-right font-medium">اللوت</th>
-                  <th className="px-3 py-2 text-right font-medium">الدخول</th>
-                  <th className="px-3 py-2 text-right font-medium">وقف الخسارة</th>
-                  <th className="px-3 py-2 text-right font-medium">هدف الربح</th>
-                  <th className="px-3 py-2 text-right font-medium">النقاط المستهدفة</th>
-                  <th className="px-3 py-2 text-right font-medium">الخروج</th>
-                  <th className="px-3 py-2 text-right font-medium">الربح</th>
                   <th className="px-3 py-2 font-medium">الحالة</th>
-                  <th className="px-3 py-2 font-medium">النتيجة</th>
-                  <th className="px-3 py-2 font-medium">سبب الرفض</th>
+                  <th className="px-3 py-2 text-right font-medium">الربح</th>
+                  <th className="px-3 py-2 text-right font-medium">الكمية</th>
+                  <th className="px-3 py-2 text-right font-medium">سعر Loco</th>
+                  <th className="px-3 py-2 text-right font-medium">سعرنا</th>
+                  <th className="px-3 py-2 text-right font-medium">الانزلاق</th>
+                  <th className="px-3 py-2 text-right font-medium">التنفيذ</th>
+                  <th className="px-3 py-2 text-right font-medium">الهدف</th>
+                  <th className="px-3 py-2 text-right font-medium">الخروج</th>
+                  <th className="px-3 py-2 font-medium">الإغلاق</th>
                 </tr>
               </thead>
-              <tbody className="font-data">
-                {tradesQuery.data.map((trade) => (
-                  <tr key={trade.id} className="border-b border-border-soft/60 last:border-0 hover:bg-white/[0.02]">
-                    <td className="px-3 py-2 text-muted">#{trade.id}</td>
-                    <td className="px-3 py-2 text-muted">{formatDateTime(trade.opened_at)}</td>
-                    <td className="px-3 py-2 text-muted">{formatDateTime(trade.closed_at)}</td>
-                    <td className="px-3 py-2 text-bone">{trade.symbol}</td>
-                    <td className="px-3 py-2 text-bone">{arSide(trade.side)}</td>
-                    <td className="px-3 py-2 text-right text-bone">{formatPrice(trade.executed_lot ?? trade.requested_lot)}</td>
-                    <td className="px-3 py-2 text-right text-bone">{formatPrice(trade.entry_price)}</td>
-                    <td className="px-3 py-2 text-right text-loss-bright">{formatPrice(trade.stop_loss)}</td>
-                    <td className="px-3 py-2 text-right text-win-bright">{formatPrice(trade.take_profit_price)}</td>
-                    <td className="px-3 py-2 text-right text-bone">{formatPrice(trade.target_pips)}</td>
-                    <td className="px-3 py-2 text-right text-bone">{formatPrice(trade.exit_price)}</td>
-                    <td
-                      className={
-                        "px-3 py-2 text-right " +
-                        (Number(trade.profit ?? 0) > 0
-                          ? "text-win-bright"
-                          : Number(trade.profit ?? 0) < 0
-                            ? "text-loss-bright"
-                            : "text-muted")
-                      }
-                    >
-                      {trade.profit !== null ? formatMoney(trade.profit) : "—"}
-                    </td>
-                    <td className="px-3 py-2">
-                      <TradeStatusBadge status={trade.status} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <ResultBadge result={trade.result} />
-                    </td>
-                    <td className="px-3 py-2 font-sans text-xs text-warn">
-                      {trade.failure_reason ? arRejectionReason(trade.failure_reason) : <span className="text-muted-dim">—</span>}
-                    </td>
+              <tbody className="font-data whitespace-nowrap">
+                {query.data.map((c) => (
+                  <tr key={c.id} className="border-b border-border-soft/60 last:border-0 hover:bg-white/[0.02]">
+                    <td className="px-3 py-2 text-muted">#{c.id}</td>
+                    <td className="px-3 py-2 text-muted">{formatDateTime(c.opened_at)}</td>
+                    <td className="px-3 py-2 text-bone">{c.symbol}</td>
+                    <td className="px-3 py-2"><SideBadge side={c.side} /></td>
+                    <td className="px-3 py-2"><CopyStatusBadge status={c.status} /></td>
+                    <td className={`px-3 py-2 text-right ${pnlClass(c.realized_pnl)}`}>{c.closed_at ? formatMoney(c.realized_pnl) : "—"}</td>
+                    <td className="px-3 py-2 text-right text-bone">{formatNumber(c.qty_initial, 6)}</td>
+                    <td className="px-3 py-2 text-right text-muted">{formatPrice(c.leader_entry_px)}</td>
+                    <td className="px-3 py-2 text-right text-bone">{formatPrice(c.entry_price)}</td>
+                    <td className="px-3 py-2 text-right text-muted">{c.slippage_bps !== null ? `${formatNumber(c.slippage_bps, 1)} bps` : "—"}</td>
+                    <td className="px-3 py-2 text-right text-muted">{formatMs(c.latency_order_ms)}</td>
+                    <td className="px-3 py-2 text-right text-win-bright">{formatPrice(c.tp_price)}</td>
+                    <td className="px-3 py-2 text-right text-bone">{formatPrice(c.exit_price_avg)}</td>
+                    <td className="px-3 py-2 text-muted">{formatDateTime(c.closed_at)}</td>
                   </tr>
                 ))}
               </tbody>

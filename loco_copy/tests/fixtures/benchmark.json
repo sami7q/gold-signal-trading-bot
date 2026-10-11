@@ -1,0 +1,106 @@
+{
+ "leader": "0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1",
+ "collected_ms": 1791644217256,
+ "strategy": {
+  "start_balance": 10000,
+  "risk_per_trade": 0.1,
+  "leverage": 20,
+  "take_profits": [
+   0.5,
+   1.0
+  ],
+  "cost_per_side": 0.0008,
+  "liq_buffer": 0.005,
+  "safe_variant": {
+   "risk_per_trade": 0.05,
+   "max_positions": 3,
+   "leverage_cap": 10
+  }
+ },
+ "take_profit_roi": 0.5,
+ "candle_coverage": 1.0,
+ "windows": {
+  "published": {
+   "90d": {
+    "cutoff_ms": 1783868217256,
+    "trades": 130,
+    "copied": 130,
+    "tp": 86,
+    "liq": 1,
+    "exits": 43,
+    "open": 0,
+    "wins": 124,
+    "losses": 6,
+    "max_dd": 0.0986,
+    "final": 799368.56
+   },
+   "180d": {
+    "cutoff_ms": 1776092217256,
+    "trades": 228,
+    "copied": 228,
+    "tp": 135,
+    "liq": 3,
+    "exits": 90,
+    "open": 0,
+    "wins": 205,
+    "losses": 23,
+    "max_dd": 0.1253,
+    "final": 9466685.58
+   },
+   "all": {
+    "cutoff_ms": 0,
+    "trades": 425,
+    "copied": 425,
+    "tp": 248,
+    "liq": 10,
+    "exits": 167,
+    "open": 0,
+    "wins": 374,
+    "losses": 51,
+    "max_dd": 0.1876,
+    "final": 2208918724.24
+   }
+  },
+  "first_fill": {
+   "90d": {
+    "cutoff_ms": 1783868217256,
+    "trades": 130,
+    "copied": 130,
+    "tp": 54,
+    "liq": 22,
+    "exits": 53,
+    "open": 1,
+    "wins": 90,
+    "losses": 40,
+    "max_dd": 0.6553,
+    "final": 14436.84
+   },
+   "180d": {
+    "cutoff_ms": 1776092217256,
+    "trades": 228,
+    "copied": 228,
+    "tp": 75,
+    "liq": 47,
+    "exits": 105,
+    "open": 1,
+    "wins": 143,
+    "losses": 85,
+    "max_dd": 0.8475,
+    "final": 2985.38
+   },
+   "all": {
+    "cutoff_ms": 0,
+    "trades": 425,
+    "copied": 425,
+    "tp": 145,
+    "liq": 87,
+    "exits": 192,
+    "open": 1,
+    "wins": 269,
+    "losses": 156,
+    "max_dd": 0.9339,
+    "final": 2388.59
+   }
+  }
+ }
+}

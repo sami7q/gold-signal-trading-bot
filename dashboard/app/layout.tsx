@@ -17,8 +17,8 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "بوت إشارات الذهب",
-  description: "لوحة تحكم تشغيل بوت تداول الذهب (XAUUSD) عبر إشارات تيليكرام.",
+  title: "LOCO — نسخ صفقات",
+  description: "لوحة تحكم بوت نسخ صفقات Loco من Hyperliquid إلى Bybit.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

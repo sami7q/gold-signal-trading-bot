@@ -1,4 +1,4 @@
-import { clearAuthedMarker, getActiveAccountId } from "@/lib/account";
+import { clearAuthedMarker } from "@/lib/account";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -14,22 +14,19 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const accountId = getActiveAccountId();
-
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(accountId ? { "X-Account-Id": accountId } : {}),
-      ...init?.headers,
-    },
-    // The session lives in an HttpOnly cookie set by the backend (Vercel
-    // and the Cloudflare Tunnel are different HTTPS origins, so this is a
-    // genuinely cross-site request) -- without this, the cookie is never
-    // sent and every request looks logged-out regardless of a real login.
-    credentials: "include",
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      // The session lives in an HttpOnly cookie set by the bot's API, which sits on a different site
+      // (Cloudflare tunnel) from this dashboard (Vercel) -- without this the cookie is never sent.
+      credentials: "include",
+      cache: "no-store",
+    });
+  } catch {
+    throw new ApiError(0, "تعذّر الوصول إلى خادم البوت. تأكد أن البوت والنفق يعملان على السيرفر.");
+  }
 
   if (!response.ok) {
     let detail: unknown;
@@ -43,15 +40,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         ? String((detail as { detail: unknown }).detail)
         : undefined) ?? `فشل الطلب إلى ${path} برمز الحالة ${response.status}`;
 
-    // A stale/revoked session anywhere but the login form itself (a wrong
-    // password there is a normal, inline 401 the form displays -- not a
-    // reason to bounce away from it) sends the user back to /login. The
-    // proxy's cookie-presence check only guards page loads; an API 401
-    // mid-session (expired token, logged out in another tab) needs this
-    // instead. `window.location.href` (not useRouter()) deliberately --
-    // this module is plain JS reachable outside any component's render,
-    // and a hard navigation also clears every in-memory store (TanStack
-    // Query cache included), which a stale session warrants anyway.
+    // An expired/revoked session anywhere except the login form itself sends the user back to /login.
+    // A hard navigation also clears every in-memory cache, which a stale session warrants anyway.
     if (response.status === 401 && typeof window !== "undefined" && path !== "/api/auth/login") {
       clearAuthedMarker();
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
@@ -71,8 +61,6 @@ export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
-  patch: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
 };
 
 export { API_BASE_URL };

@@ -1,18 +1,16 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
-import { clearActiveAccountId, clearAuthedMarker, setAuthedMarker } from "@/lib/account";
+import { api, ApiError } from "@/lib/api";
+import { clearAuthedMarker, setAuthedMarker } from "@/lib/account";
 import type { LoginRequest, MeResponse } from "@/types/api";
 
 export function useMe() {
   return useQuery({
     queryKey: ["auth", "me"],
     queryFn: () => api.get<MeResponse>("/api/auth/me"),
-    // A 401 here is an expected, normal state (not logged in yet) -- not
-    // worth retrying, and callers read `isError`/`data` themselves rather
-    // than needing this to throw anywhere.
-    retry: false,
+    // a 401 already redirects to /login; anything else (a tunnel blip) is worth another try
+    retry: (failures, error) => !(error instanceof ApiError && error.status === 401) && failures < 3,
     refetchInterval: false,
   });
 }
@@ -33,7 +31,6 @@ export function useLogout() {
   return useMutation({
     mutationFn: () => api.post<void>("/api/auth/logout"),
     onSuccess: () => {
-      clearActiveAccountId();
       clearAuthedMarker();
       queryClient.clear();
     },

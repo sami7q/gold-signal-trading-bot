@@ -6,7 +6,6 @@ import { Lock, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { useLogin } from "@/hooks/use-auth";
-import { setActiveAccountId } from "@/lib/account";
 import { ApiError } from "@/lib/api";
 
 export default function LoginPage() {
@@ -31,12 +30,7 @@ function LoginForm() {
     login.mutate(
       { username, password, remember_me: rememberMe },
       {
-        onSuccess: (data) => {
-          // Default the selected account to whichever is live, else the
-          // first one the user owns -- the switcher lets them change it
-          // right after landing.
-          const preferred = data.accounts.find((a) => a.is_live) ?? data.accounts[0];
-          if (preferred) setActiveAccountId(preferred.id);
+        onSuccess: () => {
           const next = searchParams.get("next");
           router.replace(next && next !== "/login" ? next : "/");
           router.refresh();
@@ -53,9 +47,9 @@ function LoginForm() {
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-1.5 text-center">
           <span className="font-data text-2xl font-semibold tracking-tight text-gold-bright">
-            XAU
+            LOCO
           </span>
-          <span className="text-sm font-medium text-muted">بوت إشارات الذهب</span>
+          <span className="text-sm font-medium text-muted">نسخ صفقات Loco إلى Bybit</span>
         </div>
 
         <form

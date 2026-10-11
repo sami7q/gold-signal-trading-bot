@@ -1,0 +1,346 @@
+"""`loco-copy` -- the whole user interface (botup.md §4)."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import csv
+import getpass
+import json
+import re
+import sys
+import time
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
+from loco_copy.config import PROJECT_ROOT, Settings, get_settings
+from loco_copy.constants import CopyStatus
+from loco_copy.metrics import compute
+from loco_copy.store import Store, now_ms
+
+DURATION = re.compile(r"^(\d+)([smhd])$")
+UNIT_MS = {"s": 1000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}
+
+
+def since_ms(text: str) -> int:
+    m = DURATION.match(text.strip())
+    if not m:
+        raise argparse.ArgumentTypeError("use a duration like 30m, 24h or 7d")
+    return now_ms() - int(m.group(1)) * UNIT_MS[m.group(2)]
+
+
+def parse_when(text: str) -> int:
+    if DURATION.match(text):
+        return since_ms(text)
+    return int(datetime.fromisoformat(text).replace(tzinfo=UTC).timestamp() * 1000)
+
+
+def fmt_ts(ms: int | None) -> str:
+    return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d %H:%M:%S") if ms else "-"
+
+
+def age(ms: int | None) -> str:
+    if not ms:
+        return "never"
+    s = (now_ms() - ms) // 1000
+    return f"{s}s ago" if s < 120 else f"{s // 60}m ago" if s < 7200 else f"{s // 3600}h ago"
+
+
+def table(rows: list[list[Any]], header: list[str]) -> None:
+    cells = [[str(c) for c in r] for r in [header, *rows]]
+    widths = [max(len(r[i]) for r in cells) for i in range(len(header))]
+    for i, r in enumerate(cells):
+        print("  ".join(c.ljust(w) for c, w in zip(r, widths, strict=True)))
+        if i == 0:
+            print("  ".join("-" * w for w in widths))
+
+
+def side(s: int) -> str:
+    return "LONG" if s > 0 else "SHORT"
+
+
+# -- commands -------------------------------------------------------------------------------------------------
+
+
+def cmd_run(s: Settings, _a: argparse.Namespace) -> None:
+    from loco_copy.app import AlreadyRunning, run  # noqa: PLC0415
+
+    try:
+        run(s)
+    except AlreadyRunning as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def cmd_status(s: Settings, _a: argparse.Namespace) -> None:
+    from loco_copy.app import RunLock  # noqa: PLC0415
+    from loco_copy.notify import Notifier  # noqa: PLC0415
+    from loco_copy.risk import RiskGuard  # noqa: PLC0415
+
+    store = Store(s.db_path)
+    rt = store.get_state("runtime") or {}
+    running = RunLock(s.data_dir / "run.lock").is_held_elsewhere()
+    m = compute(store, now_ms() - 86_400_000)
+    risk = RiskGuard(store, s, Notifier(store, echo=False))
+    print(f"bot process        : {'RUNNING' if running else 'not running'} (pid {rt.get('pid', '-')}, "
+          f"heartbeat {age(rt.get('updated_ms'))})")
+    print(f"mode               : broker={s.broker} env={s.broker_env} copy_enabled={s.copy_enabled} "
+          f"observe_only={s.copy_observe_only}")
+    print(f"websocket          : {'connected' if rt.get('ws_connected') else 'DISCONNECTED'}, last frame "
+          f"{age(rt.get('last_frame_ms'))}, reconnects {rt.get('ws_reconnects', 0)}")
+    print(f"leader snapshot    : {age(rt.get('last_snapshot_ms'))}, failures {rt.get('snapshot_failures', 0)}")
+    print(f"detect lag (24h)   : p50 {m.detect_p50_ms} ms, p95 {m.detect_p95_ms} ms")
+    print(f"equity / available : {rt.get('equity')} / {rt.get('available')}")
+    print(f"open copies        : {len(store.copies(open_only=True))}")
+    print(f"kill switch        : {'ON' if risk.kill_switch_on() else 'off'}"
+          f"{' (data/STOP present)' if s.stop_file.exists() else ''}; "
+          f"leader breaker {'TRIPPED' if risk.leader_breaker_tripped() else 'ok'}")
+    warn = store.logs_since(now_ms() - 86_400_000, min_level="WARNING")
+    print(f"warnings (24h)     : {len(warn)}" + (f"  last: {warn[-1]['type']}" if warn else ""))
+
+
+def cmd_loco(s: Settings, _a: argparse.Namespace) -> None:
+    store = Store(s.db_path)
+    snap = store.get_state("leader_snapshot")
+    if not snap:
+        raise SystemExit("No leader snapshot yet -- start the bot (loco-copy run) first.")
+    ours = {c.coin: c for c in store.copies(open_only=True)}
+    ours |= {c.coin: c for c in store.copies_with_status(CopyStatus.OBSERVED_ONLY) if c.closed_at is None}
+    tracker = store.get_state("tracker") or {}
+    print(f"Loco snapshot {age(snap['taken_at_ms'])} -- account value {snap['account_value']}")
+    rows = []
+    for coin in sorted(set(snap["positions"]) | set(ours)):
+        pos = Decimal(snap["positions"].get(coin, "0"))
+        c = ours.get(coin)
+        synced = tracker.get(coin, {}).get("synced", True)
+        rows.append([coin, side(1 if pos > 0 else -1) if pos else "flat", pos, snap["entry_px"].get(coin, "-"),
+                     "yes" if synced else "NO (pre-existing/drift)",
+                     f"{side(c.side)} {c.qty_open} @ {c.entry_price} [{c.status}]" if c else "-"])
+    table(rows, ["coin", "loco side", "loco size", "loco entry", "copyable", "ours"])
+
+
+def cmd_trades(s: Settings, a: argparse.Namespace) -> None:
+    store = Store(s.db_path)
+    rows = []
+    for c in store.copies(since_ms=a.since, open_only=a.open):
+        rows.append([c.id, fmt_ts(c.opened_at), c.coin, c.symbol, side(c.side), c.status, c.qty_initial,
+                     c.leader_entry_px, c.entry_price or "-",
+                     f"{c.slippage_bps:.1f}" if c.slippage_bps is not None else "-",
+                     c.latency_order_ms if c.latency_order_ms is not None else "-", c.tp_price or "-",
+                     c.exit_price_avg or "-", f"{c.realized_pnl:.2f}", c.close_reason or ""])
+    table(rows, ["id", "opened (UTC)", "coin", "symbol", "side", "status", "qty", "loco px", "our px", "slip bps",
+                 "order ms", "tp", "exit", "pnl", "reason"])
+
+
+def cmd_events(s: Settings, a: argparse.Namespace) -> None:
+    store = Store(s.db_path)
+    rows = [[fmt_ts(e["detected_at_ms"]), e["coin"], e["episode_id"], e["type"], side(e["side"]) if e["side"] else "-",
+             e["fraction"] or "", e["leader_px"], e["detected_at_ms"] - e["leader_time_ms"], e["decision"],
+             e["rejection"] or "", e["detail"] or ""] for e in store.events_since(a.since)]
+    table(rows, ["detected (UTC)", "coin", "ep", "type", "side", "frac", "loco px", "lag ms", "decision",
+                 "rejection", "detail"])
+
+
+def cmd_kill(s: Settings, a: argparse.Namespace) -> None:
+    from loco_copy.notify import Notifier  # noqa: PLC0415
+    from loco_copy.risk import RiskGuard  # noqa: PLC0415
+
+    store = Store(s.db_path)
+    RiskGuard(store, s, Notifier(store, echo=False)).engage_kill("loco-copy kill")
+    s.stop_file.parent.mkdir(parents=True, exist_ok=True)
+    s.stop_file.touch()
+    print("Kill switch ON: no new opens (data/STOP created).")
+    if a.close_all:
+        from loco_copy.app import RunLock  # noqa: PLC0415
+
+        if RunLock(s.data_dir / "run.lock").is_held_elsewhere():
+            store.set_state("close_all_requested", True)
+            print("Asked the running bot to close every copy (reduce-only); check `loco-copy trades --open`.")
+        else:
+            asyncio.run(_close_all_offline(s, store))
+
+
+async def _close_all_offline(s: Settings, store: Store) -> None:
+    from loco_copy.app import App, close_all  # noqa: PLC0415
+
+    app = App(s)
+    await app.build_broker()
+    from loco_copy.engine import CopyEngine  # noqa: PLC0415
+
+    engine = CopyEngine(store=app.store, broker=app.broker, settings=s, risk=app.risk, notifier=app.n,
+                        mapper=app.mapper, tracker=app.tracker, instruments=app.instruments)
+    await close_all(app.store, engine, app.n)
+    app.save_runtime()
+    await app.client.close()
+    print("Closed every open copy (reduce-only).")
+
+
+def cmd_resume(s: Settings, _a: argparse.Namespace) -> None:
+    from loco_copy.notify import Notifier  # noqa: PLC0415
+    from loco_copy.risk import RiskGuard  # noqa: PLC0415
+
+    store = Store(s.db_path)
+    RiskGuard(store, s, Notifier(store, echo=False)).release()
+    print("Kill switch released (data/STOP removed, leader breaker reset).")
+
+
+def cmd_report(s: Settings, a: argparse.Namespace) -> None:
+    store = Store(s.db_path)
+    m = compute(store, a.since)
+    out = s.data_dir / "exports"
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d_%H%M%S")
+    copies = store.copies(since_ms=a.since)
+    with open(out / f"trades_{stamp}.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["id", "opened_utc", "closed_utc", "coin", "symbol", "side", "status", "qty", "leader_px",
+                    "entry", "tp", "exit", "pnl", "fees", "slippage_bps", "latency_detect_ms", "latency_order_ms"])
+        for c in copies:
+            w.writerow([c.id, fmt_ts(c.opened_at), fmt_ts(c.closed_at), c.coin, c.symbol, side(c.side), c.status,
+                        c.qty_initial, c.leader_entry_px, c.entry_price, c.tp_price, c.exit_price_avg, c.realized_pnl,
+                        c.fees, c.slippage_bps, c.latency_detect_ms, c.latency_order_ms])
+
+    def mark(ok: bool | None) -> str:
+        return "n/a" if ok is None else "PASS" if ok else "FAIL"
+
+    lines = [
+        f"# loco-copy report — {stamp}", "",
+        f"Window: since {fmt_ts(a.since)} UTC. Broker `{s.broker}` / `{s.broker_env}`, "
+        f"observe_only={s.copy_observe_only}.", "",
+        "| Metric | Value | Target | Status |", "|---|---|---|---|",
+        f"| Detection latency p50 / p95 | {m.detect_p50_ms} / {m.detect_p95_ms} ms | < 1000 / < 3000 ms | "
+        f"{mark(None if m.detect_p50_ms is None else m.detect_p50_ms < 1000 and (m.detect_p95_ms or 0) < 3000)} |",
+        f"| Order latency p50 | {m.order_p50_ms} ms | < 1000 ms | "
+        f"{mark(None if m.order_p50_ms is None else m.order_p50_ms < 1000)} |",
+        f"| Entry slippage median | {m.slippage_median_bps} bps | < 10 bps | "
+        f"{mark(None if m.slippage_median_bps is None else m.slippage_median_bps < 10)} |",
+        f"| Capture rate | {m.capture_rate} ({m.copied_opens}/{m.leader_opens}, {m.not_listed} not listed) | ≥ 0.90 | "
+        f"{mark(None if m.capture_rate is None else m.capture_rate >= 0.9)} |",
+        f"| Missed exits (auto-closed) | {m.missed_exits} | 0 | {mark(m.missed_exits == 0)} |",
+        f"| Liquidations | {m.liquidations} | compare with `loco-copy replay` on the same fills | — |",
+        f"| Take profits / leader exits | {m.take_profits} / {m.leader_exits} | — | — |",
+        f"| Realized PnL | {m.realized_pnl:.2f} | — | — |", "",
+        f"Rejections: {json.dumps(m.rejections)}", "",
+        "Not financial advice."]
+    (out / f"report_{stamp}.md").write_text("\n".join(lines), encoding="utf-8")
+    print("\n".join(lines))
+    print(f"\n-> {out / f'report_{stamp}.md'}\n-> {out / f'trades_{stamp}.csv'}")
+
+
+def cmd_replay(s: Settings, a: argparse.Namespace) -> None:
+    from loco_copy.replay import (  # noqa: PLC0415
+        fixture_candle_source,
+        load_fixture_fills,
+        run_replay,
+    )
+
+    if a.source == "fixtures":
+        fx = PROJECT_ROOT / "tests" / "fixtures"
+        fills = load_fixture_fills(fx / "loco_fills.json.gz")
+        candles = fixture_candle_source(fx / "loco_candles.json.gz")
+    else:
+        from loco_copy.replay_sources import db_fills, hyperliquid_candle_source  # noqa: PLC0415
+
+        fills = db_fills(Store(s.db_path))
+        candles = hyperliquid_candle_source(s)
+    rs = s.model_copy(update={"copy_enabled": True, "copy_observe_only": False})
+    r = asyncio.run(run_replay(fills, candles, rs, start_ms=a.from_, end_ms=a.to, fee_rate=Decimal(a.fee)))
+    print(f"fills replayed: {len([f for f in fills if f.time_ms >= a.from_ and (a.to is None or f.time_ms <= a.to)])}")
+    print(f"counts        : {r.counts}")
+    print(f"equity        : {r.start_equity} -> {r.final_equity:.2f}  (max drawdown {float(r.max_dd):.1%})")
+    print(f"rejections    : {r.rejections}")
+
+
+def cmd_set_key(s: Settings, a: argparse.Namespace) -> None:
+    import keyring  # noqa: PLC0415
+
+    env = a.target.removeprefix("bybit-")
+    service = f"loco-copy-bybit-{env}"
+    key = getpass.getpass(f"Bybit {env} API key (hidden): ").strip()
+    secret = getpass.getpass(f"Bybit {env} API secret (hidden): ").strip()
+    if not key or not secret:
+        raise SystemExit("Nothing stored (empty input).")
+    keyring.set_password(service, "api_key", key)
+    keyring.set_password(service, "api_secret", secret)
+    print(f"Stored in the OS keyring under '{service}'. Never put keys in .env or git.")
+
+
+def cmd_api(s: Settings, _a: argparse.Namespace) -> None:
+    from loco_copy.web import serve  # noqa: PLC0415
+
+    serve(s)
+
+
+def cmd_add_user(s: Settings, a: argparse.Namespace) -> None:
+    from loco_copy.auth import hash_password  # noqa: PLC0415
+
+    password = getpass.getpass(f"Password for {a.username} (hidden): ")
+    if len(password) < 8 or password != getpass.getpass("Repeat password: "):
+        raise SystemExit("Not stored: passwords differ or are shorter than 8 characters.")
+    Store(s.db_path).upsert_user(a.username, a.display_name or a.username, hash_password(password))
+    print(f"Dashboard user '{a.username}' saved.")
+
+
+def cmd_import_users(s: Settings, a: argparse.Namespace) -> None:
+    """Copy dashboard logins (with their existing password hashes) from the old gold-bot database."""
+    import sqlite3  # noqa: PLC0415
+
+    src = sqlite3.connect(f"file:{a.path}?mode=ro", uri=True)
+    src.row_factory = sqlite3.Row
+    store = Store(s.db_path)
+    for row in src.execute("SELECT username, display_name, password_hash FROM users"):
+        store.upsert_user(row["username"], row["display_name"] or row["username"], row["password_hash"])
+        print(f"imported {row['username']}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="loco-copy", description="Copy Loco's Hyperliquid perp trades (see botup.md).")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("run", help="start the bot (feed + engine + reconciler)").set_defaults(fn=cmd_run)
+    sub.add_parser("status", help="health at a glance").set_defaults(fn=cmd_status)
+    sub.add_parser("loco", help="Loco's positions (last snapshot) next to ours").set_defaults(fn=cmd_loco)
+    t = sub.add_parser("trades", help="copy trades")
+    t.add_argument("--open", action="store_true")
+    t.add_argument("--since", type=since_ms, default=since_ms("7d"))
+    t.set_defaults(fn=cmd_trades)
+    e = sub.add_parser("events", help="every Loco event and the decision taken")
+    e.add_argument("--since", type=since_ms, default=since_ms("1d"))
+    e.set_defaults(fn=cmd_events)
+    k = sub.add_parser("kill", help="engage the kill switch")
+    k.add_argument("--close-all", action="store_true", help="also close every copy (reduce-only)")
+    k.set_defaults(fn=cmd_kill)
+    sub.add_parser("resume", help="release the kill switch").set_defaults(fn=cmd_resume)
+    r = sub.add_parser("report", help="CSV + markdown: live metrics vs targets")
+    r.add_argument("--since", type=since_ms, default=since_ms("7d"))
+    r.set_defaults(fn=cmd_report)
+    rp = sub.add_parser("replay", help="recorded Loco fills through the real pipeline with PaperBroker")
+    rp.add_argument("--from", dest="from_", type=parse_when, default=0, help="ISO date/time (UTC) or e.g. 90d")
+    rp.add_argument("--to", type=parse_when, default=None)
+    rp.add_argument("--source", choices=["db", "fixtures"], default="db")
+    rp.add_argument("--fee", default="0.0008", help="fee + slippage per side (research used 0.0008)")
+    rp.set_defaults(fn=cmd_replay)
+    sk = sub.add_parser("set-key", help="store Bybit API key/secret in the OS keyring")
+    sk.add_argument("target", choices=["bybit-demo", "bybit-live"])
+    sk.set_defaults(fn=cmd_set_key)
+    sub.add_parser("api", help="start the dashboard API (localhost only, behind the tunnel)").set_defaults(fn=cmd_api)
+    au = sub.add_parser("add-user", help="create or reset a dashboard login")
+    au.add_argument("username")
+    au.add_argument("--display-name", default=None)
+    au.set_defaults(fn=cmd_add_user)
+    iu = sub.add_parser("import-users", help="copy dashboard logins from the old gold-bot database")
+    iu.add_argument("path", help="path to goldbot.db")
+    iu.set_defaults(fn=cmd_import_users)
+    return p
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        raise SystemExit(f"Configuration refused: {exc}") from exc
+    args.fn(settings, args)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

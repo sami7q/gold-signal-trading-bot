@@ -1,306 +1,32 @@
-export type TradingMode = "SIMULATION" | "DEMO" | "LIVE";
-export type Side = "BUY" | "SELL";
-export type OrderType = "MARKET" | "LIMIT" | "STOP";
+// Shapes returned by the loco-copy dashboard API (loco_copy/web.py). Decimals arrive as strings so no
+// precision is lost to JSON floats; timestamps are ISO-8601 UTC strings.
 
-export type SignalStatus =
-  | "RECEIVED"
-  | "CLASSIFIED"
-  | "WAITING_FOR_DETAILS"
-  | "READY"
-  | "VALIDATING"
-  | "REJECTED"
-  | "EXECUTION_PENDING"
-  | "EXECUTED"
-  | "FAILED"
-  | "EXPIRED"
-  | "IGNORED"
-  | "DUPLICATE";
+export type Side = "LONG" | "SHORT";
+export type Mode = "WATCH" | "OBSERVE" | "EXECUTE";
 
-export type TradeStatus =
-  | "CREATED"
+export type CopyStatus =
+  | "OBSERVED_ONLY"
   | "SUBMITTING"
   | "OPEN"
+  | "CLOSED_LEADER"
   | "CLOSED_TP"
-  | "CLOSED_SL"
+  | "CLOSED_LIQ"
   | "CLOSED_MANUAL"
-  | "REJECTED"
+  | "CLOSED_RECONCILED"
   | "FAILED"
   | "UNKNOWN";
 
-export type TradeResult = "WIN" | "LOSS" | "BREAKEVEN";
+export type Decision =
+  | "COPIED"
+  | "FOLLOWED"
+  | "OBSERVED_ONLY"
+  | "REJECTED"
+  | "IGNORED_ADD"
+  | "IGNORED_REDUCE"
+  | "NO_MATCHING_COPY"
+  | "FAILED";
 
-export type AuditSeverity = "INFO" | "WARNING" | "ERROR" | "CRITICAL";
-
-export interface TradingSettings {
-  id: number;
-  auto_trading: boolean;
-  mode: TradingMode;
-  buy_enabled: boolean;
-  sell_enabled: boolean;
-  lot_size: string;
-  target_pips: string;
-  require_stop_loss: boolean;
-  max_open_trades: number;
-  max_channel_stop_pips: string | null;
-  signal_completion_timeout_seconds: number;
-  auto_sl_fallback_pips: string | null;
-  daily_lot_plan_enabled: boolean;
-  martingale_lot_multiplier: string;
-  monday_first_trade_lot: string;
-  monday_second_trade_lot: string;
-  max_trades_per_day: number;
-  loss_recovery_enabled: boolean;
-}
-
-export interface PipPreview {
-  symbol: string;
-  broker: string;
-  broker_healthy: boolean;
-  digits: number | null;
-  point: string | null;
-  pip_size: string | null;
-  target_pips: string;
-  price_distance: string | null;
-  example_entry: string | null;
-  calculated_take_profit: string | null;
-}
-
-export interface TradingSettingsUpdate {
-  auto_trading?: boolean;
-  mode?: TradingMode;
-  buy_enabled?: boolean;
-  sell_enabled?: boolean;
-  lot_size?: string;
-  target_pips?: string;
-  require_stop_loss?: boolean;
-  max_open_trades?: number;
-  max_channel_stop_pips?: string | null;
-  signal_completion_timeout_seconds?: number;
-  auto_sl_fallback_pips?: string | null;
-  daily_lot_plan_enabled?: boolean;
-  martingale_lot_multiplier?: string;
-  monday_first_trade_lot?: string;
-  monday_second_trade_lot?: string;
-  max_trades_per_day?: number;
-  loss_recovery_enabled?: boolean;
-  confirm_live_phrase?: string;
-}
-
-export interface Trade {
-  id: number;
-  signal_id: number;
-  account_id: number;
-  execution_key: string;
-  broker: string;
-  broker_order_id: string | null;
-  broker_position_id: string | null;
-  symbol: string;
-  side: Side;
-  requested_lot: string;
-  executed_lot: string | null;
-  entry_price: string | null;
-  stop_loss: string | null;
-  target_pips: string;
-  take_profit_price: string | null;
-  opened_at: string | null;
-  closed_at: string | null;
-  exit_price: string | null;
-  profit: string | null;
-  profit_currency: string;
-  status: TradeStatus;
-  result: TradeResult | null;
-  close_reason: string | null;
-  failure_reason: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export type MessageRole = "ENTRY" | "DETAILS" | "STOP_LOSS" | "TARGETS" | "UPDATE" | "RESULT" | "OTHER";
-
-export interface SignalSourceMessage {
-  role: MessageRole;
-  raw_text: string;
-  normalized_text: string;
-  sent_at: string;
-}
-
-export interface Signal {
-  id: number;
-  symbol: string;
-  side: Side;
-  signal_type: OrderType;
-  entry_min: string | null;
-  entry_max: string | null;
-  channel_stop_loss: string | null;
-  status: SignalStatus;
-  source: string;
-  channel_id: string;
-  first_message_at: string;
-  completed_at: string | null;
-  expires_at: string | null;
-  rejection_reason: string | null;
-  created_at: string;
-  updated_at: string;
-  linked_trade_id: number | null;
-  messages: SignalSourceMessage[];
-}
-
-export interface AuditEvent {
-  id: number;
-  event_type: string;
-  severity: AuditSeverity;
-  message: string;
-  metadata_json: string;
-  created_at: string;
-}
-
-export interface TradeStatistics {
-  trades_executed: number;
-  open_trades: number;
-  closed_trades: number;
-  wins: number;
-  losses: number;
-  win_rate: string;
-  net_profit: string;
-  gross_profit: string;
-  gross_loss: string;
-  average_win: string;
-  average_loss: string;
-  best_trade: string | null;
-  worst_trade: string | null;
-  today_trades: number;
-  today_pl: string;
-}
-
-export interface DashboardSummary {
-  total_signals_received: number;
-  executable_signals: number;
-  ignored_messages: number;
-  rejected_signals: number;
-  statistics: TradeStatistics;
-  balance: string | null;
-  equity: string | null;
-  broker_healthy: boolean;
-}
-
-export interface DashboardSummaryResponse {
-  summary: DashboardSummary;
-  settings: TradingSettings;
-}
-
-export interface ProfitCurvePoint {
-  closed_at: string;
-  trade_id: number;
-  profit: string;
-  cumulative_profit: string;
-}
-
-export interface DailyPerformance {
-  day: string;
-  trades: number;
-  wins: number;
-  losses: number;
-  profit: string;
-}
-
-export interface OrderPositionPerformance {
-  position: number;
-  trades: number;
-  wins: number;
-  losses: number;
-  win_rate: string;
-}
-
-export type ArchiveClassification = "READY" | "NON_EXECUTABLE_TYPE" | "NO_SL" | "AMBIGUOUS_OR_OTHER";
-export type ArchiveOutcome = "WIN" | "LOSS" | "UNRESOLVED" | "NO_PRICE_DATA";
-
-export interface ArchiveSummary {
-  total_signals: number;
-  ready_signals: number;
-  non_executable_signals: number;
-  no_sl_signals: number;
-  ambiguous_or_other_signals: number;
-  wins: number;
-  losses: number;
-  unresolved: number;
-  no_price_data: number;
-  win_rate: string;
-  net_profit_estimate: string;
-  gross_profit_estimate: string;
-  gross_loss_estimate: string;
-}
-
-export interface ArchivedSignal {
-  id: number;
-  channel_id: string;
-  message_id: string;
-  symbol: string;
-  side: string;
-  signal_type: string;
-  entry_min: string | null;
-  entry_max: string | null;
-  channel_stop_loss: string | null;
-  raw_entry_text: string;
-  raw_sl_text: string | null;
-  signal_posted_at: string;
-  sl_posted_at: string | null;
-  classification: ArchiveClassification;
-  simulated_entry_price: string | null;
-  simulated_take_profit_price: string | null;
-  outcome: ArchiveOutcome | null;
-  outcome_price: string | null;
-  outcome_at: string | null;
-  profit_estimate: string | null;
-}
-
-export interface HealthStatus {
-  healthy: boolean;
-  detail: string;
-}
-
-export interface SignalSourceHealth extends HealthStatus {
-  source: string;
-  enabled: boolean;
-  connected: boolean;
-  authenticated: boolean;
-  allowed_channel_configured: boolean;
-  last_message_at: string | null;
-  last_error: string | null;
-}
-
-export interface SimulationPosition {
-  position_id: string;
-  symbol: string;
-  side: string;
-  lot: string;
-  entry_price: string;
-  stop_loss: string | null;
-  take_profit: string | null;
-  is_open: boolean;
-  close_price: string | null;
-  profit: string | null;
-  close_reason: string | null;
-}
-
-export interface SimulationState {
-  symbol: string;
-  bid: string;
-  ask: string;
-  balance: string;
-  equity: string;
-  open_positions: SimulationPosition[];
-}
-
-export interface SendMessageResult {
-  message_id: string;
-  duplicate: boolean;
-  classification: string | null;
-  signal_id: number | null;
-  signal_status: string | null;
-  became_ready: boolean;
-}
-
-// -- Auth / multi-account (2026-09) ------------------------------------------
+export type EventType = "OPEN" | "ADD" | "REDUCE" | "CLOSE" | "FLIP";
 
 export interface User {
   id: number;
@@ -308,27 +34,8 @@ export interface User {
   display_name: string;
 }
 
-export interface MT5Account {
-  id: number;
-  label: string;
-  mt5_login: string;
-  mt5_server: string;
-  symbol: string;
-  //: Heartbeat-derived (concurrent-execution "Phase 2" update) -- true
-  //: while `last_heartbeat_at` is recent, not a manually-toggled flag.
-  is_live: boolean;
-  last_heartbeat_at: string | null;
-  is_active: boolean;
-  //: True = every operator sees and drives this account, not just its
-  //: owner (backend MT5Account.is_shared) -- the one deliberate hole in
-  //: the per-user isolation boundary, for a jointly-run account.
-  is_shared: boolean;
-  has_password: boolean;
-}
-
 export interface MeResponse {
   user: User;
-  accounts: MT5Account[];
 }
 
 export interface LoginRequest {
@@ -337,20 +44,156 @@ export interface LoginRequest {
   remember_me?: boolean;
 }
 
-export interface MT5AccountCreate {
-  label: string;
-  mt5_login: string;
-  mt5_server: string;
-  mt5_password: string;
-  symbol?: string;
-  is_shared?: boolean;
+export interface CopyTrade {
+  id: number;
+  coin: string;
+  symbol: string;
+  episode_id: number;
+  side: Side;
+  status: CopyStatus;
+  observed: boolean;
+  qty_initial: string;
+  qty_open: string;
+  leader_entry_px: string;
+  entry_price: string | null;
+  tp_price: string | null;
+  exit_price_avg: string | null;
+  realized_pnl: string;
+  fees: string;
+  margin: string | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  close_reason: string | null;
+  slippage_bps: string | null;
+  latency_detect_ms: number | null;
+  latency_order_ms: number | null;
 }
 
-export interface MT5AccountUpdate {
-  label?: string;
-  mt5_login?: string;
-  mt5_server?: string;
-  mt5_password?: string;
-  symbol?: string;
-  is_shared?: boolean;
+export interface Metrics {
+  leader_opens: number;
+  copied_opens: number;
+  not_listed: number;
+  capture_rate: number | null;
+  detect_p50_ms: number | null;
+  detect_p95_ms: number | null;
+  order_p50_ms: number | null;
+  slippage_median_bps: number | null;
+  missed_exits: number;
+  liquidations: number;
+  take_profits: number;
+  leader_exits: number;
+  realized_pnl: string;
+  open_copies: number;
+  rejections: Record<string, number>;
+}
+
+export interface Overview {
+  bot: {
+    running: boolean;
+    heartbeat_at: string | null;
+    ws_connected: boolean;
+    last_frame_at: string | null;
+    last_snapshot_at: string | null;
+    snapshot_failures: number;
+    ws_reconnects: number;
+  };
+  account: { broker: "paper" | "bybit"; env: "demo" | "live"; equity: string | null; available: string | null };
+  mode: { mode: Mode; live: boolean };
+  risk: { kill_switch: boolean; stop_file: boolean; leader_breaker: boolean; daily_loss_hit: boolean };
+  leader: { address: string; account_value: string | null; snapshot_at: string | null; open_positions: number };
+  stats: {
+    open_copies: number;
+    trades_total: number;
+    closed: number;
+    wins: number;
+    losses: number;
+    win_rate: number | null;
+    realized_pnl_total: string;
+    realized_pnl_today: string;
+    closed_today: number;
+    take_profits: number;
+    liquidations: number;
+    observed_total: number;
+    observed_pnl: string;
+  };
+  metrics_24h: Metrics;
+}
+
+export interface LocoRow {
+  coin: string;
+  side: Side | null;
+  size: string;
+  entry_px: string | null;
+  copyable: boolean;
+  ours: CopyTrade | null;
+}
+
+export interface LocoPositions {
+  address: string;
+  snapshot_at: string | null;
+  account_value: string | null;
+  rows: LocoRow[];
+}
+
+export interface LeaderEvent {
+  id: number;
+  coin: string;
+  episode_id: number;
+  type: EventType;
+  side: Side | null;
+  fraction: string | null;
+  leader_px: string;
+  leader_time: string;
+  detected_at: string;
+  lag_ms: number;
+  decision: Decision;
+  rejection: string | null;
+  detail: string | null;
+}
+
+export interface LogEntry {
+  id: number;
+  ts: string;
+  level: "INFO" | "WARNING" | "ERROR" | "CRITICAL";
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+export interface Analytics {
+  days: number;
+  curve: Array<{ closed_at: string; coin: string; pnl: string; cumulative: string }>;
+  daily: Array<{ day: string; trades: number; wins: number; losses: number; pnl: string }>;
+  by_close: Record<string, number>;
+  metrics: Metrics;
+}
+
+export interface SettingsView {
+  leader_address: string;
+  broker: "paper" | "bybit";
+  broker_env: "demo" | "live";
+  live: boolean;
+  mode: Mode;
+  strategy: {
+    risk_per_trade: string;
+    leverage: number;
+    take_profit_roi: string;
+    take_profit_move_pct: string;
+    liquidation_move_pct: string;
+    follow_adds: boolean;
+    follow_reduces: boolean;
+    max_open_positions: number;
+    max_notional_per_coin: string | null;
+    allow_long: boolean;
+    allow_short: boolean;
+    coin_allowlist: string[];
+    coin_blocklist: string[];
+  };
+  safety: {
+    max_entry_drift_pct: string;
+    max_signal_age_ms: number;
+    max_order_slippage_pct: string;
+    daily_loss_limit_pct: string;
+    leader_dd_breaker_pct: string;
+    missed_exit_seconds: number;
+  };
 }

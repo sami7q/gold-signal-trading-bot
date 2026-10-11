@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class EventType(StrEnum):
+    OPEN = "OPEN"
+    ADD = "ADD"
+    REDUCE = "REDUCE"
+    CLOSE = "CLOSE"
+    #: The closing half of a sign flip; the tracker emits it immediately followed by an OPEN for the new side.
+    FLIP = "FLIP"
+
+
+class CopyStatus(StrEnum):
+    OBSERVED_ONLY = "OBSERVED_ONLY"
+    SUBMITTING = "SUBMITTING"
+    OPEN = "OPEN"
+    CLOSED_LEADER = "CLOSED_LEADER"
+    CLOSED_TP = "CLOSED_TP"
+    CLOSED_LIQ = "CLOSED_LIQ"
+    CLOSED_MANUAL = "CLOSED_MANUAL"
+    CLOSED_RECONCILED = "CLOSED_RECONCILED"
+    FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
+
+
+#: A copy in one of these still holds (or may hold) a position on the exchange.
+LIVE_STATUSES = frozenset({CopyStatus.SUBMITTING, CopyStatus.OPEN})
+
+
+class Decision(StrEnum):
+    """What was done with one leader event (the `events.decision` column)."""
+
+    COPIED = "COPIED"
+    FOLLOWED = "FOLLOWED"  # an exit (reduce/close/flip) was mirrored
+    OBSERVED_ONLY = "OBSERVED_ONLY"
+    REJECTED = "REJECTED"
+    IGNORED_ADD = "IGNORED_ADD"
+    IGNORED_REDUCE = "IGNORED_REDUCE"  # FOLLOW_REDUCES=false
+    NO_MATCHING_COPY = "NO_MATCHING_COPY"
+    FAILED = "FAILED"
+
+
+class Rejection(StrEnum):
+    DISABLED = "DISABLED"
+    KILL_SWITCH = "KILL_SWITCH"
+    DAILY_LOSS_LIMIT = "DAILY_LOSS_LIMIT"
+    LEADER_BREAKER = "LEADER_BREAKER"
+    LATENCY_BREAKER = "LATENCY_BREAKER"
+    UNSUPPORTED_MARKET = "UNSUPPORTED_MARKET"
+    PRE_EXISTING_POSITION = "PRE_EXISTING_POSITION"
+    SIDE_DISABLED = "SIDE_DISABLED"
+    COIN_BLOCKED = "COIN_BLOCKED"
+    SYMBOL_NOT_LISTED = "SYMBOL_NOT_LISTED"
+    SIGNAL_TOO_OLD = "SIGNAL_TOO_OLD"
+    PRICE_DRIFTED = "PRICE_DRIFTED"
+    DUPLICATE_EPISODE = "DUPLICATE_EPISODE"
+    #: One-way mode holds one position per symbol, so a still-open copy from an earlier episode on the same
+    #: coin blocks a new one (otherwise the two would silently merge on the exchange).
+    COIN_ALREADY_OPEN = "COIN_ALREADY_OPEN"
+    BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
+    MAX_OPEN_POSITIONS = "MAX_OPEN_POSITIONS"
+    INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
+    NOTIONAL_CAP = "NOTIONAL_CAP"
+    QTY_TOO_SMALL = "QTY_TOO_SMALL"
+
+
+class OrderKind(StrEnum):
+    OPEN = "OPEN"
+    REDUCE = "REDUCE"
+    CLOSE = "CLOSE"
+
+
+class OrderStatus(StrEnum):
+    SENT = "SENT"
+    FILLED = "FILLED"
+    FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
+
+
+LIVE_CONFIRM_PHRASE = "I ACCEPT REAL MONEY RISK"

@@ -5,19 +5,16 @@ import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
 import { Sidebar } from "@/components/shell/sidebar";
 import { StatusStrip } from "@/components/shell/status-strip";
-import { AccountSwitcher } from "@/components/shell/account-switcher";
+import { UserMenu } from "@/components/shell/user-menu";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [navOpen, setNavOpen] = useState(false);
 
-  // /login renders its own centered, chrome-free layout -- no sidebar, no
-  // account switcher (there's no account to switch to before logging in).
+  // /login renders its own centered, chrome-free layout.
   const isLoginPage = pathname === "/login";
 
-  // Lock background scroll while the mobile drawer is open, and let Escape
-  // close it -- otherwise the page behind the overlay keeps scrolling under
-  // a thumb swipe, which reads as broken on a phone.
+  // Lock background scroll while the mobile drawer is open, and let Escape close it.
   useEffect(() => {
     if (!navOpen) return;
     const previousOverflow = document.body.style.overflow;
@@ -41,11 +38,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
 
       {navOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
-          onClick={() => setNavOpen(false)}
-          aria-hidden="true"
-        />
+        <div className="fixed inset-0 z-40 bg-black/60 lg:hidden" onClick={() => setNavOpen(false)} aria-hidden="true" />
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -58,11 +51,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <Menu className="h-5 w-5" strokeWidth={1.75} />
           </button>
-          <span className="font-data text-sm font-semibold tracking-tight text-gold-bright">
-            XAU
-          </span>
+          <span className="font-data text-sm font-semibold tracking-tight text-gold-bright">LOCO</span>
           <div className="min-w-0 flex-1" />
-          <AccountSwitcher variant="mobile" />
+          <UserMenu variant="mobile" />
         </div>
 
         <StatusStrip />

@@ -48,7 +48,7 @@ export function Select({
 export function Label({ className, ...props }: React.LabelHTMLAttributes<HTMLLabelElement>) {
   return (
     <label
-      className={cn("mb-1 block text-xs font-medium uppercase tracking-wide text-muted", className)}
+      className={cn("mb-1 block text-xs font-medium text-muted", className)}
       {...props}
     />
   );
