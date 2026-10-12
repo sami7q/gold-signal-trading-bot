@@ -67,3 +67,61 @@ def reduce_qty(qty_open: Decimal, fraction: Decimal, instrument: InstrumentInfo)
     if qty_open - qty < instrument.min_qty:
         return qty_open
     return qty
+
+
+# -- cap20_cross (botup.md v4 §4) ------------------------------------------------------------------------------
+
+
+def copy_ratio(k: Decimal, e0: Decimal, w0: Decimal) -> Decimal:
+    """R = K x E0 / W0: our size per unit of the leader's size, fixed for the whole trade."""
+    if w0 <= 0:
+        raise ValueError("leader equity must be positive")
+    return k * e0 / w0
+
+
+def cap_notional(cap_pct: Decimal, leverage: int, e0: Decimal) -> Decimal:
+    """CAP = cap% x L x E0: the trade's notional limit (= margin of cap% of E0). 1.0 x E0 at 5x, 0.6 x E0 at 3x."""
+    return cap_pct / 100 * leverage * e0
+
+
+@dataclass(frozen=True, slots=True)
+class AddOrder:
+    """What one add should do. `qty` > 0: send it. Else keep `pending` (below minimum).
+    `capped`: the cap bound this add -- after `qty` (if any) the trade is capped for good (spec §4.2)."""
+
+    qty: Decimal
+    pending: Decimal
+    capped: bool
+    limited_by: str | None  # "cap" | "margin" | "exposure" when that limit cut the order
+
+
+def add_order_qty(*, pending: Decimal, room_notional: Decimal, price: Decimal, instrument: InstrumentInfo,
+                  available: Decimal, leverage: int, exposure_left: Decimal, min_notional: Decimal) -> AddOrder:
+    """One add of a cap20 trade, research-faithful (analysis365/copysim.py): `pending` already holds
+    dq x R plus what earlier small adds left over.
+
+      q = min(pending, room / px, available x L / px, exposure_left / px)
+      the cap binds and the room left is below the minimum   -> capped, nothing sent
+      q x px below the minimum (and the cap not reached)       -> keep it pending
+      q <= 0                                                   -> capped (no room left)
+      else                                                     -> order floor(q) to the qty step; capped if the cap
+                                                                  bound it (the research orders the whole room
+                                                                  and caps; the qty step leaves dust, never room)"""
+    if price <= 0:
+        raise ValueError("price must be positive")
+    limits = {"cap": max(room_notional, Decimal(0)) / price, "margin": max(available, Decimal(0)) * leverage / price,
+              "exposure": max(exposure_left, Decimal(0)) / price}
+    q = min(pending, *limits.values())
+    limited_by = next((name for name, lim in limits.items() if lim < pending and q == lim), None)
+    if limited_by == "cap" and room_notional < min_notional:
+        return AddOrder(Decimal(0), Decimal(0), True, "cap")
+    if q * price < min_notional and q * price < room_notional:
+        if limited_by == "exposure" and q <= 0:
+            return AddOrder(Decimal(0), Decimal(0), False, "exposure")
+        return AddOrder(Decimal(0), q, False, limited_by)
+    if q <= 0:
+        return AddOrder(Decimal(0), Decimal(0), True, limited_by)
+    qty = floor_to_step(q, instrument.qty_step)
+    if qty < instrument.min_qty or qty <= 0 or qty * price < min_notional:
+        return AddOrder(Decimal(0), q, False, limited_by)
+    return AddOrder(qty, Decimal(0), limited_by == "cap", limited_by)

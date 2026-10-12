@@ -31,6 +31,7 @@ function Alerts({ data }: { data: Overview }) {
   if (data.risk.kill_switch) items.push("الإيقاف الطارئ مفعّل — لا تُفتح صفقات جديدة (الإغلاقات مستمرة).");
   if (data.risk.leader_breaker) items.push("قاطع تراجع أحد المتداولين مفعّل — تراجع حسابه أكثر من الحد المسموح.");
   if (data.risk.daily_loss_hit) items.push("بلغ حد الخسارة اليومي — لا صفقات جديدة حتى بداية اليوم التالي (UTC).");
+  if (data.account.account_kill) items.push("قاطع الحساب مفعّل: الرصيد نزل تحت 75% من قمته — لا صفقات أو تعزيزات جديدة حتى الاستئناف.");
   if (!items.length) return null;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-loss/40 bg-loss/10 px-4 py-3">
@@ -92,6 +93,33 @@ export default function OverviewPage() {
             <StatCard label="نسبة الربح" value={formatPercent(stats.win_rate)} tone="gold" />
             <StatCard label="صافي الربح المحقق" value={formatMoney(stats.realized_pnl_total)} tone={pnlTone(stats.realized_pnl_total)} />
           </div>
+          {data.strategy?.name === "cap20_cross" ? (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <StatCard
+                label="الحجم المفتوح ÷ الرصيد"
+                value={data.account.exposure_x ? `${formatNumber(data.account.exposure_x, 2)}x` : "—"}
+                tone={Number(data.account.exposure_x ?? 0) > 4 ? "loss" : "default"}
+                sub={`الحد ${formatNumber(data.strategy.max_total_notional_x_equity, 0)}x · ${formatUsd(data.account.notional)}`}
+              />
+              <StatCard
+                label="البعد عن التصفية"
+                value={data.account.liq_distance ? `${formatNumber(data.account.liq_distance, 1)}x` : "لا مراكز"}
+                tone={data.account.liq_distance && Number(data.account.liq_distance) < 3 ? "loss" : "default"}
+                sub="الرصيد ÷ هامش الصيانة (Bybit) — 1x = تصفية"
+              />
+              <StatCard
+                label="الاستراتيجية"
+                value={`سقف ${formatNumber(data.strategy.per_trade_margin_cap_pct, 0)}%`}
+                tone="gold"
+                sub={`هامش مشترك · رافعة ${data.strategy.leverage}x · K=${data.strategy.k}`}
+              />
+              <Link href="/trio" className="rounded-md border border-gold-dim/60 bg-gold/5 p-3.5 transition-colors hover:bg-gold/10">
+                <div className="text-[11px] font-medium text-muted">الثلاثي — الحساب الافتراضي</div>
+                <div className="mt-1.5 text-sm font-medium text-gold-bright">افتح لوحة المراقبة ←</div>
+                <div className="mt-1.5 text-xs text-muted">الرصيد الافتراضي، السرعة، الانزلاق، وشروط الانتقال</div>
+              </Link>
+            </div>
+          ) : null}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard label={`حساب ${data.leader.name ?? "Loco"}`} value={formatUsd(data.leader.account_value)} sub={`لقطة ${formatRelativeTime(data.leader.snapshot_at)}`} />
             <StatCard label="سرعة الالتقاط (24س)" value={formatMs(data.metrics_24h.detect_p50_ms)} sub="من صفقة المتداول حتى وصولها للبوت" />

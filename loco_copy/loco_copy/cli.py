@@ -158,6 +158,33 @@ def cmd_leaders(s: Settings, _a: argparse.Namespace) -> None:
     _leaders_table(s, Store(s.db_path))
 
 
+def cmd_strategy(s: Settings, _a: argparse.Namespace) -> None:
+    """botup.md v4 §5 cli.py: the active strategy per lane, K, the cap, R of open trades, the virtual account."""
+    from loco_copy.cap20 import describe  # noqa: PLC0415
+
+    store = Store(s.db_path)
+    for label in s.labels:
+        lane = s.for_lane(label)
+        eff = with_mode_override(lane, store.get_state(lane_key("mode_override", label)))
+        w0 = (store.get_state(lane_key("leader_equity", label)) or {}).get("value", "-")
+        print(f"\n[{label}] {lane.strategy}  mode={mode_of(eff)}  exec gate="
+              f"{'open' if lane.allow_execute else 'closed'}  leader equity W0={w0}")
+        if not lane.is_cap20:
+            print(f"  first fill only, {lane.risk_per_trade * 100}% of equity at {lane.leverage}x, take profit")
+            continue
+        for k, v in describe(lane).items():
+            print(f"  {k:32} {v}")
+        rows = [[c.coin, "virtual" if c.status == CopyStatus.OBSERVED_ONLY else "exchange", c.side, c.qty_open,
+                 c.ratio_r, c.cap_notional, f"{c.cost_notional / c.cap_notional:.0%}" if c.cap_notional else "-",
+                 c.pending_qty, "yes" if c.capped else "no", c.adds_done, c.leader_pos]
+                for c in store.copies(leader=label) if c.strategy == "cap20_cross" and c.closed_at is None]
+        if rows:
+            table(rows, ["coin", "book", "side", "qty", "R", "CAP", "used", "pending", "capped", "adds", "leader"])
+    for name, v in ((store.get_state("runtime") or {}).get("virtual") or {}).items():
+        print(f"\n[{name}] equity {v['equity']} (start {v['start_equity']}), notional {v['notional']}, "
+              f"positions {len(v['positions'])}, liquidations {v['liquidations']}, kill {v.get('kill_tripped')}")
+
+
 def cmd_backup(s: Settings, _a: argparse.Namespace) -> None:
     target = s.data_dir / "backups" / f"loco-{time.strftime('%Y%m%d-%H%M%S')}.db"
     print(f"Backed up to {Store(s.db_path).backup(target)}")
@@ -292,6 +319,9 @@ def cmd_replay(s: Settings, a: argparse.Namespace) -> None:
         run_replay,
     )
 
+    if (a.strategy or s.strategy) == "cap20_cross":
+        _replay_cap20(s, a)
+        return
     if a.source == "fixtures":
         fx = PROJECT_ROOT / "tests" / "fixtures"
         fills = load_fixture_fills(fx / "loco_fills.json.gz")
@@ -302,8 +332,54 @@ def cmd_replay(s: Settings, a: argparse.Namespace) -> None:
         fills = db_fills(Store(s.db_path))
         candles = hyperliquid_candle_source(s)
     rs = s.model_copy(update={"copy_enabled": True, "copy_observe_only": False})
-    r = asyncio.run(run_replay(fills, candles, rs, start_ms=a.from_, end_ms=a.to, fee_rate=Decimal(a.fee)))
+    r = asyncio.run(run_replay(fills, candles, rs, start_ms=a.from_, end_ms=a.to, fee_rate=Decimal(a.fee or "0.0008")))
     print(f"fills replayed: {len([f for f in fills if f.time_ms >= a.from_ and (a.to is None or f.time_ms <= a.to)])}")
+    print(f"counts        : {r.counts}")
+    print(f"equity        : {r.start_equity} -> {r.final_equity:.2f}  (max drawdown {float(r.max_dd):.1%})")
+    print(f"rejections    : {r.rejections}")
+
+
+def _replay_cap20(s: Settings, a: argparse.Namespace) -> None:
+    """botup.md v4 §5: the cap20 engine over recorded fills on a virtual cross account (leader's own prices, fee +
+    slippage per side, candles for marks and liquidation, W(t) from the leader's account value history)."""
+    from loco_copy.replay import (  # noqa: PLC0415
+        equity_at,
+        load_equity_history,
+        load_fixture_fills,
+        load_trip_candles,
+        run_cap20_replay,
+    )
+
+    label = a.leader or s.labels[0]
+    lane = s.for_lane(label)
+    if a.strategy:
+        lane = lane.model_copy(update={"strategy": a.strategy, "margin_mode": "CROSS", "follow_adds": True,
+                                       "take_profit_roi": None})
+    if a.leverage:
+        lane = lane.model_copy(update={"leverage": a.leverage})
+    if a.source == "fixtures":
+        fx = PROJECT_ROOT / "tests" / "fixtures"
+        bench = json.loads((fx / "benchmark_cap20.json").read_text(encoding="utf-8"))
+        fills = load_fixture_fills(fx / "loco_fills.json.gz")
+        candles = load_trip_candles(fx / "loco_candles_cap20.json.gz")
+        history = load_equity_history(fx / "loco_equity.json.gz")
+        start, end = a.from_ or bench["t0_ms"], a.to or bench["end_ms"]
+        lane = lane.model_copy(update={"min_order_usdt": Decimal(bench["min_order_usdt"])})
+    else:
+        from loco_copy.replay_sources import (  # noqa: PLC0415
+            db_fills,
+            hyperliquid_candle_source,
+            hyperliquid_equity_history,
+            trip_candles,
+        )
+
+        fills = db_fills(Store(s.db_path), leader=label)
+        candles = trip_candles(fills, hyperliquid_candle_source(s))
+        history = hyperliquid_equity_history(s, lane.leader_address)
+        start, end = a.from_, a.to or now_ms()
+    r = asyncio.run(run_cap20_replay(fills, candles, equity_at(history), lane, start_ms=start, end_ms=end,
+                                     fee_rate=Decimal(a.fee or "0.00095"), start_equity=Decimal(a.equity)))
+    print(f"leader {label} | cap20_cross {lane.leverage}x | K {lane.k} | cap {lane.per_trade_margin_cap_pct}%")
     print(f"counts        : {r.counts}")
     print(f"equity        : {r.start_equity} -> {r.final_equity:.2f}  (max drawdown {float(r.max_dd):.1%})")
     print(f"rejections    : {r.rejections}")
@@ -374,6 +450,8 @@ def build_parser() -> argparse.ArgumentParser:
     pos.add_argument("--leader", default=None)
     pos.set_defaults(fn=cmd_positions)
     sub.add_parser("backup", help="consistent copy of the database into data/backups").set_defaults(fn=cmd_backup)
+    sub.add_parser("strategy", help="active strategy per leader: K, cap, R of open trades, virtual account") \
+        .set_defaults(fn=cmd_strategy)
     t = sub.add_parser("trades", help="copy trades")
     t.add_argument("--open", action="store_true")
     t.add_argument("--leader", default=None)
@@ -398,7 +476,12 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--from", dest="from_", type=parse_when, default=0, help="ISO date/time (UTC) or e.g. 90d")
     rp.add_argument("--to", type=parse_when, default=None)
     rp.add_argument("--source", choices=["db", "fixtures"], default="db")
-    rp.add_argument("--fee", default="0.0008", help="fee + slippage per side (research used 0.0008)")
+    rp.add_argument("--fee", default=None, help="fee + slippage per side (first_fill 0.0008, cap20 0.00095)")
+    rp.add_argument("--strategy", choices=["first_fill", "cap20_cross"], default=None,
+                    help="default: the configured STRATEGY")
+    rp.add_argument("--leader", default=None, help="lane label (cap20 --source db)")
+    rp.add_argument("--leverage", type=int, default=None, help="cap20: 3 or 5 (default: LEVERAGE)")
+    rp.add_argument("--equity", default="10000", help="cap20: start equity")
     rp.set_defaults(fn=cmd_replay)
     sk = sub.add_parser("set-key", help="store Bybit API key/secret in the OS keyring")
     sk.add_argument("target", choices=["bybit-demo", "bybit-live"])

@@ -32,7 +32,7 @@ class PreContext:
     instrument: InstrumentInfo | None
     now_ms: int
     leader_time_ms: int
-    max_signal_age_ms: int
+    max_signal_age_ms: int | None  # None = off (cap20_cross)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,14 +40,14 @@ class BrokerContext:
     side: int
     leader_px: Decimal  # already converted into the exchange's price units
     mark: Decimal | None
-    max_entry_drift: Decimal
-    tp_roi: Decimal
+    max_entry_drift: Decimal | None
+    tp_roi: Decimal | None
     leverage: int
     copy_exists_for_episode: bool
     open_copy_on_coin: bool
     broker_healthy: bool
     open_copies: int
-    max_open_positions: int
+    max_open_positions: int | None
     account: Account | None
     risk_per_trade: Decimal
     sizing: Sizing | None
@@ -70,7 +70,7 @@ def pre_broker_checks(c: PreContext) -> Rejection | None:
         return Rejection.COIN_BLOCKED  # 5
     if c.symbol is None or c.instrument is None:
         return Rejection.SYMBOL_NOT_LISTED  # 6
-    if c.now_ms - c.leader_time_ms > c.max_signal_age_ms:
+    if c.max_signal_age_ms is not None and c.now_ms - c.leader_time_ms > c.max_signal_age_ms:
         return Rejection.SIGNAL_TOO_OLD  # 7
     return None
 
@@ -78,18 +78,19 @@ def pre_broker_checks(c: PreContext) -> Rejection | None:
 def broker_checks(c: BrokerContext) -> Rejection | None:
     if c.mark is None:
         return Rejection.BROKER_UNAVAILABLE  # can't price the entry at all
-    if abs(c.mark / c.leader_px - 1) > c.max_entry_drift:
+    if c.max_entry_drift is not None and abs(c.mark / c.leader_px - 1) > c.max_entry_drift:
         return Rejection.PRICE_DRIFTED  # 8
-    tp_from_leader = c.leader_px * (1 + c.side * c.tp_roi / c.leverage)
-    if (c.mark >= tp_from_leader) if c.side > 0 else (c.mark <= tp_from_leader):
-        return Rejection.PRICE_DRIFTED  # already past where our take profit would be
+    if c.tp_roi is not None:
+        tp_from_leader = c.leader_px * (1 + c.side * c.tp_roi / c.leverage)
+        if (c.mark >= tp_from_leader) if c.side > 0 else (c.mark <= tp_from_leader):
+            return Rejection.PRICE_DRIFTED  # already past where our take profit would be
     if c.copy_exists_for_episode:
         return Rejection.DUPLICATE_EPISODE  # 9
     if c.open_copy_on_coin:
         return Rejection.COIN_ALREADY_OPEN
     if not c.broker_healthy or c.account is None:
         return Rejection.BROKER_UNAVAILABLE  # 10
-    if c.open_copies >= c.max_open_positions:
+    if c.max_open_positions is not None and c.open_copies >= c.max_open_positions:
         return Rejection.MAX_OPEN_POSITIONS  # 11
     if c.account.available < c.risk_per_trade * c.account.equity or c.account.equity <= 0:
         return Rejection.INSUFFICIENT_MARGIN  # 12

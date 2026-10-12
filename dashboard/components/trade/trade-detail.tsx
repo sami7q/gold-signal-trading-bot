@@ -21,6 +21,7 @@ import {
   formatMs,
   formatNumber,
   formatPrice,
+  formatRatio,
   formatSignedPercent,
   formatUsd,
   leaderName,
@@ -186,6 +187,7 @@ export function TradeDetail({ id }: { id: number }) {
   const virtual = c.status === "OBSERVED_ONLY";
   const totalLatency = (c.latency_detect_ms ?? 0) + (c.latency_order_ms ?? 0);
   const who = leaderName(c.leader);
+  const cap20 = c.strategy === "cap20_cross";
 
   return (
     <DetailFrame>
@@ -213,13 +215,40 @@ export function TradeDetail({ id }: { id: number }) {
           <Fact label={`تأخر خروجنا عن ${who}`} value={formatDuration(cmp.exit_delay_ms)} tone={slowExit ? "warn" : "default"} />
         </Section>
 
-        <Section title="الحجم والمخاطرة">
-          <Fact label="الكمية" value={`${formatNumber(c.qty_initial, 8)} ${c.coin}`} hint={arSide(c.side)} />
-          <Fact label="الحجم الكلي" value={formatUsd(f.notional)} />
-          <Fact label="الهامش" value={formatUsd(f.margin)} hint={`رافعة ${f.leverage}x معزولة`} />
-          <Fact label="هدف الربح" value={formatPrice(c.tp_price)} hint={`${ltr(formatSignedPercent(f.tp_move_pct))} من دخولنا`} />
-          <Fact label="التصفية التقريبية" value={formatPrice(f.liq_price_est)} />
-        </Section>
+        {cap20 ? (
+          <Section title="السقف والتعزيزات">
+            <Fact label="الكمية الآن" value={`${formatNumber(c.qty_open, 8)} ${c.coin}`} hint={`أقصى ما حملناه ${formatNumber(c.qty_initial, 8)} · ${arSide(c.side)}`} />
+            <Fact label="نسبة النسخ R" value={formatRatio(c.ratio_r)} hint={`حجمنا = حجم ${who} × R (ثابتة طوال الصفقة)`} />
+            <Fact
+              label="سقف الحجم"
+              value={formatUsd(c.cap_notional)}
+              hint={`مستخدم ${c.cap_used_pct !== null ? `${formatNumber(c.cap_used_pct, 1)}%` : "—"} · هامش ${formatUsd(c.margin)} (مشترك)`}
+              tone={c.capped ? "warn" : "default"}
+            />
+            <Fact
+              label="التعزيزات"
+              value={c.capped ? "بلغت السقف" : `${c.adds_done} منسوخة`}
+              hint={
+                c.capped
+                  ? `عند ${formatNumber(c.qty_at_cap, 8)} ${c.coin} ومركز ${who} ${formatNumber(c.leader_pos_at_cap, 8)} — التعزيزات بعدها متجاهلة، والتقليص يُتابَع`
+                  : Number(c.pending_qty) > 0
+                    ? `مؤجّل ${formatNumber(c.pending_qty, 8)} (أقل من الحد الأدنى للأمر)`
+                    : undefined
+              }
+              tone={c.capped ? "warn" : "default"}
+            />
+            <Fact label={`مركز ${who} الآن`} value={c.leader_pos ? `${formatNumber(c.leader_pos, 8)} ${c.coin}` : "—"} />
+            <Fact label="الخروج" value="مع المتداول فقط" hint="بدون هدف ربح وبدون وقف خسارة" />
+          </Section>
+        ) : (
+          <Section title="الحجم والمخاطرة">
+            <Fact label="الكمية" value={`${formatNumber(c.qty_initial, 8)} ${c.coin}`} hint={arSide(c.side)} />
+            <Fact label="الحجم الكلي" value={formatUsd(f.notional)} />
+            <Fact label="الهامش" value={formatUsd(f.margin)} hint={`رافعة ${f.leverage}x معزولة`} />
+            <Fact label="هدف الربح" value={formatPrice(c.tp_price)} hint={`${ltr(formatSignedPercent(f.tp_move_pct))} من دخولنا`} />
+            <Fact label="التصفية التقريبية" value={formatPrice(f.liq_price_est)} />
+          </Section>
+        )}
 
         <Section title={virtual ? "النتيجة (افتراضية)" : "النتيجة"}>
           <Fact label="حركة السعر لصالحنا" value={formatSignedPercent(f.price_move_pct, 3)} tone={pnlTone(f.price_move_pct)} />
@@ -249,7 +278,7 @@ export function TradeDetail({ id }: { id: number }) {
             <Timeline d={d} />
           </div>
         </Section>
-        <Section title="الأوامر على الوسيط">
+        <Section title={c.virtual ? "الأوامر على الحساب الافتراضي" : "الأوامر على الوسيط"}>
           <div className="py-2">
             <Orders d={d} />
           </div>

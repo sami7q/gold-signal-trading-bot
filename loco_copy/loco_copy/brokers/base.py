@@ -6,7 +6,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from decimal import Decimal
 
-from loco_copy.models import Account, ClosedTrade, Health, InstrumentInfo, OrderResult, Position
+from loco_copy.models import Account, ClosedTrade, Health, InstrumentInfo, OrderResult, Position, Quote
 
 
 class BrokerError(RuntimeError):
@@ -55,3 +55,20 @@ class Broker(ABC):
 
     @abstractmethod
     def health(self) -> Health: ...
+
+    # -- cap20_cross (botup.md v4): defaults that keep the first_fill brokers working -------------------------
+
+    def total_equity(self) -> Decimal:
+        return self.account().equity
+
+    def quote(self, symbol: str) -> Quote:
+        mark = self.mark_price(symbol)
+        return Quote(bid=mark, ask=mark, mark=mark)
+
+    def ensure_cross_leverage(self, symbol: str, leverage: int) -> None:
+        raise BrokerError(f"{self.name} has no cross margin")
+
+    def market_order(self, symbol: str, side: int, qty: Decimal, *, client_id: str, reduce_only: bool) -> OrderResult:
+        if reduce_only:
+            return self.market_reduce(symbol, -side, qty, client_id=client_id)
+        return self.market_open(symbol, side, qty, client_id=client_id, max_slippage=Decimal("0.01"), take_profit=None)

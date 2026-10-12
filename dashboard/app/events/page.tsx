@@ -16,14 +16,19 @@ const FILTERS = [
   { value: "", label: "كل القرارات" },
   { value: "COPIED", label: "نُسخت" },
   { value: "FOLLOWED", label: "تمت المتابعة (تقليص/إغلاق)" },
+  { value: "REDUCED", label: "قُلّصت مع المتداول" },
+  { value: "CLOSED", label: "أُغلقت مع المتداول" },
   { value: "OBSERVED_ONLY", label: "مراقبة فقط" },
   { value: "REJECTED", label: "مرفوضة" },
+  { value: "ADDED", label: "تعزيز منسوخ" },
+  { value: "ADD_PENDING", label: "تعزيز مؤجَّل" },
+  { value: "ADD_CAPPED", label: "بلغت السقف" },
   { value: "IGNORED_ADD", label: "تعزيز — متجاهل" },
   { value: "NO_MATCHING_COPY", label: "لا صفقة مقابلة" },
   { value: "FAILED", label: "فشل" },
 ];
 
-const COLUMNS = 12;
+const COLUMNS = 14;
 
 export default function EventsPage() {
   const [decision, setDecision] = useState("");
@@ -73,7 +78,9 @@ export default function EventsPage() {
                   <th className="px-3 py-2 font-medium">الحركة</th>
                   <th className="px-3 py-2 font-medium">الاتجاه</th>
                   <th className="px-3 py-2 text-right font-medium">سعره</th>
-                  <th className="px-3 py-2 text-right font-medium">النسبة</th>
+                  <th className="px-3 py-2 text-right font-medium">سعرنا</th>
+                  <th className="px-3 py-2 text-right font-medium">الفرق</th>
+                  <th className="px-3 py-2 text-right font-medium">مركزه بعدها</th>
                   <th className="px-3 py-2 text-right font-medium">زمن الالتقاط</th>
                   <th className="px-3 py-2 font-medium">القرار</th>
                   <th className="px-3 py-2 font-medium">صفقتنا</th>
@@ -109,7 +116,11 @@ export default function EventsPage() {
                         <td className="px-3 py-2"><EventTypeBadge type={e.type} /></td>
                         <td className="px-3 py-2"><SideBadge side={e.side} /></td>
                         <td className="px-3 py-2 text-right text-bone">{formatPrice(e.leader_px)}</td>
-                        <td className="px-3 py-2 text-right text-muted">{e.fraction ? `${formatNumber(Number(e.fraction) * 100, 1)}%` : "—"}</td>
+                        <td className="px-3 py-2 text-right text-bone">{formatPrice(e.our_px)}</td>
+                        <td className="px-3 py-2 text-right text-muted">{e.slippage_bps !== null ? `${formatNumber(e.slippage_bps, 1)} bps` : "—"}</td>
+                        <td className="px-3 py-2 text-right text-muted">
+                          {e.pos_after !== null ? formatNumber(e.pos_after, 6) : e.fraction ? `${formatNumber(Number(e.fraction) * 100, 1)}%` : "—"}
+                        </td>
                         <td className="px-3 py-2 text-right text-muted">{formatMs(e.lag_ms)}</td>
                         <td className="px-3 py-2"><DecisionBadge decision={e.decision} /></td>
                         <td className="px-3 py-2 text-muted">{e.copy_id ? `#${e.copy_id}` : "—"}</td>

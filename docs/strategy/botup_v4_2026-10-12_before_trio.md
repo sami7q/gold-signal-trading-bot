@@ -1,0 +1,248 @@
+# botup.md — loco-copy v4: «Loco 20% Cap, Cross» (follow adds, cross margin, Bybit demo)
+
+> **Audience:** whoever implements the next step inside `loco_copy/`. Read `loco_copy/README.md` first.
+>
+> **Revised:** 2026-10-11. **Supersedes v3** (multi-leader lanes, first-fill only). v3 is kept at
+> `docs/strategy/botup_v3_2026-10-11.md`; the lane code already in `config.py` stays and is reused.
+>
+> **The strategy:** `docs/strategy/Loco_Copy_Strategy_Final_Bybit.md` (owner's final spec, v1.0). Implement it
+> **literally**, with the corrections in §2. Anything not in that spec is not part of the strategy.
+>
+> **Hard rules (unchanged):** simulation first, demo second, real money last · exits are never blocked ·
+> keys only in the OS keyring · not financial advice.
+
+---
+
+## 0. What changes from v3
+
+| Area | v3 (today) | v4 (this plan) |
+|---|---|---|
+| Leaders | lanes `loco` + `3ea` | **lane `loco` only.** `3ea` is removed from `LEADERS` (no strategy supports it). |
+| Entry | first fill only, adds ignored (`IGNORED_ADD`) | **every fill is copied**: open, adds (DCA), partial exits, close, flip |
+| Size | 10 % of equity × 20x on the first fill | ratio `R = K × E0 / W0` fixed per trade, `K = 0.8 × leverage`; adds stop at the **20 % margin cap** |
+| Margin | ISOLATED, 20x | **CROSS** (Bybit unified `REGULAR_MARGIN`), leverage **5** (or 3), per symbol `min(L, maxLeverage)` |
+| Exits | Loco's exit **or** TP +2.5 % | **only** Loco's exit (no TP, no SL, no trailing) |
+| Owner decisions | D-1 open | **D-1 = (b) follow adds with a cap** (decided). D-2 = one Bybit demo account (single leader). D-3 n/a. |
+
+Research behind it (independently verified, `hyperliquid_copy_research/reports/2026-10-11_verify_external_ar.md`,
+`2026-10-11_year_loco_ar.md`):
+- Ignoring adds at 20x loses money (365 d first-fill: −$9,122 fixed margin, 86 liquidations).
+- DCA **without** a per-trade cap is wiped out in Oct–Dec 2025 (3x and 5x reach $0).
+- This spec (cross + 20 % cap) had **0 liquidations** for one year, also when started on 2025-09-27 (before the
+  10 Oct 2025 crash).
+
+---
+
+## 1. Expected behaviour (benchmarks for the 30-day demo)
+
+Verified backtest, 2025-10-10 → 2026-10-09, $10,000, Loco crypto perps only (what Bybit can trade), taker fee +
+slippage 0.095 % per side, cross margin, no funding:
+
+| | 3x cross | 5x cross |
+|---|---|---|
+| $10,000 after 1 year | $17,841 (+78 %) | $25,518 (+155 %) |
+| Win rate (closed trades) | 78.6 % | 78.6 % |
+| Max drawdown, live equity | 16.4 % | 26.7 % |
+| Liquidations | 0 | 0 |
+| Closed trades | 416 / year (≈ 1.1 / day) | 416 / year |
+| Closest to liquidation (equity ÷ maintenance, HL rule) | ≈ 7× | ≈ 3.9× (2026-10-08) |
+
+Monthly net at 5x (same run): Oct-25 +$2,576 · Nov +$1,173 · Dec +$396 · Jan −$1,000 · Feb +$2,272 · Mar +$1,039 ·
+Apr −$859 · May +$473 · Jun +$965 · Jul +$299 · Aug +$5,560 · Sep +$5,070 · Oct-26 +$583.
+Source: `data/hunt/verify_sim_a.json` keys `3x_cross_cryptoonly_taker+slip`, `5x_cross_cryptoonly_taker+slip`.
+
+---
+
+## 2. Corrections to the spec (apply these; they do not change the strategy)
+
+| # | Spec text | Correction | Why |
+|---|---|---|---|
+| C-1 | §3: «kPEPE → 1000PEPEUSDT … convert size ÷1000 and price ×1000» | **No conversion** when the target is `1000PEPEUSDT` (1 contract = 1000 PEPE = 1 kPEPE). Convert only if the only listed symbol is `PEPEUSDT` (then size ×1000, price ÷1000). Keep the existing `symbols.py` logic (`price_multiplier`), which is already correct. | Wrong conversion would trade 1000× too small / mis-price. |
+| C-2 | §8: «about 690 trades a year», «win ≈ 80–81 %» | With `copy_xyz_dex=false`: **≈ 416 trades/year**, win **≈ 79 %** (see §1). 690 / 81 % include the xyz stock markets and maker fees. | Go/no-go must use crypto-only numbers. |
+| C-3 | §4.1: `E0 = unified account totalEquity` | Read `totalEquity` of the **account** row (`get_wallet_balance accountType=UNIFIED` → `list[0].totalEquity`), not the USDT coin `equity` that `BybitBroker.account()` returns today. | Matches the spec and the backtest (equity incl. unrealized PnL). |
+| C-4 | §5: reconciliation «correct with a market order» | Allowed only when the Hyperliquid snapshot is **fresh (< 90 s)** and the correction stays within `CAP_NOTIONAL`; otherwise mark the copy `unsynced` and alert (existing «never guess» rule). Never opens a trade. | A stale snapshot must not move money. |
+| C-5 | §8: median holding ≈ 7 h | Not verified by the research (180 d crypto median was ≈ 10.5 h). Do not use as a go/no-go metric. | Unverified number. |
+| C-6 | Liquidation maths | The backtest used Hyperliquid's maintenance (`notional / (2 × maxLeverage)`). Bybit uses risk-limit tiers (`riskLimit` / `maintenanceMargin` from `/v5/market/risk-limit`). The paper broker and the dashboard «distance to liquidation» must use Bybit's tier-1 MMR per symbol. | Demo = Bybit rules. |
+
+---
+
+## 3. Configuration (`.env`)
+
+```env
+LEADERS=loco:0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1
+STRATEGY=cap20_cross            # new; the only strategy allowed with FOLLOW_ADDS=true
+MARGIN_MODE=CROSS               # new; cap20_cross refuses ISOLATED
+LEVERAGE=5                      # 5 (aggressive) or 3 (calmer); never change during a run
+SIZE_K=                         # empty = 0.8 x LEVERAGE (4.0 at 5x, 2.4 at 3x)
+PER_TRADE_MARGIN_CAP_PCT=20
+FOLLOW_ADDS=true
+FOLLOW_REDUCES=true
+TAKE_PROFIT_ROI=                # empty = no TP (required by cap20_cross)
+PROTECTIVE_SL_PCT=              # empty (required)
+COPY_XYZ_DEX=false
+COPY_SPOT=false
+FILL_POLL_SECONDS=2             # REST poll fallback next to the WS
+RECONCILE_SECONDS=60
+LEADER_EQUITY_REFRESH_SECONDS=300
+MAX_TOTAL_NOTIONAL_X_EQUITY=6.0
+FEED_OUTAGE_BLOCK_SECONDS=120
+# Not part of the strategy -> OFF for cap20_cross (they would make the demo deviate from the backtest):
+DAILY_LOSS_LIMIT_PCT=           # off
+LEADER_DD_BREAKER_PCT=          # off
+MAX_ENTRY_DRIFT=                # off
+MAX_SIGNAL_AGE_MS=              # off for adds/reduces/closes; opens use FEED_OUTAGE_BLOCK_SECONDS
+MAX_OPEN_POSITIONS=             # off
+BROKER=paper                    # paper -> bybit demo (M3) -> live (M5, owner only)
+BROKER_ENV=demo
+ALLOW_EXECUTE__LOCO=false       # true only for the Bybit demo step (M3)
+```
+
+`config.py` validation for `STRATEGY=cap20_cross`: `MARGIN_MODE=CROSS`, `FOLLOW_ADDS=true`, TP and SL empty,
+`LEVERAGE` in {3, 5} (warn otherwise), `PER_TRADE_MARGIN_CAP_PCT` in (0, 100]. The old refusal
+«FOLLOW_ADDS=true is not supported» stays for every other strategy.
+
+---
+
+## 4. Algorithm (per coin, per trade) — the spec, in bot terms
+
+```text
+on fill f (dedupe by tid, ignore coin starting '@', containing '/' or ':' or starting '#'):
+  before = f.start_position ; after = before + signed(f.sz)
+  if coin is pre-existing (snapshot at bot start, position != 0): ignore until leader is flat, then normal
+  if before == 0 and after != 0:                 # OPEN  (spec 4.1)
+      E0 = broker.total_equity() ; W0 = cached leader equity (portfolio "day" last value, ≤ 300 s old)
+      R = K * E0 / W0 ; CAP = cap_pct * L * E0 ; set leverage min(L, maxLeverage) (cross)
+      trade = {R, CAP, pending: 0, capped: false} ; then treat |after| as an ADD
+  elif sign(after) == sign(before) and |after| > |before|:   # ADD (4.2)
+      if trade.capped: log ADD_CAPPED; return
+      pending += (|after|-|before|) * R
+      room = max(0, CAP - our_qty * our_avg) / price
+      if room == 0: trade.capped = true; record qty_at_cap, leader_pos_at_cap; return
+      pending = min(pending, room)
+      if pending * price >= minNotional: MARKET (same side) qty=floor_step(pending), limited by free margin
+                                         and by MAX_TOTAL_NOTIONAL_X_EQUITY; pending -= executed
+  elif after != 0 and |after| < |before|:        # REDUCE (4.3)
+      frac = |after| / |before| ; MARKET reduce-only our_qty*(1-frac) (skip if < min, reconcile catches it)
+      pending *= frac
+  elif after == 0:                               # CLOSE (4.4): reduce-only 100 %, clear trade
+  else:                                          # FLIP (4.5): CLOSE, then OPEN with |after|
+```
+
+Client ids (idempotent, existing scheme extended): `loco:{coin}:{ep}:open|add|reduce|close:{tid}`.
+
+---
+
+## 5. Code changes, file by file
+
+| File | Change |
+|---|---|
+| `config.py` | New fields: `strategy`, `margin_mode`, `size_k` (None → 0.8 × L), `per_trade_margin_cap_pct`, `copy_xyz_dex`, `copy_spot`, `fill_poll_seconds`, `leader_equity_refresh_seconds`, `max_total_notional_x_equity`, `feed_outage_block_seconds`. Make `daily_loss_limit_pct`, `leader_dd_breaker_pct`, `max_entry_drift`, `max_signal_age_ms`, `max_open_positions`, `take_profit_roi` **optional (None = off)**. Validation of §3. |
+| `models.py` | `LeaderEvent` gains `leader_pos_before`, `leader_pos_after`, `leader_qty_delta` (adds need the size, today only `fraction` exists). `Copy` gains `ratio_r`, `cap_notional`, `pending_qty`, `capped`, `qty_at_cap`, `leader_pos_at_cap`, `adds_done`, `avg_entry` (volume-weighted, used for `room`). |
+| `store.py` | **Schema v4** migration (backup first): add the `Copy` columns above to `copies`; new `state` keys `leader_equity:loco` (value + taken_at), `preexisting:loco` (coins at start). |
+| `tracker.py` | Emit ADD with `leader_qty_delta`; FLIP emitted as CLOSE + OPEN (same tid, ordered). Keep `chain_order()`. Exclude `#NNN` and `xyz:`/spot coins at the source (`is_main_perp`). |
+| `feed.py` | Keep WS `userFills`; add a REST poll (`userFillsByTime`, `aggregateByTime=false`, from `last_fill_ms`) every `FILL_POLL_SECONDS` as a gap filler; dedupe by tid. New task: leader equity from `{"type":"portfolio"}` → `"day"` → last `accountValueHistory` value every 300 s → `state leader_equity:loco`. Snapshot (`clearinghouseState`) every 60 s for reconciliation. Track «last good HL contact» for the outage rule. |
+| `sizing.py` | New pure functions: `copy_ratio(k, e0, w0)`, `cap_notional(cap_pct, lev, e0)`, `add_order_qty(pending, room, price, instrument, free_margin, lev, exposure_left)`, `reduce_qty(our_qty, frac, instrument)` (exists, reuse). Remove TP maths from the cap20 path. |
+| `engine.py` | New handler `Cap20CrossStrategy` used when `STRATEGY=cap20_cross`: OPEN / ADD / REDUCE / CLOSE / FLIP exactly as §4. Decisions: `COPIED`, `ADDED`, `ADD_PENDING`, `ADD_CAPPED`, `REDUCED`, `CLOSED`, `SKIPPED_PREEXISTING`, `SYMBOL_NOT_LISTED` (skip the whole trade). The first-fill strategy stays for replay comparison only. |
+| `rules.py` | cap20 path checks only: symbol listed + trading, execution gate (`ALLOW_EXECUTE__LOCO`), kill switch, **feed outage > 120 s → block OPEN and ADD** (`FEED_OUTAGE`), **exposure > 6 × equity → block ADD/OPEN** (`EXPOSURE_LIMIT`). Exits are never blocked by any rule. |
+| `brokers/bybit.py` | `ensure_cross_leverage(symbol, L)`: account margin mode `REGULAR_MARGIN` once (`/v5/account/set-margin-mode`), then `/v5/position/set-leverage` buy=sell=`min(L, leverageFilter.maxLeverage)` (ignore «leverage not modified»). `total_equity()` = `list[0].totalEquity` (C-3). `market_open` used for adds too (one-way, `positionIdx=0`). Remove `set_take_profit` calls from the cap20 path. Instruments: keep `qtyStep`, `minOrderQty`, `minNotionalValue`, add `maxLeverage`. |
+| `brokers/paper.py` | Cross-margin paper account: equity = cash + Σ unrealized; liquidation when equity ≤ Σ maintenance (Bybit tier-1 MMR per symbol, C-6); fee 0.055 % + slippage 4 bps default. |
+| `reconcile.py` | Every 60 s per active trade: `target = min(|szi|·R, CAP/avg)` if not capped, else `qty_at_cap · |szi| / |szi_at_cap|`; `szi == 0` → close ours 100 %; correct when `|ours − target| · px > max(minNotional, 0.5 % · E0)` under C-4. Never opens a new trade. |
+| `risk.py` | Kill switch / `data/STOP` unchanged. Daily-loss and leader-DD breakers inactive when their setting is None. New: exposure check, feed-outage state. |
+| `replay.py` + `tools/build_fixtures.py` | Replay the cap20 strategy over recorded fills + candles. New fixture `tests/fixtures/benchmark_cap20.json` built from the research run (§1) for 3x and 5x. |
+| `cli.py` | `loco-copy strategy` (prints the active parameters, K, cap, R of open trades), `--strategy` flag on `replay`. |
+| `web.py` + `dashboard/` | Copy rows show `R`, `CAP`, used cap %, `pending`, `capped`, adds done, leader position. Overview shows total notional ÷ equity and distance to liquidation (Bybit MMR). Settings page: strategy card (read-only parameters). |
+
+---
+
+## 6. Tests (all new tests must pass `check.ps1`)
+
+| Test | Asserts |
+|---|---|
+| `test_cap20_sizing.py` | `R`, `K = 0.8 L`, `CAP = 0.2 · L · E0` at 3x and 5x; R fixed for the whole trade |
+| `test_cap20_adds.py` | adds follow `dq · R`; pending accumulates below minNotional; stops at the cap (`ADD_CAPPED`), later adds ignored, reduces still followed |
+| `test_cap20_reduce_close_flip.py` | proportional reduce, pending scaled, close 100 %, flip = close + new trade with new R |
+| `test_cap20_preexisting.py` | coin open at start is ignored until flat, then copied |
+| `test_cap20_symbols.py` | xyz / spot / `#` ignored; `kPEPE → 1000PEPEUSDT` with **no** size/price conversion (C-1); unlisted → whole trade skipped |
+| `test_cap20_reconcile.py` | target formula (capped / not capped), threshold, stale snapshot → unsynced (C-4), never opens |
+| `test_cap20_risk.py` | exposure 6× blocks adds not exits; feed outage 120 s blocks opens/adds, exits continue |
+| `test_bybit_cross.py` (contract, demo) | margin mode `REGULAR_MARGIN`, set-leverage per symbol, totalEquity parsing |
+| `test_replay_matches_cap20.py` | replay of the fixture reproduces `benchmark_cap20.json` within 2 % final equity, same liquidation count (0) |
+| existing tests | first-fill tests keep running with `STRATEGY=first_fill` |
+
+---
+
+## 7. Rollout
+
+| Step | What | Exit criteria |
+|---|---|---|
+| M0 | Backup DB (`loco-copy backup`); remove `3ea` from `LEADERS`; tag `v3-final` | clean `check.ps1` |
+| M1 | Implement §5 + §6 with `BROKER=paper`; replay the year | `test_replay_matches_cap20` green; 3x ≈ $17.8k, 5x ≈ $25.5k |
+| M2 | Live feed, `BROKER=paper`, mode OBSERVE, 7 days | 0 missed exits; tracker == snapshot; paper follows every add / reduce |
+| M3 | Bybit **demo**: account in cross mode, demo API key in keyring, `ALLOW_EXECUTE__LOCO=true`, EXECUTE, 30 days | go/no-go §8 |
+| M4 | Owner review of the 30 days | written decision in this file |
+| M5 | Real money (owner only): small capital, same parameters | 30 days inside the demo envelope |
+
+---
+
+## 8. Go / no-go (30-day demo)
+
+| Metric | Target |
+|---|---|
+| Missed exits | 0 |
+| Liquidations | 0 |
+| Detection latency | p50 < 2 s, p95 < 5 s (poll is 2 s) |
+| Entry/add slippage vs leader price | median < 10 bps |
+| Capture | ≥ 95 % of Loco's crypto trades that are listed on Bybit |
+| Tracking error | live equity vs replay of the same fills (same R, cap, fees): investigate if > 15 % |
+| Live drawdown | < 20 % at 3x, < 30 % at 5x |
+| Exposure | total notional ≤ 6 × equity at all times |
+
+---
+
+## 9. Operations
+
+- Bybit **demo** account: set the unified account to cross margin once (the bot also checks it). Demo API key:
+  trade-only, no withdrawal, IP whitelist, stored with `loco-copy set-key bybit-demo`. A demo account
+  untouched for 30 days is wiped: keep the bot running.
+- Daily: `loco-copy status`, `loco-copy strategy`, `loco-copy events --since 1d` (look for `ADD_CAPPED`,
+  `SYMBOL_NOT_LISTED`, `EXPOSURE_LIMIT`, `FEED_OUTAGE`, `unsynced`).
+- Weekly: `loco-copy report --since 7d` vs the replay of the same week.
+- Pause new trades: `loco-copy kill` or `data/STOP` (exits continue).
+- Funding is not in the benchmark: log it per copy (`copies.funding`) and include it in the weekly report.
+
+---
+
+## 10. Out of scope for v4
+
+- Lane `3ea` (no profitable strategy found; research `reports/2026-10-11_deep_study_5_ar.md`).
+- Wallet `0x7d93e65089f457d7186355e1ff3c0f4c1f2e620b`: promising on 180 d, **not yet tested on 365 d** or with
+  this cap20 method. Do not add a lane before that research is done.
+- xyz stock / commodity markets (not on Bybit).
+
+---
+
+## 11. Security (unchanged)
+
+Keys only in the OS keyring, never in `.env`, git, chats, dashboard or logs · demo and live keys separate ·
+live needs `BROKER_ENV=live` + `LIVE_CONFIRM` + `ALLOW_EXECUTE__LOCO=true` + dashboard `ENABLE EXECUTION` ·
+API on localhost behind the tunnel, CSRF origin guard on every POST.
+
+---
+
+## 12. References
+
+- Strategy spec: `docs/strategy/Loco_Copy_Strategy_Final_Bybit.md`.
+- Verification: research `reports/2026-10-11_verify_external_ar.md`, code `hl_verify_trades.py`,
+  `hl_verify_sim.py`, results `data/hunt/verify_sim_a.json`.
+- One-year comparison of copy methods: research `reports/2026-10-11_year_loco_ar.md` (`hl_year.py`).
+- Bybit v5: set-margin-mode, set-leverage, instruments-info, risk-limit, wallet-balance; demo trading
+  https://bybit-exchange.github.io/docs/v5/demo
+- Hyperliquid info API (`userFillsByTime`, `portfolio`, `clearinghouseState`) and WebSocket `userFills`.
+
+*Not financial advice. Past performance does not guarantee future results.*
+
+---
+**2026-10-12 — lane `8bae` added in WATCH only.** `.env`: `LEADERS=loco:0xf97a…,8bae:0x8bae3527e5a33fa0cf184f37bc112d071463ab6d`,
+`COPY_ENABLED__8BAE=false`, `COPY_OBSERVE_ONLY__8BAE=true`, `ALLOW_EXECUTE__8BAE=false` (no orders; Loco lane unchanged).
+Validation: 365-day study `hyperliquid_copy_research/reports/2026-10-12_0x8bae3527_full_ar.md` (3x realistic $102,645 from $10k, DD 22.7%).
+Restart the bot to load it. Execution for this lane only after the observe period and an explicit decision.

@@ -4,7 +4,7 @@ from itertools import pairwise
 
 from loco_copy.constants import EventType
 from loco_copy.models import LeaderSnapshot
-from loco_copy.tracker import LeaderTracker, chain_order, is_main_perp
+from loco_copy.tracker import LeaderTracker, aggregate_burst, chain_order, is_main_perp
 from tests.conftest import T0, F
 
 
@@ -126,21 +126,23 @@ def test_real_btc_short_is_opened_and_closed_with_loco():
     events, drifts = [], []
     close = [F(1_282_694, "BTC", "B", 83772, "0.5", "-0.5")]
     for burst in (_burst(672, BTC_OPEN_672), _burst(819, BTC_OPEN_819), close):
-        for f in chain_order(burst):
+        for f in aggregate_burst(chain_order(burst)):
             ev, drift = t.on_fill(f)
             events += ev
             drifts += [drift] if drift else []
     assert drifts == []
-    # the other 14 pieces belong to the opening order: no ADD noise, just the open and the close
-    assert types(events) == [EventType.OPEN, EventType.CLOSE]
+    # each delivery of the 15-piece order is merged into one move: the open (6 pieces, 0 -> -0.03336), then the
+    # rest of the same order 147 ms later as one add (-0.03336 -> -0.5), then the close
+    assert types(events) == [EventType.OPEN, EventType.ADD, EventType.CLOSE]
+    assert events[0].pos_after == Decimal("-0.03336") and events[1].qty_delta == Decimal("0.46664")
     assert events[-1].episode_id == events[0].episode_id and events[-1].leader_px == 83772
 
 
 def test_a_later_order_in_the_same_direction_is_still_an_add():
     t = LeaderTracker()
     later = replace(F(5000, "BTC", "A", 84000, "0.1", "-0.03336"), oid=999)
-    ev = run(t, [*chain_order(_burst(672, BTC_OPEN_672)), later])
-    assert types(ev) == [EventType.OPEN, EventType.ADD]
+    ev = run(t, [*aggregate_burst(chain_order(_burst(672, BTC_OPEN_672))), later])
+    assert types(ev) == [EventType.OPEN, EventType.ADD] and ev[1].qty_delta == Decimal("0.1")
 
 
 def test_close_is_followed_even_after_drift_mid_episode():

@@ -14,6 +14,7 @@ import type {
   Mode,
   Overview,
   SettingsView,
+  VirtualPanel,
 } from "@/types/api";
 
 export function useOverview(leader?: string) {
@@ -83,6 +84,15 @@ export function useAnalytics(days: number, leader?: string) {
     queryKey: ["analytics", days, leader ?? "ALL"],
     queryFn: () => api.get<Analytics>(`/api/analytics?${qs}`),
     refetchInterval: 30_000,
+  });
+}
+
+/** The v5 trio panel: the virtual cross account and the observe-phase numbers. */
+export function useVirtual(days = 28) {
+  return useQuery({
+    queryKey: ["virtual", days],
+    queryFn: () => api.get<VirtualPanel>(`/api/virtual?days=${days}`),
+    refetchInterval: 15_000,
   });
 }
 

@@ -85,7 +85,7 @@ export default function TradesPage() {
                   <th className="px-3 py-2 text-right font-medium">سعرنا</th>
                   <th className="px-3 py-2 text-right font-medium">الانزلاق</th>
                   <th className="px-3 py-2 text-right font-medium">التنفيذ</th>
-                  <th className="px-3 py-2 text-right font-medium">الهدف</th>
+                  <th className="px-3 py-2 text-right font-medium">الهدف / السقف</th>
                   <th className="px-3 py-2 text-right font-medium">الخروج</th>
                   <th className="px-3 py-2 font-medium">الإغلاق</th>
                 </tr>
@@ -125,7 +125,16 @@ export default function TradesPage() {
                         <td className="px-3 py-2 text-right text-bone">{formatPrice(c.entry_price)}</td>
                         <td className="px-3 py-2 text-right text-muted">{c.slippage_bps !== null ? `${formatNumber(c.slippage_bps, 1)} bps` : "—"}</td>
                         <td className="px-3 py-2 text-right text-muted">{formatMs(c.latency_order_ms)}</td>
-                        <td className="px-3 py-2 text-right text-win-bright">{formatPrice(c.tp_price)}</td>
+                        <td className="px-3 py-2 text-right">
+                          {c.strategy === "cap20_cross" ? (
+                            <span className={c.capped ? "text-warn" : "text-muted"} title="المستخدم من سقف الهامش (20% من الرصيد)">
+                              {c.cap_used_pct !== null ? `${formatNumber(c.cap_used_pct, 0)}%` : "—"}
+                              {c.adds_done ? ` · +${c.adds_done}` : ""}
+                            </span>
+                          ) : (
+                            <span className="text-win-bright">{formatPrice(c.tp_price)}</span>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-right text-bone">{formatPrice(c.exit_price_avg)}</td>
                         <td className="px-3 py-2 text-muted">{formatDateTime(c.closed_at)}</td>
                       </tr>

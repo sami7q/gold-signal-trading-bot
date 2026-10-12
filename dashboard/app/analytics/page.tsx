@@ -21,17 +21,17 @@ const LOSS = "#c1554a";
 
 type Check = { label: string; value: string; target: string; ok: boolean | null };
 
-// botup.md §11 -- the go / no-go targets for the 30-day demo.
+// botup.md v4 §8 -- the go / no-go targets for the 30-day Bybit demo (the trio's observe phase: see /trio).
 function goNoGo(m: Metrics): Check[] {
   return [
-    { label: "زمن الالتقاط p50 / p95", value: `${formatMs(m.detect_p50_ms)} / ${formatMs(m.detect_p95_ms)}`, target: "< 1 ث / < 3 ث",
-      ok: m.detect_p50_ms === null ? null : m.detect_p50_ms < 1000 && (m.detect_p95_ms ?? 0) < 3000 },
-    { label: "زمن التنفيذ p50", value: formatMs(m.order_p50_ms), target: "< 1 ث", ok: m.order_p50_ms === null ? null : m.order_p50_ms < 1000 },
-    { label: "انزلاق الدخول (الوسيط)", value: m.slippage_median_bps === null ? "—" : `${formatNumber(m.slippage_median_bps, 1)} bps`, target: "< 10 bps",
+    { label: "زمن الالتقاط p50 / p95", value: `${formatMs(m.detect_p50_ms)} / ${formatMs(m.detect_p95_ms)}`, target: "< 2 ث / < 5 ث",
+      ok: m.detect_p50_ms === null ? null : m.detect_p50_ms < 2000 && (m.detect_p95_ms ?? 0) < 5000 },
+    { label: "انزلاق الدخول والتعزيز (الوسيط)", value: m.slippage_median_bps === null ? "—" : `${formatNumber(m.slippage_median_bps, 1)} bps`, target: "< 10 bps",
       ok: m.slippage_median_bps === null ? null : m.slippage_median_bps < 10 },
-    { label: "نسبة الالتقاط", value: m.capture_rate === null ? "—" : formatPercent(m.capture_rate * 100), target: "≥ 90%",
-      ok: m.capture_rate === null ? null : m.capture_rate >= 0.9 },
+    { label: "نسبة الالتقاط", value: m.capture_rate === null ? "—" : formatPercent(m.capture_rate * 100), target: "≥ 95%",
+      ok: m.capture_rate === null ? null : m.capture_rate >= 0.95 },
     { label: "إغلاقات فائتة", value: String(m.missed_exits), target: "0", ok: m.missed_exits === 0 },
+    { label: "تصفيات", value: String(m.liquidations), target: "0", ok: m.liquidations === 0 },
   ];
 }
 

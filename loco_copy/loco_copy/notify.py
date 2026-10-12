@@ -60,6 +60,12 @@ class Notifier:
                 self._last_sent[key] = now
                 self._send_later(f"[loco-copy] {level} {type_}\n{payload}")
 
+    def report(self, type_: str, text: str, **payload: Any) -> None:
+        """A routine report meant for the owner (the daily observe line): logged as INFO, always sent."""
+        self.emit("INFO", type_, text=text, **payload)
+        if self._token and self._chat:
+            self._send_later(f"[loco-copy] {text}")
+
     def info(self, type_: str, **payload: Any) -> None:
         self.emit("INFO", type_, **payload)
 

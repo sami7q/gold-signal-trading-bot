@@ -91,6 +91,8 @@ class CopyEngine:
     # -- OPEN -------------------------------------------------------------------------------------------------
 
     async def _open(self, e: LeaderEvent) -> Decision:
+        tp_roi = self._s.take_profit_roi
+        assert tp_roi is not None, "first_fill always has a take profit (config.check_strategy)"
         sym = self._mapper.map(e.coin)
         inst = self.instruments.get(sym.symbol) if sym else None
         pre = PreContext(
@@ -115,7 +117,7 @@ class CopyEngine:
         if mark is not None and account is not None and account.equity > 0:
             sizing = size_order(equity=account.equity, mark=mark, side=e.side, instrument=inst,
                                 risk_per_trade=self._s.risk_per_trade, leverage=self._s.leverage,
-                                tp_roi=self._s.take_profit_roi, max_notional=self._s.max_notional_per_coin)
+                                tp_roi=tp_roi, max_notional=self._s.max_notional_per_coin)
         live = self._store.live_copies(leader=self.leader)
         observed_open = [c for c in self._store.copies_with_status(CopyStatus.OBSERVED_ONLY, leader=self.leader)
                          if c.closed_at is None]
@@ -196,7 +198,9 @@ class CopyEngine:
         copy.opened_at = filled_at
         copy.slippage_bps = e.side * (res.avg_price / copy.leader_entry_px - 1) * 10_000
         copy.latency_order_ms = filled_at - e.detected_at_ms
-        tp = take_profit_price(res.avg_price, e.side, self._s.take_profit_roi, self._s.leverage, inst.tick_size)
+        tp_roi = self._s.take_profit_roi
+        assert tp_roi is not None
+        tp = take_profit_price(res.avg_price, e.side, tp_roi, self._s.leverage, inst.tick_size)
         copy.tp_price = sizing.tp_price
         if abs(tp - sizing.tp_price) >= inst.tick_size:
             try:
@@ -220,8 +224,8 @@ class CopyEngine:
     def _reject(self, e: LeaderEvent, why: Rejection, *, holder: str | None = None) -> Decision:
         self._event(e, Decision.REJECTED, rejection=str(why), detail=f"held by {holder}" if holder else None)
         level = "WARNING" if why in (Rejection.SYMBOL_NOT_LISTED, Rejection.BROKER_UNAVAILABLE) else "INFO"
-        self._n.emit(level, "OPEN_REJECTED", leader=self.leader, coin=e.coin, episode=e.episode_id, reason=str(why),
-                     **({"held_by": holder} if holder else {}))
+        self._n.emit(level, "OPEN_REJECTED", leader=self.leader, tid=e.tid, coin=e.coin, episode=e.episode_id,
+                     type=str(e.type), reason=str(why), **({"held_by": holder} if holder else {}))
         return Decision.REJECTED
 
     # -- REDUCE / CLOSE / FLIP ---------------------------------------------------------------------------------
@@ -271,7 +275,7 @@ class CopyEngine:
             return Decision.FAILED
         self._book_exit(copy, res.filled_qty, res.avg_price, res.fee, closing, reason, CopyStatus.CLOSED_LEADER)
         if copy.closed_at is not None:
-            await self._safe(self._broker.cancel_take_profit, copy.symbol)
+            await self._safe(self._broker_for(copy).cancel_take_profit, copy.symbol)
         self._event(e, Decision.FOLLOWED, detail=f"{reason} qty={res.filled_qty} px={res.avg_price}")
         self._n.info("COPY_EXIT", leader=self.leader, coin=e.coin, symbol=copy.symbol, episode=e.episode_id,
                      reason=reason,
@@ -284,11 +288,12 @@ class CopyEngine:
             prior = self._store.get_order(client_id)
             if prior is not None and prior["status"] == str(OrderStatus.FILLED):
                 return None
+        broker = self._broker_for(copy)
         try:
-            res: OrderResult = await self._run(self._broker.market_reduce, copy.symbol, copy.side, qty,
-                                               client_id=client_id)
+            res: OrderResult = await self._run(broker.market_order, copy.symbol, -copy.side, qty,
+                                               client_id=client_id, reduce_only=self._reduce_only(copy))
         except Exception as exc:  # noqa: BLE001
-            recovered = await self._safe(self._broker.order_by_client_id, client_id)
+            recovered = await self._safe(broker.order_by_client_id, client_id)
             res = recovered or OrderResult(False, client_id, error=f"{type(exc).__name__}: {exc}")
         if res.success:
             self._store.finish_order(client_id, OrderStatus.FILLED, filled_qty=res.filled_qty,
@@ -324,7 +329,7 @@ class CopyEngine:
                              reason=reason, error=res.error)
             return False
         self._book_exit(copy, res.filled_qty, res.avg_price, res.fee, True, reason, status)
-        await self._safe(self._broker.cancel_take_profit, copy.symbol)
+        await self._safe(self._broker_for(copy).cancel_take_profit, copy.symbol)
         return True
 
     def book_exchange_close(self, copy: Copy, *, qty: Decimal, px: Decimal, pnl: Decimal | None,
@@ -373,6 +378,15 @@ class CopyEngine:
                 self._store.finish_order(row["client_id"], OrderStatus.UNKNOWN, error="not found after restart")
 
     # -- helpers ---------------------------------------------------------------------------------------------
+
+    def _broker_for(self, copy: Copy) -> Broker:
+        """The account a copy lives on. first_fill: always the exchange broker."""
+        return self._broker
+
+    def _reduce_only(self, copy: Copy) -> bool:
+        """Exits are reduce-only unless several leaders net in one account (an exit of one leader may then
+        legitimately cross what the account holds net)."""
+        return True
 
     def _risk_equity(self) -> Decimal | None:
         return self._risk.last_equity

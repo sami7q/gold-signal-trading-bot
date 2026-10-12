@@ -17,7 +17,8 @@ from typing import Any
 from loco_copy.constants import LIVE_STATUSES, CopyStatus, Decision, OrderStatus
 from loco_copy.models import Copy, LeaderEvent, LeaderFill
 
-SCHEMA_VERSION = 3  # v3 (2026-10-11): every fill / event / copy carries its leader lane (botup.md v3 §5.2)
+SCHEMA_VERSION = 4  # v3: leader lane on every row (botup.md v3). v4: cap20 trade state, leader positions
+#   on events, account equity history (botup.md v4/v5). Each step is upgraded in place, in order.
 
 _FILLS = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -35,10 +36,18 @@ CREATE TABLE IF NOT EXISTS {name} (
     exit_qty_total TEXT NOT NULL DEFAULT '0', realized_pnl TEXT NOT NULL DEFAULT '0',
     fees TEXT NOT NULL DEFAULT '0', funding TEXT NOT NULL DEFAULT '0', margin TEXT, opened_at INTEGER,
     closed_at INTEGER, close_reason TEXT, leader_entry_px TEXT NOT NULL, slippage_bps TEXT,
-    latency_detect_ms INTEGER, latency_order_ms INTEGER,
+    latency_detect_ms INTEGER, latency_order_ms INTEGER, {v4_copy_cols}
     UNIQUE(leader, coin, episode_id)
 );
 """
+#: Columns added by v4: cap20 trade state (name, SQL type + default).
+V4_COPY_COLS = (("strategy", "TEXT NOT NULL DEFAULT 'first_fill'"), ("ratio_r", "TEXT"), ("cap_notional", "TEXT"),
+                ("pending_qty", "TEXT NOT NULL DEFAULT '0'"), ("capped", "INTEGER NOT NULL DEFAULT 0"),
+                ("qty_at_cap", "TEXT"), ("leader_pos_at_cap", "TEXT"), ("adds_done", "INTEGER NOT NULL DEFAULT 0"),
+                ("cost_notional", "TEXT NOT NULL DEFAULT '0'"), ("leader_pos", "TEXT"))
+V4_EVENT_COLS = (("pos_before", "TEXT"), ("pos_after", "TEXT"), ("our_px", "TEXT"))
+_COPIES = _COPIES.replace("{v4_copy_cols}", " ".join(f"{n} {d}," for n, d in V4_COPY_COLS))
+#: The v2 copy columns (what the v3 migration copies over).
 _COPY_COLS = ("id", "coin", "symbol", "episode_id", "side", "status", "qty_initial", "qty_open", "entry_price",
               "tp_price", "exit_price_avg", "exit_qty_total", "realized_pnl", "fees", "funding", "margin",
               "opened_at", "closed_at", "close_reason", "leader_entry_px", "slippage_bps", "latency_detect_ms",
@@ -56,9 +65,12 @@ CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, coin TEXT NOT NULL, episode_id INTEGER NOT NULL, type TEXT NOT NULL,
     side INTEGER NOT NULL, fraction TEXT, leader_px TEXT NOT NULL, leader_time_ms INTEGER NOT NULL,
     detected_at_ms INTEGER NOT NULL, tid INTEGER NOT NULL, decision TEXT NOT NULL, rejection TEXT, detail TEXT,
-    leader TEXT NOT NULL DEFAULT 'loco'
+    leader TEXT NOT NULL DEFAULT 'loco', pos_before TEXT, pos_after TEXT, our_px TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_events_detected ON events(detected_at_ms);
+CREATE TABLE IF NOT EXISTS equity_history (
+    account TEXT NOT NULL, ts INTEGER NOT NULL, equity TEXT NOT NULL, PRIMARY KEY (account, ts)
+);
 CREATE INDEX IF NOT EXISTS ix_copies_status ON copies(status);
 CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT, copy_id INTEGER REFERENCES copies(id), client_id TEXT NOT NULL UNIQUE,
@@ -81,7 +93,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 """
 
-_DEC_COPY = ("qty_initial", "qty_open", "entry_price", "tp_price", "exit_price_avg", "exit_qty_total",
+_DEC_COPY = ("ratio_r", "cap_notional", "pending_qty", "qty_at_cap", "leader_pos_at_cap", "cost_notional",
+             "leader_pos", "qty_initial", "qty_open", "entry_price", "tp_price", "exit_price_avg", "exit_qty_total",
              "realized_pnl", "fees", "funding", "margin", "leader_entry_px", "slippage_bps")
 
 
@@ -117,12 +130,36 @@ class Store:
         row = self._db.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             self._db.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row["version"] in (1, 2):
-            self._migrate_to_v3()  # v1 -> v2 was additive (users / sessions, created above)
-        elif row["version"] != SCHEMA_VERSION:
-            raise RuntimeError(f"database schema v{row['version']} != code v{SCHEMA_VERSION}")
+        else:
+            if row["version"] in (1, 2):
+                self._migrate_to_v3()  # v1 -> v2 was additive (users / sessions, created above)
+            if self._db.execute("SELECT version FROM schema_version").fetchone()["version"] == 3:
+                self._migrate_to_v4()
+            version = self._db.execute("SELECT version FROM schema_version").fetchone()["version"]
+            if version != SCHEMA_VERSION:
+                raise RuntimeError(f"database schema v{version} != code v{SCHEMA_VERSION}")
         self._db.execute("CREATE INDEX IF NOT EXISTS ix_events_leader ON events(leader, detected_at_ms)")
         self._db.commit()
+
+    def _migrate_to_v4(self) -> None:
+        """v3 -> v4: purely additive columns (a copy made by v3 is a first_fill copy)."""
+        db = self._db
+        db.commit()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            if db.execute("SELECT version FROM schema_version").fetchone()["version"] == SCHEMA_VERSION:
+                db.commit()
+                return
+            for table, cols in (("copies", V4_COPY_COLS), ("events", V4_EVENT_COLS)):
+                have = {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}
+                for name, decl in cols:
+                    if name not in have:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+            db.execute("UPDATE schema_version SET version=?", (SCHEMA_VERSION,))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
     def _migrate_to_v3(self) -> None:
         """v2 -> v3 in one transaction: everything that exists belongs to lane `loco` (botup.md v3 §5.2).
@@ -132,7 +169,7 @@ class Store:
         db.commit()
         db.execute("BEGIN IMMEDIATE")
         try:
-            if db.execute("SELECT version FROM schema_version").fetchone()["version"] == SCHEMA_VERSION:
+            if db.execute("SELECT version FROM schema_version").fetchone()["version"] >= 3:
                 db.commit()  # the bot and the API start together: the other one migrated while we waited
                 return
             if "leader" not in {r["name"] for r in db.execute("PRAGMA table_info(events)")}:
@@ -152,7 +189,7 @@ class Store:
             for key in LANE_STATE_KEYS:
                 db.execute("UPDATE state SET key=? WHERE key=? AND NOT EXISTS (SELECT 1 FROM state WHERE key=?)",
                            (f"{key}:loco", key, f"{key}:loco"))
-            db.execute("UPDATE schema_version SET version=?", (SCHEMA_VERSION,))
+            db.execute("UPDATE schema_version SET version=3")
             db.commit()
         except Exception:
             db.rollback()
@@ -204,13 +241,16 @@ class Store:
     # -- events -----------------------------------------------------------------------------------------------
 
     def insert_event(self, e: LeaderEvent, decision: Decision, rejection: str | None = None,
-                     detail: str | None = None, *, leader: str = "loco") -> int:
+                     detail: str | None = None, *, leader: str = "loco", our_px: Decimal | None = None) -> int:
+        """`our_px`: the price our order for this event filled at (or would have, when observing)."""
         with self.tx() as db:
             cur = db.execute(
                 "INSERT INTO events (coin, episode_id, type, side, fraction, leader_px, leader_time_ms, "
-                "detected_at_ms, tid, decision, rejection, detail, leader) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "detected_at_ms, tid, decision, rejection, detail, leader, pos_before, pos_after, our_px) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (e.coin, e.episode_id, str(e.type), e.side, _s(e.fraction), str(e.leader_px), e.leader_time_ms,
-                 e.detected_at_ms, e.tid, str(decision), rejection, detail, leader))
+                 e.detected_at_ms, e.tid, str(decision), rejection, detail, leader, _s(e.pos_before),
+                 _s(e.pos_after), _s(our_px)))
             return int(cur.lastrowid or 0)
 
     def events_since(self, since_ms: int, *, leader: str | None = None) -> list[sqlite3.Row]:
@@ -243,25 +283,31 @@ class Store:
         data = dict(r)
         for k in _DEC_COPY:
             data[k] = _d(data[k])
+        data["capped"] = bool(data["capped"])
+        for k in ("pending_qty", "cost_notional"):
+            data[k] = data[k] if data[k] is not None else Decimal(0)
         return Copy(**data)
 
     def insert_copy(self, c: Copy) -> Copy:
         with self.tx() as db:
             cur = db.execute(
                 "INSERT INTO copies (leader, coin, symbol, episode_id, side, status, qty_initial, qty_open, "
-                "entry_price, tp_price, margin, opened_at, leader_entry_px, latency_detect_ms) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "entry_price, tp_price, margin, opened_at, leader_entry_px, latency_detect_ms, strategy, ratio_r, "
+                "cap_notional, pending_qty, leader_pos) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (c.leader, c.coin, c.symbol, c.episode_id, c.side, c.status, str(c.qty_initial), str(c.qty_open),
                  _s(c.entry_price), _s(c.tp_price), _s(c.margin), c.opened_at, str(c.leader_entry_px),
-                 c.latency_detect_ms))
+                 c.latency_detect_ms, c.strategy, _s(c.ratio_r), _s(c.cap_notional), str(c.pending_qty),
+                 _s(c.leader_pos)))
             c.id = int(cur.lastrowid or 0)
         return c
 
     def update_copy(self, c: Copy) -> None:
         cols = ("status", "qty_initial", "qty_open", "entry_price", "tp_price", "exit_price_avg", "exit_qty_total",
                 "realized_pnl", "fees", "funding", "margin", "opened_at", "closed_at", "close_reason",
-                "slippage_bps", "latency_detect_ms", "latency_order_ms")
+                "slippage_bps", "latency_detect_ms", "latency_order_ms", "ratio_r", "cap_notional", "pending_qty",
+                "capped", "qty_at_cap", "leader_pos_at_cap", "adds_done", "cost_notional", "leader_pos")
         values = [_s(getattr(c, k)) if isinstance(getattr(c, k), Decimal) else getattr(c, k) for k in cols]
+        values = [int(v) if isinstance(v, bool) else v for v in values]
         with self.tx() as db:
             db.execute(f"UPDATE copies SET {', '.join(f'{k}=?' for k in cols)} WHERE id=?", (*values, c.id))
 
@@ -297,6 +343,15 @@ class Store:
         return list(self._db.execute(
             "SELECT * FROM fills WHERE time_ms BETWEEN ? AND ? AND leader=? AND coin=? ORDER BY time_ms",
             (start_ms, end_ms, leader, coin)))
+
+    def record_equity(self, account: str, ts: int, equity: Decimal) -> None:
+        with self.tx() as db:
+            db.execute("INSERT OR REPLACE INTO equity_history (account, ts, equity) VALUES (?,?,?)",
+                       (account, ts, str(equity)))
+
+    def equity_history(self, account: str, since_ms: int = 0) -> list[tuple[int, Decimal]]:
+        return [(r["ts"], Decimal(r["equity"])) for r in self._db.execute(
+            "SELECT ts, equity FROM equity_history WHERE account=? AND ts >= ? ORDER BY ts", (account, since_ms))]
 
     def logs_between(self, start_ms: int, end_ms: int) -> list[sqlite3.Row]:
         return list(self._db.execute("SELECT * FROM log WHERE ts BETWEEN ? AND ? ORDER BY id", (start_ms, end_ms)))
@@ -362,6 +417,10 @@ class Store:
         r = self._db.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
         return json.loads(r["value"]) if r else default
 
+    def state_keys(self, prefix: str) -> list[str]:
+        rows = self._db.execute("SELECT key FROM state WHERE substr(key, 1, ?) = ?", (len(prefix), prefix))
+        return [r["key"] for r in rows]
+
     def set_state(self, key: str, value: Any) -> None:
         with self.tx() as db:
             db.execute("INSERT INTO state(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -373,9 +432,12 @@ class Store:
                        (now_ms(), level, type_, json.dumps(payload, default=str)))
 
     def logs_since(self, since_ms: int, *, min_level: str | None = None) -> list[sqlite3.Row]:
-        q, args = "SELECT * FROM log WHERE ts >= ?", [since_ms]
-        if min_level == "WARNING":
-            q += " AND level IN ('WARNING','ERROR','CRITICAL')"
+        q = "SELECT * FROM log WHERE ts >= ?"
+        args: list[Any] = [since_ms]
+        levels = {"WARNING": ("WARNING", "ERROR", "CRITICAL"), "ERROR": ("ERROR", "CRITICAL")}.get(min_level or "")
+        if levels:
+            q += f" AND level IN ({','.join('?' * len(levels))})"
+            args += list(levels)
         return list(self._db.execute(q + " ORDER BY id", args))
 
 

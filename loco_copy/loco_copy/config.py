@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from dotenv import dotenv_values
-from pydantic import Field, TypeAdapter, field_validator, model_validator
+from pydantic import Field, PrivateAttr, TypeAdapter, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from loco_copy.constants import LIVE_CONFIRM_PHRASE
@@ -31,9 +31,18 @@ OVERRIDE_KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*?)__([A-Za-z0-9]+)$")
 #: Settings that exist once for the whole process and can never be overridden per lane (botup.md v3 §4).
 GLOBAL_ONLY = frozenset({
     "leaders", "leader_address", "lane", "lane_overrides", "broker", "broker_env", "live_confirm", "data_dir",
+    "shared_equity", "account_kill_dd_pct", "virtual_start_equity", "virtual_fee_rate", "fill_poll_seconds",
     "api_host", "api_port", "dashboard_origins", "api_cookie_secure", "session_days", "alert_telegram_token",
     "alert_telegram_chat_id", "hl_info_url", "hl_ws_url", "stale_feed_seconds",
 })
+
+
+#: v3 (first_fill) settings that are not part of cap20_cross (botup.md v4 §3: "OFF for cap20_cross -- they would make
+#: the demo deviate from the backtest"). Empty in .env = this default under first_fill, off (None) under cap20_cross.
+FIRST_FILL_DEFAULTS: dict[str, Any] = {
+    "take_profit_roi": Decimal("0.50"), "max_open_positions": 10, "max_entry_drift": Decimal("0.01"),
+    "max_signal_age_ms": 10_000, "daily_loss_limit_pct": Decimal("0.15"), "leader_dd_breaker_pct": Decimal("0.20"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,21 +102,45 @@ class Settings(BaseSettings):
     #: open is recorded as observed. Set per lane: ALLOW_EXECUTE__LOCO=true.
     allow_execute: bool = False
 
+    #: "first_fill" (v2/v3: first fill only, adds ignored, take profit) or "cap20_cross" (botup.md v4: every fill
+    #: copied with ratio R = K x E0 / W0, adds stop at the per-trade margin cap, exits only with the leader).
+    strategy: Literal["first_fill", "cap20_cross"] = "first_fill"
+    margin_mode: Literal["ISOLATED", "CROSS"] = "ISOLATED"
+    size_k: Decimal | None = Field(default=None, gt=0)  # empty = 0.8 x LEVERAGE
+    per_trade_margin_cap_pct: Decimal = Field(default=Decimal("20"), gt=0, le=100)
+    copy_xyz_dex: bool = False
+    copy_spot: bool = False
+    #: REST poll of the leaders' fills next to the WS (a gap filler); with several leaders they take turns.
+    fill_poll_seconds: int = Field(default=2, ge=1)
+    leader_equity_refresh_seconds: int = Field(default=300, ge=30)
+    max_total_notional_x_equity: Decimal = Field(default=Decimal("6.0"), gt=0)
+    #: No good Hyperliquid contact for this long -> new trades and adds are blocked (exits never are).
+    feed_outage_block_seconds: int = Field(default=120, ge=10)
+    #: Fallback when an instrument carries no minNotionalValue.
+    min_order_usdt: Decimal = Field(default=Decimal("5"), gt=0)
+    #: v5: every lane trades in one account and is sized on that whole account's equity (alloc 1.0).
+    shared_equity: bool = False
+    #: v5 account kill switch: equity below (1 - this) x its peak blocks opens / adds on every lane.
+    account_kill_dd_pct: Decimal | None = Field(default=None, gt=0, lt=1)
+    #: The observe ledger (botup.md v5 §V5.5): a virtual cross account, filled at Bybit's live bid / ask + fee.
+    virtual_start_equity: Decimal = Field(default=Decimal("10000"), gt=0)
+    virtual_fee_rate: Decimal = Field(default=Decimal("0.00055"), ge=0)
+
     broker: Literal["paper", "bybit"] = "paper"
     broker_env: Literal["demo", "live"] = "demo"
     live_confirm: str = ""
 
     risk_per_trade: Decimal = Field(default=Decimal("0.10"), gt=0, le=1)
     leverage: int = Field(default=20, ge=1, le=100)
-    take_profit_roi: Decimal = Field(default=Decimal("0.50"), gt=0)
+    take_profit_roi: Decimal | None = Field(default=None, gt=0)  # first_fill: 0.50 if empty; cap20: must be empty
     protective_sl_pct: Decimal | None = None
     follow_adds: bool = False
     follow_reduces: bool = True
 
-    max_open_positions: int = Field(default=10, ge=1)
+    max_open_positions: int | None = Field(default=None, ge=1)
     max_notional_per_coin: Decimal | None = Field(default=None, gt=0)
-    max_entry_drift: Decimal = Field(default=Decimal("0.01"), gt=0)
-    max_signal_age_ms: int = Field(default=10_000, gt=0)
+    max_entry_drift: Decimal | None = Field(default=None, gt=0)
+    max_signal_age_ms: int | None = Field(default=None, gt=0)
     #: Market-order slippage protection sent to the exchange (fraction; 0.005 = 0.5 %).
     max_order_slippage: Decimal = Field(default=Decimal("0.005"), gt=0)
 
@@ -116,8 +149,8 @@ class Settings(BaseSettings):
     coin_allowlist: str = ""  # comma-separated; empty = every coin allowed
     coin_blocklist: str = ""
 
-    daily_loss_limit_pct: Decimal = Field(default=Decimal("0.15"), gt=0, lt=1)
-    leader_dd_breaker_pct: Decimal = Field(default=Decimal("0.20"), gt=0, lt=1)
+    daily_loss_limit_pct: Decimal | None = Field(default=None, gt=0, lt=1)
+    leader_dd_breaker_pct: Decimal | None = Field(default=None, gt=0, lt=1)
     leader_snapshot_seconds: int = Field(default=20, ge=5)
     reconcile_seconds: int = Field(default=30, ge=5)
     #: Loco flat but our copy still open for longer than this -> auto-close (the one automatic correction).
@@ -127,7 +160,7 @@ class Settings(BaseSettings):
 
     paper_start_equity: Decimal = Field(default=Decimal("10000"), gt=0)
     paper_fee_rate: Decimal = Field(default=Decimal("0.00055"), ge=0)  # Bybit taker
-    paper_slippage_bps: Decimal = Field(default=Decimal("2"), ge=0)
+    paper_slippage_bps: Decimal = Field(default=Decimal("4"), ge=0)  # botup.md v4 §5 paper.py: 4 bps default
     #: Isolated liquidation happens at a (1/leverage - this) adverse move -- ~4.5 % at 20x (same as the research).
     maintenance_margin_rate: Decimal = Field(default=Decimal("0.005"), ge=0)
 
@@ -147,6 +180,18 @@ class Settings(BaseSettings):
     hl_info_url: str = "https://api.hyperliquid.xyz/info"
     hl_ws_url: str = "wss://api.hyperliquid.xyz/ws"
 
+    #: FIRST_FILL_DEFAULTS names that were filled in (not set by the owner) -- a lane switching strategy may drop them.
+    _defaulted: frozenset[str] = PrivateAttr(default=frozenset())
+
+    @field_validator("account_kill_dd_pct", mode="before")
+    @classmethod
+    def _dd_as_fraction(cls, v: Any) -> Any:
+        """ACCOUNT_KILL_DD_PCT=25 and =0.25 both mean 25 % (botup.md v5 writes it both ways)."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        d = Decimal(str(v).strip())
+        return d / 100 if d >= 1 else d
+
     @field_validator("leader_address")
     @classmethod
     def _address(cls, v: str) -> str:
@@ -158,8 +203,9 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _safety(self) -> Settings:
         parse_leaders(self.leaders, self.leader_address)  # refuse a bad LEADERS at start-up
-        if self.follow_adds:
-            raise ValueError("FOLLOW_ADDS=true is not supported: adds are ignored by design (owner decision).")
+        update, self._defaulted = strategy_defaults(self, frozenset())
+        self.__dict__.update(update)
+        check_strategy(self)
         if self.protective_sl_pct is not None:
             raise ValueError("PROTECTIVE_SL_PCT is not implemented yet -- leave it empty (exit with Loco).")
         if self.broker == "bybit" and self.broker_env == "live" and self.live_confirm != LIVE_CONFIRM_PHRASE:
@@ -191,6 +237,15 @@ class Settings(BaseSettings):
     @property
     def log_dir(self) -> Path:
         return self.data_dir / "logs"
+
+    @property
+    def k(self) -> Decimal:
+        """Size multiplier K: SIZE_K, or 0.8 x LEVERAGE (4.0 at 5x, 2.4 at 3x)."""
+        return self.size_k if self.size_k is not None else Decimal("0.8") * self.leverage
+
+    @property
+    def is_cap20(self) -> bool:
+        return self.strategy == "cap20_cross"
 
     @property
     def shared_keyring_service(self) -> str:
@@ -232,9 +287,55 @@ class Settings(BaseSettings):
             except ValueError as exc:
                 raise ValueError(f"{name.upper()}__{label.upper()}={raw!r}: {exc}") from exc
         lane = self.model_copy(update=update)
+        explicit = set(self.lane_overrides.get(label, {}))
+        filled, defaulted = strategy_defaults(lane, self._defaulted - explicit)
+        lane = lane.model_copy(update=filled)
+        lane._defaulted = defaulted  # noqa: SLF001 - same class
         if Decimal(1) / lane.leverage <= lane.maintenance_margin_rate:
             raise ValueError(f"LEVERAGE__{label.upper()} too high: liquidation would be immediate.")
+        try:
+            check_strategy(lane)
+        except ValueError as exc:
+            raise ValueError(f"leader {label}: {exc}") from exc
         return lane
+
+
+def strategy_defaults(s: Settings, defaulted: frozenset[str]) -> tuple[dict[str, Any], frozenset[str]]:
+    """The v3-only settings for this strategy: cap20_cross turns them all off and refuses a take profit set by the
+    owner; first_fill gets its v3 defaults where empty. Returns (updates, names now holding a filled-in default)."""
+    if s.strategy == "cap20_cross":
+        if s.take_profit_roi is not None and "take_profit_roi" not in defaulted:
+            raise ValueError("STRATEGY=cap20_cross has no take profit (exits only with the leader): "
+                             "leave TAKE_PROFIT_ROI empty.")
+        return {name: None for name in FIRST_FILL_DEFAULTS}, frozenset()
+    filled = {k: v for k, v in FIRST_FILL_DEFAULTS.items() if getattr(s, k) is None}
+    return filled, defaulted | frozenset(filled)
+
+
+def strategy_warnings(s: Settings) -> list[str]:
+    """Allowed but outside the spec: said once at start-up (botup.md v4 §3)."""
+    if s.strategy == "cap20_cross" and s.leverage not in (3, 5):
+        return [f"LEVERAGE={s.leverage}: the cap20 spec was tested at 3 or 5 only"]
+    return []
+
+
+def check_strategy(s: Settings) -> None:
+    """botup.md v4 §3: what each strategy requires. FOLLOW_ADDS stays refused outside cap20_cross."""
+    if s.strategy == "cap20_cross":
+        if s.take_profit_roi is not None:
+            raise ValueError("STRATEGY=cap20_cross has no take profit: leave TAKE_PROFIT_ROI empty.")
+        if s.margin_mode != "CROSS":
+            raise ValueError("STRATEGY=cap20_cross needs MARGIN_MODE=CROSS (it refuses ISOLATED).")
+        if not s.follow_adds:
+            raise ValueError("STRATEGY=cap20_cross needs FOLLOW_ADDS=true: it copies every add up to the cap.")
+        if s.protective_sl_pct is not None:
+            raise ValueError("STRATEGY=cap20_cross has no stop loss: leave PROTECTIVE_SL_PCT empty.")
+        if s.copy_xyz_dex or s.copy_spot:
+            raise ValueError("COPY_XYZ_DEX / COPY_SPOT: those markets are not on Bybit -- keep them false.")
+    elif s.follow_adds:
+        raise ValueError("FOLLOW_ADDS=true needs STRATEGY=cap20_cross (first_fill ignores adds by design).")
+    elif s.take_profit_roi is None:
+        raise ValueError("STRATEGY=first_fill needs a take profit (TAKE_PROFIT_ROI).")
 
 
 def read_lane_overrides(labels: list[str], env_file: Path | None) -> dict[str, dict[str, str]]:

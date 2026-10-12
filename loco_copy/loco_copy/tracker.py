@@ -8,7 +8,7 @@ been flat once.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 from itertools import groupby
 from typing import Any
@@ -27,6 +27,23 @@ def is_main_perp(coin: str) -> bool:
 
 def _sign(x: Decimal) -> int:
     return 1 if x > 0 else -1 if x < 0 else 0
+
+
+def aggregate_burst(fills: list[LeaderFill]) -> list[LeaderFill]:
+    """Merges consecutive pieces of one order (same coin, oid, side and millisecond, chained start -> end) into
+    one fill: start of the first, total size, volume-weighted price, first tid. Input in `chain_order`. One
+    order filled in 15 pieces is then one leader move -- one copy order instead of 15."""
+    out: list[LeaderFill] = []
+    for f in fills:
+        prev = out[-1] if out else None
+        if (prev is not None and f.oid is not None and prev.oid == f.oid and prev.coin == f.coin
+                and prev.side == f.side and prev.time_ms == f.time_ms and prev.new_position == f.start_position):
+            size = prev.sz + f.sz
+            out[-1] = replace(prev, sz=size, px=(prev.px * prev.sz + f.px * f.sz) / size,
+                              received_at_ms=max(prev.received_at_ms, f.received_at_ms))
+        else:
+            out.append(f)
+    return out
 
 
 def chain_order(fills: list[LeaderFill]) -> list[LeaderFill]:
@@ -158,16 +175,19 @@ class LeaderTracker:
         return events, None
 
     @staticmethod
-    def _event(st: CoinState, f: LeaderFill, t: EventType, fraction: Decimal | None = None) -> LeaderEvent:
+    def _event(st: CoinState, f: LeaderFill, t: EventType, fraction: Decimal | None = None, *,
+               before: Decimal | None = None, after: Decimal | None = None) -> LeaderEvent:
         return LeaderEvent(type=t, coin=f.coin, episode_id=st.episode_id, side=st.side, leader_px=f.px,
-                           leader_time_ms=f.time_ms, detected_at_ms=f.received_at_ms, tid=f.tid, fraction=fraction)
+                           leader_time_ms=f.time_ms, detected_at_ms=f.received_at_ms, tid=f.tid, fraction=fraction,
+                           pos_before=f.start_position if before is None else before,
+                           pos_after=f.new_position if after is None else after)
 
     def _exits(self, st: CoinState, f: LeaderFill, start: Decimal, new: Decimal) -> list[LeaderEvent]:
         """Exits while unsynced. The exchange saying the leader is now flat, or on the other side, is a fact,
         not a guess: whatever we copied for the current episode must go now, not 60 s later when the
         reconciler notices. Only for an episode we saw open -- a pre-existing position has nothing to close."""
         if st.opened and (new == 0 or _sign(start) * _sign(new) < 0):
-            return [self._event(st, f, EventType.CLOSE)]
+            return [self._event(st, f, EventType.CLOSE, after=ZERO)]
         return []
 
     def _classify(self, st: CoinState, f: LeaderFill, start: Decimal, new: Decimal) -> list[LeaderEvent]:
@@ -184,14 +204,15 @@ class LeaderTracker:
             return [ev(EventType.CLOSE)]
         if _sign(start) == _sign(new):
             if abs(new) > abs(start):
-                if f.oid is not None and f.oid == st.open_oid:
-                    return []  # another piece of the opening order (one order can fill in dozens of pieces)
+                # Every add is reported, also later pieces of the opening order: cap20 sizes adds from them
+                # (first_fill records them as IGNORED_ADD). Pieces arriving together are merged first by
+                # `aggregate_burst`, so one order is one event per delivery, not one per piece.
                 return [ev(EventType.ADD)]
             return [ev(EventType.REDUCE, (abs(start) - abs(new)) / abs(start))]
-        flip = ev(EventType.FLIP)
+        flip = self._event(st, f, EventType.FLIP, after=ZERO)  # closes the old side ...
         st.episode_id += 1
         st.side, st.opened, st.open_oid = _sign(new), True, f.oid
-        return [flip, ev(EventType.OPEN)]
+        return [flip, self._event(st, f, EventType.OPEN, before=ZERO)]  # ... and opens |new| on the other
 
     @staticmethod
     def _set_position(st: CoinState, new: Decimal, at_ms: int) -> None:

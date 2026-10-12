@@ -25,7 +25,7 @@ import websockets
 from loco_copy.models import LeaderFill, LeaderSnapshot
 from loco_copy.tracker import chain_order, is_main_perp
 
-FillHandler = Callable[[LeaderFill, bool], Awaitable[None]]  # (fill, is_history_frame)
+FillHandler = Callable[[list[LeaderFill], bool], Awaitable[None]]  # (one delivery in chain order, is_history)
 FrameHandler = Callable[[], None]
 
 WEIGHT_BUDGET_PER_MIN = 900
@@ -95,6 +95,14 @@ class HyperliquidClient:
             self._spent.append((time.monotonic(), len(data) // 20))
         return data
 
+    async def portfolio_equity(self, user: str) -> Decimal | None:
+        """The leader's account value W for cap20 sizing: last point of `portfolio` -> "day" ->
+        accountValueHistory (botup.md v4 §2.4). None when Hyperliquid has no history for the wallet."""
+        raw = await self.info({"type": "portfolio", "user": user}, 20)
+        periods = {name: data for name, data in raw} if isinstance(raw, list) else {}
+        history = (periods.get("day") or {}).get("accountValueHistory") or []
+        return Decimal(str(history[-1][1])) if history else None
+
     async def snapshot(self, user: str) -> LeaderSnapshot:
         taken = now_ms()
         raw = await self.info({"type": "clearinghouseState", "user": user}, 2)
@@ -149,8 +157,37 @@ class HyperliquidFeed:
         self._on_unknown_user = on_unknown_user
         self.connected = False
         self.reconnects = 0
+        self._queues: dict[str, asyncio.Queue[tuple[list[LeaderFill], bool]]] = {}
+        self._workers: list[asyncio.Task[None]] = []
+
+    def _start_workers(self) -> None:
+        """One worker per leader, in arrival order: the socket keeps reading (and time-stamping) frames while a
+        leader's fill is being copied -- another leader's fill is never detected late because of it."""
+        if self._workers:
+            return
+        for user, handler in self._handlers.items():
+            queue: asyncio.Queue[tuple[list[LeaderFill], bool]] = asyncio.Queue()
+            self._queues[user] = queue
+            self._workers.append(asyncio.create_task(self._work(queue, handler)))
+
+    async def _work(self, queue: asyncio.Queue[tuple[list[LeaderFill], bool]], handler: FillHandler) -> None:
+        while True:
+            fills, is_history = await queue.get()
+            try:
+                await handler(fills, is_history)
+            except Exception as exc:  # noqa: BLE001 - one bad batch must not stop this leader's copying
+                if self._on_error:
+                    self._on_error(f"handler: {type(exc).__name__}: {exc}")
+
+    async def _deliver(self, user: str, handler: FillHandler, fills: list[LeaderFill], is_history: bool) -> None:
+        queue = self._queues.get(user)
+        if queue is None:
+            await handler(fills, is_history)  # not running (tests): straight through
+        else:
+            queue.put_nowait((fills, is_history))
 
     async def run(self) -> None:
+        self._start_workers()
         backoff = 1.0
         while True:
             try:
@@ -192,8 +229,9 @@ class HyperliquidFeed:
             last = self._last_seen(user)
             if last is None:
                 continue
-            for fill in await self._client.fills_since(user, last + 1):
-                await handler(fill, False)
+            fills = await self._client.fills_since(user, last + 1)
+            if fills:
+                await self._deliver(user, handler, fills, False)  # same queue: never interleaved with live frames
 
     async def _dispatch(self, message: str | bytes) -> None:
         msg = json.loads(message)
@@ -211,5 +249,5 @@ class HyperliquidFeed:
         is_history = bool(data.get("isSnapshot"))
         received = now_ms()
         fills = [f for f in (parse_fill(x, received) for x in data.get("fills", []) or []) if f is not None]
-        for fill in chain_order(fills):
-            await handler(fill, is_history)
+        if fills:
+            await self._deliver(user, handler, chain_order(fills), is_history)

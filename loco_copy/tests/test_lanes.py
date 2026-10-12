@@ -115,9 +115,11 @@ def test_v2_database_is_migrated_in_place(tmp_path):
 
     store = Store(path)
     raw = store._db
-    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 3
+    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 4  # v2 -> v3 -> v4
     copy = store.get_copy("BTC", 1)
     assert copy is not None and copy.id == 7 and copy.leader == "loco" and copy.realized_pnl == Decimal("83.08")
+    assert copy.strategy == "first_fill" and not copy.capped and copy.pending_qty == 0  # v4 columns, v2 row
+    assert {"pos_before", "pos_after", "our_px"} <= {r["name"] for r in raw.execute("PRAGMA table_info(events)")}
     assert store.orders_for_copy(7)[0]["client_id"] == "loco:BTC:1:open"  # orders still point at the copy
     assert store.has_fill(42) and store.events_since(0)[0]["leader"] == "loco"
     assert store.get_state("tracker:loco") == {"BTC": {"position": "0"}} and store.get_state("tracker") is None
@@ -145,8 +147,8 @@ async def test_one_websocket_routes_each_leaders_fills_to_his_lane():
     unknown: list[str] = []
 
     def handler(label):
-        async def h(fill, _is_history):
-            got[label].append(fill.tid)
+        async def h(fills, _is_history):
+            got[label].extend(f.tid for f in fills)
 
         return h
 

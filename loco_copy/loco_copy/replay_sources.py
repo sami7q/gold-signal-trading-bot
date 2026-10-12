@@ -12,18 +12,33 @@ import httpx
 
 from loco_copy.config import Settings
 from loco_copy.models import LeaderFill
-from loco_copy.replay import Candle, CandleSource
+from loco_copy.replay import Candle, CandleSource, TripCandles, episode_ends
 from loco_copy.store import Store
 
 INTERVALS = [("1m", 60_000), ("5m", 300_000), ("15m", 900_000), ("1h", 3_600_000), ("4h", 14_400_000),
              ("1d", 86_400_000)]
 
 
-def db_fills(store: Store) -> list[LeaderFill]:
-    rows = store._db.execute("SELECT * FROM fills ORDER BY time_ms, tid")  # noqa: SLF001 - read-only export
+def db_fills(store: Store, leader: str | None = None) -> list[LeaderFill]:
+    q, args = "SELECT * FROM fills", []
+    if leader is not None:
+        q, args = q + " WHERE leader=?", [leader]
+    rows = store._db.execute(q + " ORDER BY time_ms, tid", args)  # noqa: SLF001 - read-only export
     return [LeaderFill(coin=r["coin"], side=r["side"], px=Decimal(r["px"]), sz=Decimal(r["sz"]),
                        start_position=Decimal(r["start_position"]), time_ms=r["time_ms"], tid=r["tid"], oid=r["oid"],
                        received_at_ms=r["time_ms"]) for r in rows]
+
+
+def hyperliquid_equity_history(settings: Settings, address: str) -> list[tuple[int, Decimal]]:
+    """The leader's allTime accountValueHistory (W(t) for a cap20 replay)."""
+    raw = httpx.post(settings.hl_info_url, json={"type": "portfolio", "user": address}, timeout=30).json()
+    periods = {name: data for name, data in raw} if isinstance(raw, list) else {}
+    return [(int(t), Decimal(str(v))) for t, v in (periods.get("allTime") or {}).get("accountValueHistory") or []]
+
+
+def trip_candles(fills: list[LeaderFill], candles: CandleSource) -> TripCandles:
+    """Candles per leader trade ("coin|t0"), from its open to its end."""
+    return {f"{coin}|{t0}": candles(coin, t0, t1) for (coin, t0), t1 in episode_ends(fills).items()}
 
 
 def pick_interval(start_ms: int, now_ms: int) -> tuple[str, int]:

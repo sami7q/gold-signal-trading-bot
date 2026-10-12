@@ -22,11 +22,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from loco_copy.auth import new_token, token_hash, verify_password
+from loco_copy.cap20 import describe
 from loco_copy.config import DEFAULT_LABEL, Settings, get_settings, with_mode_override
 from loco_copy.constants import CopyStatus, EventType
-from loco_copy.metrics import compute
+from loco_copy.metrics import compute, percentile
 from loco_copy.models import Copy
 from loco_copy.notify import Notifier
+from loco_copy.observe import event_slippage_bps, lane_ledger, observe_stats
 from loco_copy.risk import RiskGuard, release_everything
 from loco_copy.store import Store, lane_key, now_ms
 
@@ -46,6 +48,11 @@ def dec(v: Decimal | None) -> str | None:
     return None if v is None else str(v)
 
 
+def pct(v: Decimal | None, per: int = 1) -> str | None:
+    """A fraction as percent text (divided by `per`, e.g. ROI per leverage); None stays None (= off)."""
+    return None if v is None else str(v / per * 100)
+
+
 def side_label(side: int) -> str:
     return "LONG" if side > 0 else "SHORT"
 
@@ -59,7 +66,13 @@ def copy_dict(c: Copy) -> dict[str, Any]:
         "realized_pnl": dec(c.realized_pnl), "fees": dec(c.fees), "margin": dec(c.margin),
         "opened_at": iso(c.opened_at), "closed_at": iso(c.closed_at), "close_reason": c.close_reason,
         "slippage_bps": dec(c.slippage_bps), "latency_detect_ms": c.latency_detect_ms,
-        "latency_order_ms": c.latency_order_ms, "leader": c.leader,
+        "latency_order_ms": c.latency_order_ms, "leader": c.leader, "strategy": c.strategy,
+        # cap20_cross (botup.md v4 §5 web): R, CAP, used cap %, pending, capped, adds, leader position
+        "virtual": c.status == CopyStatus.OBSERVED_ONLY and c.strategy == "cap20_cross",
+        "ratio_r": dec(c.ratio_r), "cap_notional": dec(c.cap_notional), "cost_notional": dec(c.cost_notional),
+        "cap_used_pct": _pct(c.cost_notional / c.cap_notional, 1) if c.cap_notional else None,
+        "pending_qty": dec(c.pending_qty), "capped": c.capped, "qty_at_cap": dec(c.qty_at_cap),
+        "leader_pos_at_cap": dec(c.leader_pos_at_cap), "adds_done": c.adds_done, "leader_pos": dec(c.leader_pos),
     }
 
 
@@ -70,7 +83,8 @@ def event_dict(e: sqlite3.Row, copy: Copy | None) -> dict[str, Any]:
             "detected_at": iso(e["detected_at_ms"]), "lag_ms": e["detected_at_ms"] - e["leader_time_ms"],
             "decision": e["decision"], "rejection": e["rejection"], "detail": e["detail"],
             "copy_id": copy.id if copy else None, "copy_status": copy.status if copy else None,
-            "leader": e["leader"]}
+            "leader": e["leader"], "pos_before": e["pos_before"], "pos_after": e["pos_after"],
+            "our_px": e["our_px"], "slippage_bps": event_slippage_bps(e)}
 
 
 def fill_new_position(f: sqlite3.Row) -> Decimal:
@@ -386,10 +400,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "realized_pnl": dec(sum((c.realized_pnl for c in closed), Decimal(0))),
             "observed_pnl": dec(sum((c.realized_pnl for c in observed if c.closed_at), Decimal(0))),
             "last_event_at": iso(last_event[0]["detected_at_ms"]) if last_event else None,
-            "strategy": {"risk_per_trade": dec(base.risk_per_trade), "leverage": base.leverage,
-                         "take_profit_move_pct": dec(base.take_profit_roi / base.leverage * 100),
-                         "max_open_positions": base.max_open_positions},
+            "strategy": strategy_card(base),
+            "leader_equity": (store.get_state(lane_key("leader_equity", label)) or {}).get("value"),
+            "virtual_account": lrt.get("virtual_account"),
+            "virtual": lane_ledger(store, label) if base.is_cap20 else None,
         }
+
+    def strategy_card(base: Settings) -> dict[str, Any]:
+        if base.is_cap20:
+            return describe(base) | {"name": "cap20_cross"}
+        return {"name": "first_fill", "risk_per_trade": dec(base.risk_per_trade), "leverage": base.leverage,
+                "take_profit_move_pct": pct(base.take_profit_roi, base.leverage),
+                "max_open_positions": base.max_open_positions}
 
     def positions_view(store: Store, label: str) -> dict[str, Any]:
         snap = store.get_state(lane_key("leader_snapshot", label)) or {}
@@ -448,7 +470,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "last_frame_at": iso(rt.get("last_frame_ms")), "last_snapshot_at": iso(rt.get("last_snapshot_ms")),
                     "snapshot_failures": rt.get("snapshot_failures", 0), "ws_reconnects": rt.get("ws_reconnects", 0)},
             "account": {"broker": eff.broker, "env": eff.broker_env, "equity": lrt.get("equity"),
-                        "available": lrt.get("available")},
+                        "available": lrt.get("available"), "name": lrt.get("account"),
+                        "notional": lrt.get("notional"), "exposure_x": lrt.get("exposure_x"),
+                        "liq_distance": lrt.get("liq_distance"), "account_kill": bool(lrt.get("account_kill"))},
+            "strategy": strategy_card(lanes[focus]),
             "mode": {"mode": mode_label(eff), "live": eff.broker == "bybit" and eff.broker_env == "live"},
             "lanes": [{"label": label, "name": leader_name(label), "mode": mode_label(effective(store, label)),
                        "paused": lane_guard(store, label).paused()} for label in lanes],
@@ -543,6 +568,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "by_close": {st: sum(c.status == st for c in closed) for st in CLOSED_REAL},
                 "metrics": {k: (dec(v) if isinstance(v, Decimal) else v) for k, v in asdict(m).items()}}
 
+    @app.get("/api/virtual")
+    def virtual(_user: UserDep, store: StoreDep, days: int = 28) -> dict[str, Any]:
+        """The v5 trio panel (botup.md §V5.5 / §V5.6): the virtual cross account, its equity curve, each lane's
+        observed trades, latency / slippage of every leader fill, and the go / no-go checks."""
+        now = now_ms()
+        since = now - max(1, min(days, 365)) * DAY_MS
+        rt = store.get_state("runtime") or {}
+        accounts: dict[str, Any] = rt.get("virtual") or {}
+        name = "virtual" if "virtual" in accounts else next((n for n in accounts if n.startswith("virtual")), None)
+        acct = accounts.get(name) if name else None
+        labels = (acct or {}).get("lanes") or [x for x in lanes if lanes[x].is_cap20]
+        st = observe_stats(store, labels, since)
+        curve = [{"t": iso(ts), "equity": dec(eq)} for ts, eq in store.equity_history(name or "virtual", since)]
+        opened = [c for x in labels for c in store.copies(leader=x)
+                  if c.strategy == "cap20_cross" and c.status == CopyStatus.OBSERVED_ONLY]
+        open_now = sorted((c for c in opened if c.closed_at is None), key=lambda c: c.opened_at or 0, reverse=True)
+        recent = [e for e in store.recent_events(limit=400) if e["leader"] in labels][:40]
+        by_episode = {(c.leader, c.coin, c.episode_id): c for c in opened}
+        missed = sum(1 for r in store.logs_since(since)
+                     if r["type"] == "MISSED_EXIT_AUTO_CLOSED" and json.loads(r["payload"]).get("leader") in labels)
+        errors = sum(1 for r in store.logs_since(since, min_level="ERROR")
+                     if json.loads(r["payload"]).get("leader") in (*labels, None))
+        trades = sum(1 for c in opened if (c.opened_at or 0) >= since)
+        p95, slip = st["latency_p95_ms"], st["slippage_median_bps"]
+        checks = [
+            {"key": "missed_exits", "value": missed, "pass": missed == 0},
+            {"key": "latency_p95", "value": p95, "pass": None if p95 is None else p95 <= 10_000},
+            {"key": "median_slippage", "value": slip, "pass": None if slip is None else slip <= 15},
+            {"key": "errors", "value": errors, "pass": errors == 0},
+            {"key": "trades_observed", "value": trades, "pass": trades >= 10},
+            {"key": "replay_match", "value": None, "pass": None},  # weekly offline replay (analysis365.multi)
+        ]
+        ages = [float(now - c.opened_at) for c in opened if c.opened_at]
+        return {
+            "account": acct, "name": name, "days": days, "curve": curve,
+            "lanes": [{"label": x, "name": leader_name(x), "mode": mode_label(effective(store, x)),
+                       "paused": lane_guard(store, x).paused(), "address": lanes[x].leader_address,
+                       "leader_equity": (store.get_state(lane_key("leader_equity", x)) or {}).get("value"),
+                       **lane_ledger(store, x, since), "counts": st["lanes"].get(x, {})} for x in labels],
+            "stats": st | {"oldest_trade_age_ms": max(ages) if ages else None,
+                           "median_trade_age_ms": percentile(ages, 0.5)},
+            "open": [copy_dict(c) for c in open_now],
+            "recent": [event_dict(e, by_episode.get((e["leader"], e["coin"], e["episode_id"]))) for e in recent],
+            "checks": checks,
+        }
+
     @app.get("/api/settings")
     def settings_view(_user: UserDep, store: StoreDep) -> dict[str, Any]:
         base = lanes[default_label]
@@ -554,18 +625,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         for label in lanes],
             "strategy": {"risk_per_trade": dec(base.risk_per_trade), "leverage": base.leverage,
                          "take_profit_roi": dec(base.take_profit_roi),
-                         "take_profit_move_pct": dec(base.take_profit_roi / base.leverage * 100),
+                         "take_profit_move_pct": pct(base.take_profit_roi, base.leverage),
                          "liquidation_move_pct": dec((Decimal(1) / base.leverage - base.maintenance_margin_rate) * 100),
                          "follow_adds": base.follow_adds, "follow_reduces": base.follow_reduces,
                          "max_open_positions": base.max_open_positions,
                          "max_notional_per_coin": dec(base.max_notional_per_coin),
                          "allow_long": base.allow_long, "allow_short": base.allow_short,
                          "coin_allowlist": sorted(base.allowlist), "coin_blocklist": sorted(base.blocklist)},
-            "safety": {"max_entry_drift_pct": dec(base.max_entry_drift * 100),
+            "cap20": strategy_card(base) if base.is_cap20 else None,
+            "lane_strategies": {label: strategy_card(lanes[label]) for label in lanes},
+            "safety": {"max_entry_drift_pct": pct(base.max_entry_drift),
                        "max_signal_age_ms": base.max_signal_age_ms,
                        "max_order_slippage_pct": dec(base.max_order_slippage * 100),
-                       "daily_loss_limit_pct": dec(base.daily_loss_limit_pct * 100),
-                       "leader_dd_breaker_pct": dec(base.leader_dd_breaker_pct * 100),
+                       "daily_loss_limit_pct": pct(base.daily_loss_limit_pct),
+                       "leader_dd_breaker_pct": pct(base.leader_dd_breaker_pct),
                        "missed_exit_seconds": base.missed_exit_seconds},
         }
 

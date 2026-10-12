@@ -113,11 +113,32 @@ function LeaderCard({ leader, live, broker, env }: { leader: LeaderSummary; live
           value={formatUsd(leader.equity)}
           sub={leader.shared_account ? "حساب مشترك مع متداول آخر" : brokerLabel(broker, env)}
         />
-        <Stat label="الهامش لكل صفقة" value={`${formatNumber(Number(st.risk_per_trade) * 100)}%`} sub={`رافعة ${st.leverage}x معزولة`} />
-        <Stat label="هدف الربح" value={`+${formatNumber(st.take_profit_move_pct, 2)}%`} sub={`حتى ${st.max_open_positions} مراكز`} />
+        {st.name === "cap20_cross" ? (
+          <>
+            <Stat
+              label="سقف الهامش لكل صفقة"
+              value={`${formatNumber(st.per_trade_margin_cap_pct, 0)}%`}
+              sub={`هامش مشترك · رافعة ${st.leverage}x · بدون هدف/وقف`}
+            />
+            <Stat
+              label="رصيده المعتمد للحجم"
+              value={formatUsd(leader.leader_equity)}
+              sub={leader.virtual ? `محاكاة: ${leader.virtual.trades} صفقة · ${leader.virtual.adds} تعزيز` : "R = K × رصيدنا ÷ رصيده"}
+            />
+          </>
+        ) : (
+          <>
+            <Stat label="الهامش لكل صفقة" value={`${formatNumber(Number(st.risk_per_trade) * 100)}%`} sub={`رافعة ${st.leverage}x معزولة`} />
+            <Stat
+              label="هدف الربح"
+              value={st.take_profit_move_pct ? `+${formatNumber(st.take_profit_move_pct, 2)}%` : "متوقف"}
+              sub={st.max_open_positions ? `حتى ${st.max_open_positions} مراكز` : undefined}
+            />
+          </>
+        )}
       </div>
 
-      {leader.shared_account ? (
+      {leader.shared_account && st.name !== "cap20_cross" ? (
         <p className="rounded border border-warn/30 bg-warn/5 px-3 py-2 text-xs leading-relaxed text-muted">
           هذا المتداول يتداول على نفس حساب Bybit مع متداول آخر. الحساب يحمل مركزًا واحدًا لكل عملة، فإذا كانت العملة مفتوحة
           للمتداول الآخر تُرفض صفقته عليها. الحل: حساب فرعي في Bybit لكل متداول.

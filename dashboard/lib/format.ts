@@ -141,6 +141,11 @@ const DECISION_AR: Record<string, string> = {
   IGNORED_REDUCE: "تقليص — متجاهل",
   NO_MATCHING_COPY: "لا صفقة مقابلة",
   FAILED: "فشل",
+  ADDED: "تعزيز منسوخ",
+  ADD_PENDING: "تعزيز مؤجَّل (أقل من الحد الأدنى)",
+  ADD_CAPPED: "بلغت السقف — تعزيز متجاهل",
+  REDUCED: "قُلّصت مع المتداول",
+  CLOSED: "أُغلقت مع المتداول",
 };
 
 const EVENT_TYPE_AR: Record<string, string> = {
@@ -175,6 +180,10 @@ const REJECTION_AR: Record<string, string> = {
   INSUFFICIENT_MARGIN: "الرصيد المتاح غير كافٍ",
   NOTIONAL_CAP: "تجاوز حد الحجم",
   QTY_TOO_SMALL: "الكمية أصغر من الحد الأدنى",
+  FEED_OUTAGE: "انقطاع Hyperliquid أكثر من دقيقتين — لا صفقات أو تعزيزات جديدة",
+  EXPOSURE_LIMIT: "بلغ الحجم الكلي حدّه (6 أضعاف الرصيد)",
+  ACCOUNT_KILL: "قاطع الحساب مفعّل: الرصيد نزل تحت 75% من قمته",
+  LEADER_EQUITY_UNKNOWN: "رصيد المتداول غير معروف — لا يمكن حساب الحجم",
 };
 
 const MODE_AR: Record<string, string> = {
@@ -192,7 +201,8 @@ const SEVERITY_AR: Record<string, string> = {
 
 /** What a trade's final state means, in one sentence the owner can act on. */
 const COPY_STATUS_EXPLAIN: Record<string, string> = {
-  OBSERVED_ONLY: "صفقة افتراضية من وضع المحاكاة — لم يُرسل أي أمر للوسيط.",
+  OBSERVED_ONLY:
+    "صفقة افتراضية من وضع المحاكاة — لم يُرسل أي أمر للوسيط. في استراتيجية السقف تُسجَّل على الحساب الافتراضي بسعر Bybit الحي لحظتها.",
   SUBMITTING: "الأمر قيد الإرسال للوسيط.",
   OPEN: "مفتوحة الآن على الوسيط، وتنتظر إغلاق المتداول أو وصول هدف الربح.",
   CLOSED_LEADER: "أغلق المتداول مركزه، فأغلق البوت صفقتنا معه مباشرة.",
@@ -209,6 +219,8 @@ const ORDER_REASON_AR: Record<string, string> = {
   open: "فتح مع المتداول",
   close: "إغلاق مع المتداول",
   reduce: "تقليص مع المتداول",
+  add: "تعزيز مع المتداول",
+  reconcile: "تصحيح الكمية (المطابقة)",
   reconciled: "إغلاق تصحيحي (نظام الحماية)",
   kill: "إيقاف طارئ",
   close_all: "إيقاف + إغلاق الكل",
@@ -231,6 +243,18 @@ const LOG_TYPE_AR: Record<string, string> = {
   COPY_CLOSED_MANUAL: "أُغلقت يدويًا",
   COPY_UNKNOWN: "المركز اختفى بدون سجل",
   CLOSED_PNL_UNAVAILABLE: "تعذّر جلب ربح الإغلاق من الوسيط",
+  CAP20_ORDER_FAILED: "فشل أمر فتح أو تعزيز",
+  EXIT_FAILED: "فشل أمر الخروج",
+  ORDER_REJECTED_RETRY: "رُفض الأمر — أُعيدت المحاولة مرة",
+  RECONCILE_CORRECTED: "صُحّحت الكمية لتطابق المتداول",
+  CROSS_LEVERAGE_FAILED: "تعذّر ضبط الهامش المشترك والرافعة",
+  EXPOSURE_LIMIT: "بلغ الحجم الكلي حدّه",
+  ACCOUNT_KILL_TRIPPED: "قاطع الحساب: الرصيد نزل تحت 75% من قمته",
+  ACCOUNT_LIQUIDATED: "تصفية الحساب (المشترك)",
+  DAILY_SUMMARY: "الملخص اليومي",
+  SKIPPED_PREEXISTING: "حركة على مركز قديم للمتداول — متجاهلة حتى يغلقه",
+  RECONCILE_STALE_SNAPSHOT: "لقطة المتداول قديمة — لا تصحيح للكميات",
+  STRATEGY_WARNING: "إعداد خارج المواصفة",
 };
 
 /** "Loco" -- other leaders have no public name, only the internal label they were given in LEADERS. */
@@ -259,6 +283,14 @@ export const arEventType = (s: string) => EVENT_TYPE_AR[s] ?? s;
 export const arRejection = (s: string) => REJECTION_AR[s] ?? s;
 export const arMode = (s: string) => MODE_AR[s] ?? s;
 export const arSeverity = (s: string) => SEVERITY_AR[s] ?? s;
+/** cap20: the leader's position sizes and our ratio, compact. */
+export function formatRatio(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return n >= 0.01 ? n.toFixed(4) : n.toPrecision(3);
+}
+
 export const arSide = (s: string | null) => (s === "LONG" ? "شراء" : s === "SHORT" ? "بيع" : "—");
 
 export function brokerLabel(broker: string | undefined, env: string | undefined): string {

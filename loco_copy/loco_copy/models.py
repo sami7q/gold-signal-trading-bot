@@ -53,6 +53,16 @@ class LeaderEvent:
     detected_at_ms: int
     tid: int
     fraction: Decimal | None = None  # REDUCE only: share of the leader's position that was closed
+    #: The leader's signed position before / after the fill(s) behind this event (cap20 sizes adds from them).
+    pos_before: Decimal | None = None
+    pos_after: Decimal | None = None
+
+    @property
+    def qty_delta(self) -> Decimal:
+        """How much the leader's position grew in absolute size (ADD / OPEN); 0 if unknown or shrinking."""
+        if self.pos_before is None or self.pos_after is None:
+            return Decimal(0)
+        return max(abs(self.pos_after) - abs(self.pos_before), Decimal(0))
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +86,18 @@ class InstrumentInfo:
 class Account:
     equity: Decimal
     available: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class Quote:
+    """Top of the book: what a market order would pay (ask) or get (bid) right now."""
+
+    bid: Decimal
+    ask: Decimal
+    mark: Decimal
+
+    def price_for(self, side: int) -> Decimal:
+        return self.ask if side > 0 else self.bid
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,3 +171,15 @@ class Copy:
     exit_qty_total: Decimal = field(default=Decimal(0))
     #: Lane label of the leader this copies (botup.md v3).
     leader: str = "loco"
+    #: Which strategy opened it: "first_fill" (v2/v3) or "cap20_cross" (botup.md v4).
+    strategy: str = "first_fill"
+    # -- cap20_cross trade state (botup.md v4 §4): fixed for the trade, or evolving with each fill ------------
+    ratio_r: Decimal | None = None  # R = K x E0 / W0
+    cap_notional: Decimal | None = None  # CAP = cap% x L x E0
+    pending_qty: Decimal = Decimal(0)  # adds below the minimum order, carried to the next add
+    capped: bool = False  # cost reached CAP: further adds ignored, reduces still followed
+    qty_at_cap: Decimal | None = None
+    leader_pos_at_cap: Decimal | None = None
+    adds_done: int = 0
+    cost_notional: Decimal = Decimal(0)  # sum of qty x price of our entries, scaled down by reduces
+    leader_pos: Decimal | None = None  # the leader's |position| after his last fill of this trade

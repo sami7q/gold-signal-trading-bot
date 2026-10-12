@@ -70,6 +70,10 @@ class Reconciler:
     def use_settings(self, settings: Settings) -> None:
         self._s = settings
 
+    async def prefetch(self) -> None:
+        """Network reads done before the app's lock is taken (a copy is never held up by reconciliation)."""
+        return None
+
     async def run_once(self) -> None:
         try:
             account = await self._run(self._broker.account)

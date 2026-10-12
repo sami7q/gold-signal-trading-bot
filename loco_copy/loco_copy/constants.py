@@ -40,6 +40,12 @@ class Decision(StrEnum):
     IGNORED_REDUCE = "IGNORED_REDUCE"  # FOLLOW_REDUCES=false
     NO_MATCHING_COPY = "NO_MATCHING_COPY"
     FAILED = "FAILED"
+    # cap20_cross (botup.md v4 §5)
+    ADDED = "ADDED"  # an add was copied (dq x R)
+    ADD_PENDING = "ADD_PENDING"  # below the minimum order: carried to the next add
+    ADD_CAPPED = "ADD_CAPPED"  # the trade reached its margin cap: adds ignored, reduces still followed
+    REDUCED = "REDUCED"  # the leader's reduce was followed with the same fraction
+    CLOSED = "CLOSED"  # the leader's close / flip was followed: ours closed 100 %
 
 
 class Rejection(StrEnum):
@@ -65,6 +71,14 @@ class Rejection(StrEnum):
     LANE_PAUSED = "LANE_PAUSED"
     #: Lane mode is EXECUTE but ALLOW_EXECUTE__<LABEL> is false: the open is recorded as observed, never sent.
     EXECUTION_NOT_ALLOWED = "EXECUTION_NOT_ALLOWED"
+    #: cap20: no good Hyperliquid contact for FEED_OUTAGE_BLOCK_SECONDS -> no new trades / adds.
+    FEED_OUTAGE = "FEED_OUTAGE"
+    #: cap20: total open notional would exceed MAX_TOTAL_NOTIONAL_X_EQUITY x equity.
+    EXPOSURE_LIMIT = "EXPOSURE_LIMIT"
+    #: v5: the shared account fell below (1 - ACCOUNT_KILL_DD_PCT) x its peak.
+    ACCOUNT_KILL = "ACCOUNT_KILL"
+    #: cap20 needs the leader's equity W0 to size a trade; none fresh enough.
+    LEADER_EQUITY_UNKNOWN = "LEADER_EQUITY_UNKNOWN"
     BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
     MAX_OPEN_POSITIONS = "MAX_OPEN_POSITIONS"
     INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"

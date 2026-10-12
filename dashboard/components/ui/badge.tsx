@@ -48,6 +48,11 @@ const DECISION_TONE: Record<string, Tone> = {
   IGNORED_REDUCE: "neutral",
   NO_MATCHING_COPY: "neutral",
   FAILED: "loss",
+  ADDED: "win",
+  ADD_PENDING: "neutral",
+  ADD_CAPPED: "warn",
+  REDUCED: "gold",
+  CLOSED: "gold",
 };
 
 const SEVERITY_TONE: Record<string, Tone> = { INFO: "neutral", WARNING: "warn", ERROR: "loss", CRITICAL: "loss" };

@@ -1,0 +1,28 @@
+{
+ "source": "hyperliquid_copy_research hl_verify_sim.run(L, 'cross', 0.8, 0.2, fee, start), crypto only",
+ "t0_ms": 1760130000000,
+ "end_ms": 1791644217256,
+ "fee_per_side": 0.00095,
+ "start_equity": 10000.0,
+ "min_order_usdt": 10,
+ "maintenance": "notional / (2 x 10)",
+ "trips": 420,
+ "3x": {
+  "final": 17841,
+  "closed": 416,
+  "win": 0.786,
+  "liq": 0,
+  "fees": 2865,
+  "dd_live": 0.1635,
+  "closest_maint": 6.98
+ },
+ "5x": {
+  "final": 25518,
+  "closed": 416,
+  "win": 0.786,
+  "liq": 0,
+  "fees": 6040,
+  "dd_live": 0.267,
+  "closest_maint": 3.94
+ }
+}
