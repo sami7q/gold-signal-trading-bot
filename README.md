@@ -140,6 +140,6 @@ loco_copy/   separate service: copies a public Hyperliquid wallet's trades (own 
 
 <div align="center">
 
-Built by **Sami Aqeel** · [LinkedIn](https://www.linkedin.com/in/sami-sami-496a33231/) · [GitHub](https://github.com/sami7q) · sami22eng@gmail.com
+Built by **Sami Aqeel** · [LinkedIn](https://www.linkedin.com/in/sami-aqeel/) · [GitHub](https://github.com/sami7q) · sami22eng@gmail.com
 
 </div>
