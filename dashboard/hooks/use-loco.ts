@@ -11,6 +11,9 @@ import type {
   LeaderSummary,
   LocoPositions,
   PortfolioPanel,
+  AdviceAlert,
+  AdviceData,
+  TradeChartData,
   LogEntry,
   Mode,
   Overview,
@@ -94,6 +97,49 @@ export function usePortfolio(days = 28, capital?: number) {
     queryKey: ["portfolio", days, capital ?? null],
     queryFn: () => api.get<PortfolioPanel>(`/api/portfolio?days=${days}${capital ? `&capital=${capital}` : ""}`),
     refetchInterval: 15_000,
+  });
+}
+
+/** botup.md §V7: one trader + coin -- his fills, our orders, our position and its liquidation price. */
+export function useTradeChart(wallet: string | null, coin: string | null, capital?: number, scenario = "real") {
+  return useQuery({
+    queryKey: ["trade-chart", wallet, coin, capital ?? null, scenario],
+    enabled: Boolean(wallet && coin),
+    queryFn: () =>
+      api.get<TradeChartData>(
+        `/api/portfolio/chart?wallet=${encodeURIComponent(wallet ?? "")}&coin=${encodeURIComponent(coin ?? "")}` +
+          `&scenario=${scenario}${capital ? `&capital=${capital}` : ""}`,
+      ),
+    refetchInterval: 10_000,
+  });
+}
+
+/** botup.md §V8: the AI advisor of one open trade (numbers every minute, Claude's analysis when due). */
+export function useAdvice(wallet: string | null, coin: string | null) {
+  return useQuery({
+    queryKey: ["advice", wallet, coin],
+    enabled: Boolean(wallet && coin),
+    queryFn: () =>
+      api.get<AdviceData>(`/api/portfolio/advice?wallet=${encodeURIComponent(wallet ?? "")}&coin=${encodeURIComponent(coin ?? "")}`),
+    refetchInterval: (q) => (q.state.data?.pending ? 4_000 : 20_000),
+  });
+}
+
+/** Exit alerts of every open trade in the last `hours` (badges on the open positions). */
+export function useAdviceAlerts(hours = 24) {
+  return useQuery({
+    queryKey: ["advice-alerts", hours],
+    queryFn: () => api.get<AdviceAlert[]>(`/api/portfolio/alerts?hours=${hours}`),
+    refetchInterval: 30_000,
+  });
+}
+
+/** Ask the bot for a new Claude analysis of this trade now. */
+export function useRefreshAdvice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { wallet: string; coin: string }) => api.post<unknown>("/api/portfolio/advice/refresh", body),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["advice"] }),
   });
 }
 

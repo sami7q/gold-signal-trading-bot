@@ -27,6 +27,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import IO, Any
 
+from loco_copy.advisor import Advisor
 from loco_copy.brokers.base import Broker
 from loco_copy.brokers.bybit import (
     BybitBroker,
@@ -783,6 +784,10 @@ class App:
                       asyncio.create_task(self.daily_loop()), asyncio.create_task(self.prewarm_loop())]
         if pf is not None:
             tasks += pf.tasks()
+            if self.base.advisor_enabled:
+                advisor = Advisor(self.base, self.store, self.n, self.client, pf)
+                self.n.info("ADVISOR_READY", ai=advisor.claude is not None, model=self.base.advisor_model or "auto")
+                tasks.append(asyncio.create_task(advisor.loop()))
         try:
             await asyncio.gather(*tasks)
         finally:

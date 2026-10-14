@@ -268,6 +268,11 @@ class ActiveBody(BaseModel):
     active: bool
 
 
+class AdviceBody(BaseModel):
+    wallet: str
+    coin: str
+
+
 class KillBody(BaseModel):
     close_all: bool = False
 
@@ -704,6 +709,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "by_wallet": by_wallet, "fills_by_wallet": fills_by_wallet, "trades": trades_out, "recent": recent,
             "checks": checks,
         }
+
+    @app.get("/api/portfolio/chart")
+    def portfolio_chart(_user: UserDep, store: StoreDep, wallet: str, coin: str, capital: int | None = None,
+                        scenario: Literal["real", "base"] = "real", days: int = 7) -> dict[str, Any]:
+        """The live trade chart (botup.md §V7): for one trader + coin, every fill of the trader (where he opened,
+        added, reduced, closed) and every order of ours on that ledger (price, size, fee), plus our open position,
+        its average entry and the approximate liquidation price of the account if only this coin moved.
+        Candles are not here: the dashboard reads them from Hyperliquid directly (REST + WebSocket)."""
+        rt = store.get_state("portfolio_runtime") or {}
+        capitals: list[int] = rt.get("capitals") or []
+        if not capitals:
+            return {"enabled": False}
+        cap = capital if capital in capitals else capitals[0]
+        name = f"{scenario}:{cap}"
+        since = now_ms() - max(1, min(days, 90)) * DAY_MS
+        ledger = (rt.get("ledgers") or {}).get(name) or {}
+        pos = next((p for p in ledger.get("positions") or [] if p["wallet"] == wallet and p["coin"] == coin), None)
+        liq = None
+        if pos and ledger.get("equity") is not None:
+            q, m, lev = float(pos["qty"]), float(pos["mark"]), float(pos.get("maxlev") or 10)
+            other_mm = float(ledger.get("maintenance") or 0) - q * m / (2 * lev)
+            eq = float(ledger["equity"])
+            if pos["side"] < 0:  # equity - q (p - m) = other_mm + q p / 2L
+                liq = (eq + q * m - other_mm) / (q * (1 + 1 / (2 * lev)))
+            else:  # equity + q (p - m) = other_mm + q p / 2L
+                liq = (q * m - eq + other_mm) / (q * (1 - 1 / (2 * lev)))
+            liq = liq if liq > 0 else None
+        fills = []
+        for e in store.pf_events_for(wallet, coin, since):
+            s0 = e["start_pos"]
+            s1 = s0 + (e["sz"] if e["side"] == "B" else -e["sz"])
+            kind = ("OPEN" if abs(s0) < 1e-12 else "CLOSE" if abs(s1) < 1e-9 else
+                    "FLIP" if (s0 > 0) != (s1 > 0) else "ADD" if abs(s1) > abs(s0) else "REDUCE")
+            fills.append({"t": e["leader_time_ms"], "side": e["side"], "px": e["px"], "sz": e["sz"], "kind": kind,
+                          "pos_after": s1, "our_action": e["real_action"] if scenario == "real" else e["base_action"]})
+        orders = [{"t": o["ts"], "kind": o["kind"], "qty": o["qty"], "px": o["px"], "notional": o["notional"],
+                   "fee": o["fee"]} for o in store.pf_orders_for(name, wallet, coin, since)]
+        return {"enabled": True, "wallet": wallet, "coin": coin, "capital": cap, "scenario": scenario,
+                "ledger": name, "position": pos, "liq_price": liq, "fills": fills, "orders": orders,
+                "updated_ms": rt.get("updated_ms")}
+
+    @app.get("/api/portfolio/advice")
+    def portfolio_advice(_user: UserDep, store: StoreDep, wallet: str, coin: str) -> dict[str, Any]:
+        """The AI advisor for one open trade (botup.md §V8): the live numbers (probability, risk, market, the
+        trader's record), Claude's latest written analysis of this trade, and its exit alerts."""
+        live_all = store.get_state("advisor_live") or {}
+        live = (live_all.get("trades") or {}).get(f"{wallet}|{coin}")
+        t0 = int(live["t0"]) if live else None
+        row = store.pf_latest_analysis(wallet, coin, with_ai=True)
+        last = store.pf_latest_analysis(wallet, coin)
+        if t0 is not None:
+            row = row if row is not None and row["trade_t0"] == t0 else None
+            last = last if last is not None and last["trade_t0"] == t0 else None
+        alerts = [dict(a) | {"time": iso(a["ts"])} for a in store.pf_alerts_for(wallet, coin, t0 or 0)]
+        req = store.get_state(f"advisor_request:{wallet}|{coin}") or {}
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        return {
+            "enabled": bool(live_all), "ai_enabled": bool(live_all.get("ai_enabled")),
+            "updated_ms": live_all.get("updated_ms"), "live": live,
+            "analysis": None if row is None else {
+                "time": iso(row["ts"]), "kind": row["kind"], "ai": json.loads(row["ai"]),
+                "meta": json.loads(row["meta"] or "{}"), "probability": row["probability"],
+                "risk_score": row["risk_score"]},
+            "last_attempt": None if last is None else {"time": iso(last["ts"]), "kind": last["kind"],
+                                                       "meta": json.loads(last["meta"] or "{}")},
+            "alerts": alerts, "pending": bool(req) and not req.get("done"),
+            "calls_today": store.get_state(f"advisor_calls:{day}") or 0, "max_calls": s.advisor_max_daily_calls,
+        }
+
+    @app.get("/api/portfolio/alerts")
+    def portfolio_alerts(_user: UserDep, store: StoreDep, hours: int = 24) -> list[dict[str, Any]]:
+        since = now_ms() - max(1, min(hours, 24 * 30)) * 3_600_000
+        return [dict(a) | {"time": iso(a["ts"])} for a in store.pf_alerts_since(since)]
+
+    @app.post("/api/portfolio/advice/refresh")
+    def portfolio_advice_refresh(body: AdviceBody, user: UserDep, store: StoreDep) -> dict[str, Any]:
+        """Ask the bot for a new Claude analysis of this trade now (picked up within ~5 s)."""
+        store.set_state(f"advisor_request:{body.wallet}|{body.coin}",
+                        {"at": now_ms(), "done": False, "by": user.get("username")})
+        return {"ok": True}
 
     @app.get("/api/settings")
     def settings_view(_user: UserDep, store: StoreDep) -> dict[str, Any]:

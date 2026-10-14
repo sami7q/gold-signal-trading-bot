@@ -656,3 +656,132 @@ export interface PortfolioPanel {
   recent?: PfEvent[];
   checks?: PfCheck[];
 }
+
+// -- botup.md §V7: the live trade chart (/api/portfolio/chart) ----------------------------------------------
+
+export interface ChartFill {
+  t: number;
+  side: "B" | "A";
+  px: number;
+  sz: number;
+  kind: "OPEN" | "ADD" | "REDUCE" | "CLOSE" | "FLIP";
+  pos_after: number;
+  our_action: string;
+}
+
+export interface ChartOrder {
+  t: number;
+  kind: string;
+  qty: number;
+  px: number;
+  notional: number;
+  fee: number;
+}
+
+export interface TradeChartData {
+  enabled: boolean;
+  wallet?: string;
+  coin?: string;
+  capital?: number;
+  scenario?: string;
+  ledger?: string;
+  position?: PfPosition | null;
+  liq_price?: number | null;
+  fills?: ChartFill[];
+  orders?: ChartOrder[];
+  updated_ms?: number;
+}
+
+// -- botup.md §V8: the AI trade advisor (/api/portfolio/advice, /api/portfolio/alerts) ------------------------
+
+export interface AdviceAlert {
+  id: number;
+  wallet: string;
+  coin: string;
+  trade_t0: number;
+  ts: number;
+  time: string;
+  code: string;
+  severity: "info" | "medium" | "high";
+  text: string;
+  price: number | null;
+  ret: number | null;
+}
+
+export interface TraderStats {
+  trades: number;
+  win_rate: number | null;
+  side_trades: number;
+  side_win_rate: number | null;
+  coin_trades: number;
+  coin_win_rate: number | null;
+  survived_trades: number;
+  survived_win_rate: number | null;
+  hold_p50_h: number | null;
+  hold_p75_h: number | null;
+  hold_p90_h: number | null;
+  win_ret_p50: number | null;
+  win_ret_p75: number | null;
+  loss_ret_p50: number | null;
+  loss_ret_p75: number | null;
+  probability: number;
+  method: string;
+}
+
+export interface MarketState {
+  price: number;
+  ema20: number;
+  ema50: number;
+  rsi14: number;
+  atr14_pct: number;
+  change_24h_pct: number | null;
+  trend: "up" | "down" | "range";
+  high_7d: number;
+  low_7d: number;
+  from_high_7d_pct: number;
+  from_low_7d_pct: number;
+}
+
+export interface AdviceLive {
+  wallet: string;
+  coin: string;
+  side: number;
+  t0: number;
+  age_h: number;
+  position: PfPosition;
+  stats: TraderStats | null;
+  market: MarketState | null;
+  market_at_entry: MarketState | null;
+  ctx: { funding: string | null; openInterest: string | null; dayNtlVlm: string | null } | null;
+  liq_distance: number | null;
+  ret: number;
+  risk_score: number;
+  risk_level: "low" | "medium" | "high";
+  risk_reasons: string[];
+  alerts: { code: string; severity: string; text: string }[];
+  updated_ms: number;
+}
+
+export interface AiAnalysis {
+  entry_reason?: string;
+  thesis?: string;
+  success_comment?: string;
+  risks?: string[];
+  exit_plan?: string;
+  manual_exit_hint?: string;
+  verdict?: "hold" | "watch" | "take_partial" | "exit";
+  confidence?: "low" | "medium" | "high";
+}
+
+export interface AdviceData {
+  enabled: boolean;
+  ai_enabled: boolean;
+  updated_ms: number | null;
+  live: AdviceLive | null;
+  analysis: { time: string; kind: string; ai: AiAnalysis; meta: { model?: string; error?: string }; probability: number | null; risk_score: number | null } | null;
+  last_attempt: { time: string; kind: string; meta: { model?: string; error?: string } } | null;
+  alerts: AdviceAlert[];
+  pending: boolean;
+  calls_today: number;
+  max_calls: number;
+}

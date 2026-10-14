@@ -283,3 +283,28 @@ async def test_every_order_is_logged_with_its_fee(tmp_path):
     assert trade["pnl"] == pytest.approx(-(rows[0]["fee"] + rows[1]["fee"]))  # flat price: the fees are the loss
     logged = [json.loads(r["payload"]) for r in store.logs_since(0) if r["type"] == "PF_ORDER"]
     assert [x["kind"] for x in logged] == ["OPEN", "CLOSE"] and logged[0]["account"] == "real:10000"
+
+
+async def test_chart_endpoint_marks_every_move_and_the_liquidation_price(tmp_path):
+    now = [now_ms() - 60_000]
+    sim, store, _ = make_sim(tmp_path, now)
+    await sim.start()
+    now[0] += 1000
+    sim.on_mids({"mids": {"BTC": "100"}})
+    t = now[0] - 500
+    await sim.on_raw_fills(LOCO, [{**raw(0, "BTC", "A", 100, 1, 0, 1), "time": t},  # opens a short
+                                  {**raw(0, "BTC", "A", 100, 1, -1, 2), "time": t + 1}], False)  # adds
+    await sim.mark_once()
+    store.upsert_user("sami", "Sami", hash_password("correct-horse"))
+    app = create_app(make_settings(tmp_path, api_cookie_secure=False))
+    with TestClient(app, headers={"origin": ORIGIN}) as c:
+        login(c)
+        d = c.get("/api/portfolio/chart?wallet=loco&coin=BTC&capital=10000").json()
+    assert [f["kind"] for f in d["fills"]] == ["OPEN", "ADD"]
+    assert d["orders"][0]["kind"] == "OPEN" and d["orders"][0]["fee"] > 0
+    pos = d["position"]
+    assert pos["side"] == -1 and d["liq_price"] > pos["mark"]  # a short is liquidated above the price
+    # at the liquidation price the account's equity equals its maintenance margin (only BTC held)
+    q, m, lev, eq = pos["qty"], pos["mark"], pos["maxlev"], sim.ledgers["real:10000"].equity()
+    p = d["liq_price"]
+    assert eq - q * (p - m) == pytest.approx(q * p / (2 * lev), rel=1e-9)

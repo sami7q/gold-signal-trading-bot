@@ -2,13 +2,15 @@
 
 import { useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { AlertTriangle, CheckCircle2, CircleDashed, FlaskConical, XCircle } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, CircleDashed, FlaskConical, XCircle } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { StatCard } from "@/components/ui/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { Label, Select } from "@/components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
-import { usePortfolio } from "@/hooks/use-loco";
+import { LiveTradeChart } from "@/components/trade/live-chart";
+import { AiAdvisor } from "@/components/trade/ai-advisor";
+import { useAdviceAlerts, usePortfolio } from "@/hooks/use-loco";
 import {
   cn,
   formatDateTime,
@@ -295,6 +297,17 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
   const graded = d.checks?.filter((c) => c.pass !== null).length ?? 0;
   const stale = fetchedAt - rt.updated_ms > 120_000;
   const trades = d.trades?.[scenario] ?? [];
+  // the live chart: what was clicked, else our first open position, else the coin of our latest order
+  const [picked, setPicked] = useState<{ wallet: string; coin: string } | null>(null);
+  const choices: { wallet: string; coin: string; open: boolean }[] = [];
+  for (const p of l.positions) choices.push({ wallet: p.wallet, coin: p.coin, open: true });
+  for (const o of d.orders?.[scenario] ?? []) {
+    if (!choices.some((c) => c.wallet === o.wallet && c.coin === o.coin)) choices.push({ wallet: o.wallet, coin: o.coin, open: false });
+  }
+  const chartOn = picked ?? (choices[0] ? { wallet: choices[0].wallet, coin: choices[0].coin } : null);
+  const adviceAlerts = useAdviceAlerts(24);
+  const alertsOf = (wallet: string, coin: string, since: number | null) =>
+    (adviceAlerts.data ?? []).filter((a) => a.wallet === wallet && a.coin === coin && (since === null || a.trade_t0 === since));
 
   return (
     <>
@@ -462,6 +475,51 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
       </div>
 
       <Card>
+        <CardHeader
+          title="الشارت الحي"
+          subtitle="شموع Hyperliquid حيّة، وعليها كل دخول وتعزيز وتقليص وإغلاق للمتداول، وأوامرنا بأسعارها — اضغط على أي مركز أو اختر من القائمة"
+          action={
+            choices.length ? (
+              <div className="flex max-w-[560px] flex-wrap justify-end gap-1.5">
+                {choices.slice(0, 12).map((c) => {
+                  const on = chartOn?.wallet === c.wallet && chartOn?.coin === c.coin;
+                  return (
+                    <button
+                      key={`${c.wallet}|${c.coin}`}
+                      type="button"
+                      onClick={() => setPicked({ wallet: c.wallet, coin: c.coin })}
+                      className={cn(
+                        "rounded border px-2 py-1 font-data text-xs",
+                        on ? "border-gold-dim bg-gold/15 text-gold-bright" : "border-border text-muted hover:text-bone",
+                      )}
+                    >
+                      {c.coin} · {c.wallet}
+                      {c.open ? " ●" : ""}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null
+          }
+        />
+        {chartOn ? (
+          <LiveTradeChart key={`${chartOn.wallet}|${chartOn.coin}`} wallet={chartOn.wallet} coin={chartOn.coin} capital={d.capital} scenario={scenario} />
+        ) : (
+          <EmptyState icon={FlaskConical} title="لا صفقات بعد" description="أول ما يفتح أحد الثلاثة صفقة، يظهر شارتها هنا مع نقاط الدخول والتعزيز." />
+        )}
+      </Card>
+
+      {chartOn && l.positions.some((p) => p.wallet === chartOn.wallet && p.coin === chartOn.coin) ? (
+        <Card>
+          <CardHeader
+            title={`تحليل الصفقة بالذكاء الاصطناعي — ${chartOn.coin} · ${chartOn.wallet}`}
+            subtitle="سبب الدخول المرجّح، احتمال النجاح من سجل المتداول، أين الخطورة، ومتى تفكّر بالخروج يدويًا — يتحدّث كل دقيقة"
+          />
+          <AiAdvisor key={`${chartOn.wallet}|${chartOn.coin}`} wallet={chartOn.wallet} coin={chartOn.coin} />
+        </Card>
+      ) : null}
+
+      <Card>
         <CardHeader title={`المراكز المفتوحة — ${SCENARIO_AR[scenario]}`} subtitle="حصة كل متداول مستقلة؛ نفس العملة من متداولَين تظهر في سطرين" />
         {!l.positions.length ? (
           <EmptyState icon={FlaskConical} title="لا مراكز مفتوحة الآن" />
@@ -485,9 +543,23 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
               </thead>
               <tbody className="font-data whitespace-nowrap">
                 {l.positions.map((p) => (
-                  <tr key={`${p.wallet}|${p.coin}`} className="border-b border-border-soft/60">
+                  <tr
+                    key={`${p.wallet}|${p.coin}`}
+                    onClick={() => setPicked({ wallet: p.wallet, coin: p.coin })}
+                    className={cn(
+                      "cursor-pointer border-b border-border-soft/60 hover:bg-white/[0.03]",
+                      chartOn?.wallet === p.wallet && chartOn?.coin === p.coin && "bg-gold/5",
+                    )}
+                  >
                     <td className="px-3 py-2 font-sans"><WalletBadge wallet={p.wallet} /></td>
-                    <td className="px-3 py-2 text-bone">{p.coin}</td>
+                    <td className="px-3 py-2 text-bone">
+                      {p.coin}
+                      {(() => {
+                        const n = alertsOf(p.wallet, p.coin, p.opened_ms);
+                        const top = n.some((a) => a.severity === "high") ? "loss" : n.some((a) => a.severity === "medium") ? "warn" : "info";
+                        return n.length ? <Badge tone={top} className="ms-2"><Bell className="h-3 w-3" strokeWidth={2} /> {n.length}</Badge> : null;
+                      })()}
+                    </td>
                     <td className="px-3 py-2"><Side side={p.side} /></td>
                     <td className="px-3 py-2 text-right text-bone">{formatUsd(p.notional)}</td>
                     <td className="px-3 py-2 text-right text-muted">{formatPrice(p.entry)}</td>

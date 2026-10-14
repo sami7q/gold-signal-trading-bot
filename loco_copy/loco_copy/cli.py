@@ -388,6 +388,14 @@ def _replay_cap20(s: Settings, a: argparse.Namespace) -> None:
 def cmd_set_key(s: Settings, a: argparse.Namespace) -> None:
     import keyring  # noqa: PLC0415
 
+    if a.target == "anthropic":  # botup.md §V8: the AI advisor's Claude API key
+        key = getpass.getpass("Anthropic API key (hidden): ").strip()
+        if not key:
+            raise SystemExit("Nothing stored (empty input).")
+        keyring.set_password("loco-copy-anthropic", "api_key", key)
+        print("Stored in the OS keyring under 'loco-copy-anthropic'. Restart the bot to use it.")
+        return
+
     env = a.target.removeprefix("bybit-")
     label = lane_label(s, a.leader) if a.leader else DEFAULT_LABEL
     service = f"loco-copy-bybit-{env}" if label == DEFAULT_LABEL else f"loco-copy-bybit-{env}-{label}"
@@ -483,8 +491,8 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--leverage", type=int, default=None, help="cap20: 3 or 5 (default: LEVERAGE)")
     rp.add_argument("--equity", default="10000", help="cap20: start equity")
     rp.set_defaults(fn=cmd_replay)
-    sk = sub.add_parser("set-key", help="store Bybit API key/secret in the OS keyring")
-    sk.add_argument("target", choices=["bybit-demo", "bybit-live"])
+    sk = sub.add_parser("set-key", help="store an API key in the OS keyring (Bybit, or Anthropic for the AI advisor)")
+    sk.add_argument("target", choices=["bybit-demo", "bybit-live", "anthropic"])
     sk.add_argument("--leader", default=None, help="keys of that leader's own Bybit (sub-)account")
     sk.set_defaults(fn=cmd_set_key)
     sub.add_parser("api", help="start the dashboard API (localhost only, behind the tunnel)").set_defaults(fn=cmd_api)

@@ -44,7 +44,8 @@ GLOBAL_ONLY = frozenset({
     "portfolio_enabled", "portfolio_wallets", "portfolio_leverage", "portfolio_start_equities", "portfolio_cap_pct",
     "portfolio_fee_base", "portfolio_slippage", "portfolio_min_order_usd", "portfolio_max_total_x",
     "portfolio_dd_pause_pct", "portfolio_dd_pause_days", "portfolio_copy_hip3", "portfolio_stale_seconds",
-    "portfolio_poll_seconds", "portfolio_expected",
+    "portfolio_poll_seconds", "portfolio_expected", "advisor_enabled", "advisor_model", "advisor_refresh_hours",
+    "advisor_max_daily_calls",
 })
 
 
@@ -163,6 +164,15 @@ class Settings(BaseSettings):
     #: reference lines on the dashboard chart, label:yearly growth;label:growth (botup.md §V5.0 / §V5.4: realistic year
     #: $10k -> $316,355 = x31.6; Monte Carlo with half the leaders' edge: $64,341 = x6.4)
     portfolio_expected: str = "الاختبار الواقعي لسنة (+3064%):30.64;متحفظ — نصف أفضلية المتداولين (+543%):5.43"
+
+    # -- AI trade advisor (botup.md §V8): numbers for every open simulator trade + Claude's written analysis.
+    #    The Anthropic key lives in the OS keyring (`loco-copy set-key anthropic`), never here.
+    advisor_enabled: bool = True
+    #: empty = the newest Sonnet model the key can use (asked from the Anthropic API at the first analysis)
+    advisor_model: str = ""
+    advisor_refresh_hours: float = Field(default=4, gt=0)
+    #: cost guard: at most this many Claude analyses per UTC day (each ~2-4k tokens)
+    advisor_max_daily_calls: int = Field(default=40, ge=0)
 
     broker: Literal["paper", "bybit"] = "paper"
     broker_env: Literal["demo", "live"] = "demo"

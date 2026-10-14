@@ -110,6 +110,17 @@ CREATE TABLE IF NOT EXISTS pf_orders (
     fee REAL NOT NULL, ts INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_pf_orders_ledger ON pf_orders(ledger, ts);
+CREATE TABLE IF NOT EXISTS pf_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, wallet TEXT NOT NULL, coin TEXT NOT NULL, trade_t0 INTEGER NOT NULL,
+    ts INTEGER NOT NULL, code TEXT NOT NULL, severity TEXT NOT NULL, text TEXT NOT NULL, price REAL, ret REAL
+);
+CREATE INDEX IF NOT EXISTS ix_pf_alerts_trade ON pf_alerts(wallet, coin, ts);
+CREATE TABLE IF NOT EXISTS pf_analysis (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, wallet TEXT NOT NULL, coin TEXT NOT NULL, trade_t0 INTEGER NOT NULL,
+    ts INTEGER NOT NULL, kind TEXT NOT NULL, probability REAL, risk_score REAL, snapshot TEXT NOT NULL, ai TEXT,
+    meta TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_pf_analysis_trade ON pf_analysis(wallet, coin, ts);
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
@@ -500,6 +511,41 @@ class Store:
     def pf_orders_since(self, since_ms: int, *, ledger: str, limit: int = 200) -> list[sqlite3.Row]:
         return list(self._db.execute("SELECT * FROM pf_orders WHERE ledger = ? AND ts >= ? ORDER BY id DESC LIMIT ?",
                                      (ledger, since_ms, limit)))
+
+    def pf_events_for(self, wallet: str, coin: str, since_ms: int, limit: int = 2000) -> list[sqlite3.Row]:
+        return list(self._db.execute(
+            "SELECT * FROM pf_events WHERE wallet = ? AND coin = ? AND leader_time_ms >= ? ORDER BY leader_time_ms, id "
+            "LIMIT ?", (wallet, coin, since_ms, limit)))
+
+    def pf_orders_for(self, ledger: str, wallet: str, coin: str, since_ms: int) -> list[sqlite3.Row]:
+        return list(self._db.execute(
+            "SELECT * FROM pf_orders WHERE ledger = ? AND wallet = ? AND coin = ? AND ts >= ? ORDER BY ts, id",
+            (ledger, wallet, coin, since_ms)))
+
+    def pf_insert_alert(self, row: dict[str, Any]) -> None:
+        cols = ("wallet", "coin", "trade_t0", "ts", "code", "severity", "text", "price", "ret")
+        with self.tx() as db:
+            db.execute(f"INSERT INTO pf_alerts ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                       tuple(row.get(c) for c in cols))
+
+    def pf_alerts_for(self, wallet: str, coin: str, since_ms: int, limit: int = 50) -> list[sqlite3.Row]:
+        return list(self._db.execute(
+            "SELECT * FROM pf_alerts WHERE wallet = ? AND coin = ? AND ts >= ? ORDER BY id DESC LIMIT ?",
+            (wallet, coin, since_ms, limit)))
+
+    def pf_alerts_since(self, since_ms: int, limit: int = 100) -> list[sqlite3.Row]:
+        return list(self._db.execute("SELECT * FROM pf_alerts WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+                                     (since_ms, limit)))
+
+    def pf_insert_analysis(self, row: dict[str, Any]) -> None:
+        cols = ("wallet", "coin", "trade_t0", "ts", "kind", "probability", "risk_score", "snapshot", "ai", "meta")
+        with self.tx() as db:
+            db.execute(f"INSERT INTO pf_analysis ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                       tuple(row.get(c) for c in cols))
+
+    def pf_latest_analysis(self, wallet: str, coin: str, *, with_ai: bool = False) -> sqlite3.Row | None:
+        q = "SELECT * FROM pf_analysis WHERE wallet = ? AND coin = ?" + (" AND ai IS NOT NULL" if with_ai else "")
+        return self._db.execute(q + " ORDER BY id DESC LIMIT 1", (wallet, coin)).fetchone()
 
     def pf_trades_since(self, since_ms: int, *, ledger: str | None = None) -> list[sqlite3.Row]:
         q = "SELECT * FROM pf_trades WHERE closed_ms >= ?"
