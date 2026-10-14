@@ -18,11 +18,17 @@ Inputs (all public Hyperliquid data, no keys):
       after two snapshots agree the wallet is flat (never on one snapshot, never while a fill is in flight).
 State: `state['portfolio:state']` (both ledgers + feed position), tables `pf_seen` / `pf_events` / `pf_trades`,
 equity history under `portfolio:<scenario>:<capital>`, dashboard view in `state['portfolio_runtime']`.
+
+Groups (botup.md §V10): next to the trio, PORTFOLIO_GROUPS adds more sections -- e.g. 8bae + 8fc7 + 69b0 + 2ac4 --
+each with its own ledgers "<group>:<scenario>:<capital>" (the trio keeps its v2 names) fed by the SAME wallet fills.
+A group copies only trades that start after the group itself started (the ledger's WAIT rule does the rest), so a
+group added today never inherits a trade the trio already holds.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,14 +47,26 @@ from loco_copy.tracker import aggregate_burst, chain_order
 #: v2 (2026-10-14): wallets 8bae + 8fc7 + 69b0 and three capitals -- the v1 state (Loco trio, $10k) is left unused
 STATE_KEY = "portfolio:state:v2"
 RUNTIME_KEY = "portfolio_runtime"
-MARK_SECONDS = 10
+#: botup.md §V11 (real-time): marks every second on the live `bbo` prices (in memory); the dashboard view is
+#: written every RUNTIME_SECONDS and the full state every STATE_SECONDS (and after every fill, as before)
+MARK_SECONDS = 1.0
+RUNTIME_SECONDS = 2.0
+STATE_SECONDS = 15.0
+REST_MIDS_SECONDS = 10.0
 EQUITY_HISTORY_SECONDS = 300
 SNAPSHOT_SECONDS = 60
 #: a mid older than this is not used as our price (the wallet's own price is, and the fill is flagged)
 MID_MAX_AGE_MS = 15_000
+#: best bid / ask younger than this is our price in the real scenario (buy at the ask, sell at the bid)
+BBO_MAX_AGE_MS = 3_000
+#: always priced live (bbo), next to the coins we hold and the coins our wallets traded lately
+HOT_COINS = ("BTC", "ETH", "SOL", "HYPE")
+HOT_DAYS = 30
 #: the wallet's equity W may be this old before a new trade of that wallet is skipped
 WALLET_EQUITY_MAX_AGE_MS = 6 * 3_600_000
 SCENARIOS = ("base", "real")
+TRIO = "trio"
+GROUP_TITLES = {TRIO: "الثلاثي"}
 
 
 def _now() -> int:
@@ -91,7 +109,40 @@ def parse_any_perp_fill(raw: dict[str, Any], received_at_ms: int, *, hip3: bool)
     return LeaderFill(coin=coin, side=side, px=Decimal(str(raw["px"])), sz=Decimal(str(raw["sz"])),
                       start_position=Decimal(str(raw.get("startPosition") or "0")), time_ms=int(raw["time"]),
                       tid=int(raw["tid"]), oid=int(raw["oid"]) if raw.get("oid") is not None else None,
-                      received_at_ms=received_at_ms)
+                      received_at_ms=int(raw.get("_recv") or received_at_ms))
+
+
+@dataclass(frozen=True, slots=True)
+class Group:
+    name: str
+    labels: tuple[str, ...]
+    research_year: float | None = None  # realistic research year multiple (hunt2)
+    research_half: float | None = None  # Monte Carlo median with half the traders' edge
+
+    @property
+    def title(self) -> str:
+        return GROUP_TITLES.get(self.name) or " + ".join(self.labels)
+
+
+def parse_groups(raw: str) -> list[Group]:
+    """`PORTFOLIO_GROUPS=mix2ac4=8bae+8fc7+69b0+2ac4:29.01:5.79;...` -- name=labels[:year[:half]]."""
+    out = []
+    for part in (p.strip() for p in raw.split(";") if p.strip()):
+        name, eq, rest = part.partition("=")
+        name = name.strip().lower()
+        bits = rest.split(":")
+        labels = tuple(x.strip().lower() for x in bits[0].split("+") if x.strip())
+        if not eq or not re_group_name(name) or name == TRIO or not labels or len(set(labels)) != len(labels):
+            raise ValueError(f"PORTFOLIO_GROUPS: {part!r} must be name=label+label[:year:half] (name a-z0-9, not trio)")
+        nums = [float(x) for x in bits[1:3] if x.strip()]
+        out.append(Group(name, labels, nums[0] if nums else None, nums[1] if len(nums) > 1 else None))
+    if len({g.name for g in out}) != len(out):
+        raise ValueError("PORTFOLIO_GROUPS: names must be unique")
+    return out
+
+
+def re_group_name(name: str) -> bool:
+    return 2 <= len(name) <= 16 and name.isascii() and name.isalnum() and name == name.lower()
 
 
 def parse_capitals(raw: str) -> list[int]:
@@ -102,8 +153,9 @@ def parse_capitals(raw: str) -> list[int]:
     return out
 
 
-def ledger_name(scenario: str, capital: int) -> str:
-    return f"{scenario}:{capital}"
+def ledger_name(scenario: str, capital: int, group: str = TRIO) -> str:
+    """The trio keeps its v2 names ("real:10000"); a group's are "<group>:real:10000"."""
+    return f"{scenario}:{capital}" if group == TRIO else f"{group}:{scenario}:{capital}"
 
 
 def dex_of(coin: str) -> str:
@@ -119,10 +171,35 @@ class PortfolioSim:
         self.n = notifier
         self.client = client
         self.clock = clock
-        self.wallets = parse_wallets(s.portfolio_wallets)
+        trio = parse_wallets(s.portfolio_wallets)
+        extra = parse_wallets(s.portfolio_extra_wallets) if s.portfolio_extra_wallets.strip() else []
+        groups = parse_groups(s.portfolio_groups)
+        known = {w.label: w for w in trio}
+        for w in extra:
+            if w.label in known or w.address in {x.address for x in known.values()}:
+                raise ValueError(f"PORTFOLIO_EXTRA_WALLETS: {w.label} is already a simulator wallet")
+            known[w.label] = w
+        for g in groups:
+            missing = [x for x in g.labels if x not in known]
+            if missing:
+                raise ValueError(f"PORTFOLIO_GROUPS: {g.name} uses {missing} -- not in PORTFOLIO_WALLETS / "
+                                 "PORTFOLIO_EXTRA_WALLETS")
+        ty = [float(x) for x in s.portfolio_trio_research.split(":") if x.strip()]
+        self.groups: list[Group] = [Group(TRIO, tuple(w.label for w in trio), ty[0] if ty else None,
+                                          ty[1] if len(ty) > 1 else None), *groups]
+        used = {x for g in self.groups for x in g.labels}
+        self.wallets = [w for w in known.values() if w.label in used]
         self.by_address = {w.address: w for w in self.wallets}
+        self.group_started: dict[str, int] = {}
+        #: a wallet removed from the config while a group still holds its trades -> those groups (exits only)
+        self.exits_only: dict[str, set[str]] = {}
         self.maxlev_map: dict[str, float] = {}
         self.mids: dict[str, tuple[float, int]] = {}  # coin -> (mid, when)
+        self.bbo: dict[str, tuple[float, float, int]] = {}  # coin -> (bid, ask, when) -- the live book top
+        self.traded: dict[str, int] = {}  # coin -> last time one of our wallets traded it (bbo watch list)
+        self._last_runtime = 0
+        self._last_state = 0
+        self._last_rest_mids = 0
         self.dexes: list[str] = [""]  # "" = main dex; HIP-3 dex names added from perpDexs
         self.wallet_equity: dict[str, tuple[float, int]] = {}  # address -> (value, when)
         self.last_seen: dict[str, int] = {}  # address -> newest fill time processed
@@ -132,11 +209,13 @@ class PortfolioSim:
         self.started_ms = 0
         self.capitals = parse_capitals(s.portfolio_start_equities)
         self.ledgers: dict[str, Ledger] = {}
-        for cap in self.capitals:  # "base:10000", "real:10000", "base:50000", ...
-            self.ledgers[ledger_name("base", cap)] = self._ledger(ledger_name("base", cap), cap,
-                                                                  float(s.portfolio_fee_base))
-            self.ledgers[ledger_name("real", cap)] = self._ledger(ledger_name("real", cap), cap,
-                                                                  float(s.portfolio_fee_base + s.portfolio_slippage))
+        self.ledger_group: dict[str, Group] = {}
+        for g in self.groups:
+            for cap in self.capitals:  # "base:10000", "real:10000", ..., "mix2ac4:base:10000", ...
+                for sc, fee in (("base", s.portfolio_fee_base), ("real", s.portfolio_fee_base + s.portfolio_slippage)):
+                    name = ledger_name(sc, cap, g.name)
+                    self.ledgers[name] = self._ledger(name, cap, float(fee))
+                    self.ledger_group[name] = g
         self.backfill_wanted = asyncio.Event()
         self._last_history = 0
         self._snap_turn = 0
@@ -157,6 +236,15 @@ class PortfolioSim:
     def addresses(self) -> list[str]:
         return [w.address for w in self.wallets]
 
+    def groups_of(self, label: str) -> list[Group]:
+        extra = self.exits_only.get(label, set())
+        return [g for g in self.groups if label in g.labels or g.name in extra]
+
+    def wallet_since(self, label: str) -> int:
+        """The oldest fill time any group of this wallet still copies (a group starts with its own start)."""
+        starts = [self.group_started.get(g.name, self.started_ms) for g in self.groups_of(label)]
+        return min(starts) if starts else self.started_ms
+
     # -- persistence ----------------------------------------------------------------------------------------
 
     def restore(self) -> bool:
@@ -168,6 +256,7 @@ class PortfolioSim:
                 ledger.load(saved["ledgers"][name])
         self.last_seen = {k: int(v) for k, v in saved.get("last_seen", {}).items()}
         self.started_ms = int(saved.get("started_ms", 0))
+        self.group_started = {k: int(v) for k, v in saved.get("group_started", {}).items()}
         self.wallet_equity = {k: (float(v[0]), int(v[1])) for k, v in saved.get("wallet_equity", {}).items()}
         # A wallet taken out of PORTFOLIO_WALLETS while we still hold its trades (spec §8): followed for its exits
         # only -- weight 0 means any new trade of it gets a zero cap and never trades.
@@ -180,12 +269,16 @@ class PortfolioSim:
                 self.by_address[w.address] = w
                 self.n.warning("PF_WALLET_EXITS_ONLY", wallet=w.label, note="removed from PORTFOLIO_WALLETS: "
                                "its open trades are followed to their exits, no new trades")
+            for name, x in self.ledgers.items():  # also a wallet that left one group but stays in another
+                if old["label"] not in self.ledger_group[name].labels and \
+                        any(split_key(k)[0] == old["label"] for k in (*x.P, *x.T)):
+                    self.exits_only.setdefault(old["label"], set()).add(self.ledger_group[name].name)
         return True
 
     def save(self) -> None:
         self.store.set_state(STATE_KEY, {
             "ledgers": {name: x.to_dict() for name, x in self.ledgers.items()}, "last_seen": self.last_seen,
-            "started_ms": self.started_ms, "wallet_equity": self.wallet_equity,
+            "started_ms": self.started_ms, "group_started": self.group_started, "wallet_equity": self.wallet_equity,
             "wallets": [{"label": w.label, "address": w.address, "weight": w.weight} for w in self.wallets]})
         for ledger in self.ledgers.values():
             if ledger.closed:
@@ -219,14 +312,21 @@ class PortfolioSim:
         now = self.clock()
         if not restored or not self.started_ms:
             self.started_ms = now
-            for ledger in self.ledgers.values():
-                ledger.started_ms = now
+        self.group_started.setdefault(TRIO, self.started_ms)
+        for g in self.groups:  # a group added later starts now: only trades opened from now on
+            self.group_started.setdefault(g.name, now)
+        for name, ledger in self.ledgers.items():
+            if not ledger.started_ms:
+                ledger.started_ms = self.group_started[self.ledger_group[name].name]
         for w in self.wallets:
             self.last_seen.setdefault(w.address, now)  # a wallet added later starts from now
         await self.load_markets()
+        for e in self.store.pf_events_since(now - HOT_DAYS * DAY_MS, limit=5000):  # the bbo watch list
+            self.traded[e["coin"]] = max(self.traded.get(e["coin"], 0), int(e["leader_time_ms"]))
         for w in self.wallets:
             await self.refresh_equity(w)
         self.n.info("PF_STARTED", restored=restored, wallets={w.label: w.weight for w in self.wallets},
+                    groups={g.name: "+".join(g.labels) for g in self.groups}, group_started=self.group_started,
                     dexes=self.dexes, started_ms=self.started_ms,
                     equity={n: round(x.equity(), 2) for n, x in self.ledgers.items()})
         await self.backfill_all()
@@ -247,27 +347,37 @@ class PortfolioSim:
         async with self.lock:
             since = self.last_seen.get(address, self.started_ms)
             new = [f for f in fills if f.time_ms >= since - 60_000 and self.store.pf_mark_seen(w.label, f)]
-            new = [f for f in new if f.time_ms >= self.started_ms]
+            new = [f for f in new if f.time_ms >= self.wallet_since(w.label)]
             if not new:
                 return
             for f in aggregate_burst(chain_order(new)):
                 self.process(w, f)
             self.last_seen[address] = max(self.last_seen.get(address, 0), *(f.time_ms for f in new))
             self.save()
+            self.write_runtime()  # the dashboard sees the new order at once, not at the next mark
+            self._last_runtime = self.clock()
 
     def log_orders(self, ledger: Ledger) -> None:
-        """Every simulated order of the smallest real account also goes to the bot log (dashboard «السجلات»):
-        which trader, coin, what we did, size, price and the fee taken off it."""
-        if ledger.name != ledger_name("real", self.capitals[0]):
+        """Every simulated order of each section's smallest real account also goes to the bot log (dashboard
+        «السجلات»): which section, trader, coin, what we did, size, price and the fee taken off it."""
+        g = self.ledger_group[ledger.name]
+        if ledger.name != ledger_name("real", self.capitals[0], g.name):
             return
         for o in ledger.orders:
-            self.n.info("PF_ORDER", account=ledger.name, wallet=o["wallet"], coin=o["coin"], kind=o["kind"],
+            self.n.info("PF_ORDER", account=ledger.name, group=g.name, wallet=o["wallet"], coin=o["coin"],
+                        kind=o["kind"],
                         side="BUY" if o["qty"] > 0 else "SELL", qty=round(abs(o["qty"]), 8), px=o["px"],
                         notional=round(o["notional"], 2), fee=round(o["fee"], 4),
                         equity=round(ledger.equity(), 2))
 
     def our_price(self, f: LeaderFill) -> tuple[float, bool]:
-        """(the price the real ledger gets, whether it is the live mid)."""
+        """(the price the real ledger gets, whether it is live): the book top when we have it fresh -- a buy pays
+        the ask, a sell gets the bid, as a market order would -- else the mid, else the wallet's own price."""
+        book = self.bbo.get(f.coin)
+        if book is not None and abs(f.received_at_ms - book[2]) <= BBO_MAX_AGE_MS:
+            px = book[1] if f.side == "B" else book[0]
+            if px > 0:
+                return px, True
         mid = self.mids.get(f.coin)
         if mid is not None and f.received_at_ms - mid[1] <= MID_MAX_AGE_MS:
             return mid[0], True
@@ -284,24 +394,38 @@ class PortfolioSim:
         real_px, live = self.our_price(f)
         s0, d = float(f.start_position), float(f.signed_sz)
         out: dict[str, Outcome] = {}
+        mine = [g for g in self.groups_of(w.label) if f.time_ms >= self.group_started.get(g.name, self.started_ms)]
+        if not mine:
+            return out
+        names = {g.name for g in mine}
         for name, ledger in self.ledgers.items():
-            if name.startswith("base:"):
+            if self.ledger_group[name].name not in names:
+                continue
+            if name.startswith("base:") or ":base:" in name:
                 out[name] = ledger.on_fill(w.label, w.weight, f.coin, s0, d, px, f.time_ms, wallet_eq)
             else:
                 out[name] = ledger.on_fill(w.label, w.weight, f.coin, s0, d, real_px, f.time_ms, wallet_eq,
                                            allow_new=not stale)
         first = self.capitals[0]
-        out["base"], out["real"] = out[ledger_name("base", first)], out[ledger_name("real", first)]
+        actions = {}
+        for g in mine:
+            b, r = out[ledger_name("base", first, g.name)], out[ledger_name("real", first, g.name)]
+            actions[g.name] = [b.action, b.qty, r.action, r.qty]
+        lead = mine[0]  # the trio when the wallet is one of the trio: the event's own columns stay the trio's
+        out["base"] = out[ledger_name("base", first, lead.name)]
+        out["real"] = out[ledger_name("real", first, lead.name)]
+        lead_real = self.ledgers[ledger_name("real", first, lead.name)]
         self.last_fill_at[f"{w.label}|{f.coin}"] = self.clock()
+        self.traded[f.coin] = max(self.traded.get(f.coin, 0), f.time_ms)
         self.store.pf_insert_event({
             "wallet": w.label, "tid": f.tid, "coin": f.coin, "side": f.side, "px": px, "sz": float(f.sz),
             "start_pos": s0, "leader_time_ms": f.time_ms, "detected_at_ms": f.received_at_ms,
             "real_px": real_px if live else None, "base_action": out["base"].action, "base_qty": out["base"].qty,
-            "real_action": out["real"].action, "real_qty": out["real"].qty})
+            "real_action": out["real"].action, "real_qty": out["real"].qty, "actions": json.dumps(actions)})
         if out["real"].action in ("OPEN", "CLOSE", "FLIP") or out["base"].action in ("OPEN", "CLOSE", "FLIP"):
             self.n.info("PF_FILL", wallet=w.label, coin=f.coin, base=out["base"].action, real=out["real"].action,
                         px=px, real_px=real_px, lag_ms=lag, wallet_equity=round(wallet_eq),
-                        equity_real=round(self.ledgers[ledger_name("real", first)].equity(), 2))
+                        group=lead.name, equity_real=round(lead_real.equity(), 2))
         if stale and out["real"].action == "SKIP_STALE":
             self.n.warning("PF_STALE_FILL", wallet=w.label, coin=f.coin, lag_s=lag // 1000)
         return out
@@ -322,11 +446,33 @@ class PortfolioSim:
 
     # -- prices ---------------------------------------------------------------------------------------------
 
+    def on_bbo(self, data: dict[str, Any]) -> None:
+        """A WS `bbo` frame: {coin, time, bbo: [bid level | null, ask level | null]}. Its mid also marks the coin."""
+        coin = str(data.get("coin") or "")
+        levels = data.get("bbo") or []
+        try:
+            bid = float(levels[0]["px"]) if len(levels) > 0 and levels[0] else 0.0
+            ask = float(levels[1]["px"]) if len(levels) > 1 and levels[1] else 0.0
+        except (KeyError, TypeError, ValueError):
+            return
+        if not coin or bid <= 0 or ask <= 0:
+            return
+        now = self.clock()
+        self.bbo[coin] = (bid, ask, now)
+        self.mids[coin] = ((bid + ask) / 2, now)
+
+    def bbo_coins(self) -> set[str]:
+        """What the feed keeps a live book top for: held coins, coins our wallets traded in HOT_DAYS, HOT_COINS
+        (the main dex ones only when HIP-3 copying is off)."""
+        since = self.clock() - HOT_DAYS * DAY_MS
+        coins = self.held_coins() | {c for c, t in self.traded.items() if t >= since} | set(HOT_COINS)
+        return {c for c in coins if self.s.portfolio_copy_hip3 or ":" not in c}
+
     def on_mids(self, data: dict[str, Any]) -> None:
-        """A WS `allMids` frame (main dex or one HIP-3 dex)."""
+        """A WS `allMids` frame (main dex or one HIP-3 dex) -- every ~5 s; a fresher bbo mid is kept."""
         now = self.clock()
         for coin, v in (data.get("mids") or {}).items():
-            if coin and coin[0] not in "@#":
+            if coin and coin[0] not in "@#" and now - self.bbo.get(coin, (0.0, 0.0, 0))[2] > BBO_MAX_AGE_MS:
                 try:
                     self.mids[coin] = (float(v), now)
                 except (TypeError, ValueError):
@@ -354,29 +500,41 @@ class PortfolioSim:
         while True:
             await asyncio.sleep(MARK_SECONDS)
             try:
-                await self.mark_once()
+                await self.mark_once(force=False)
             except Exception as exc:  # noqa: BLE001 - never stop marking
                 self.n.warning("PF_MARK_FAILED", error=f"{type(exc).__name__}: {exc}")
 
-    async def mark_once(self) -> None:
+    async def mark_once(self, *, force: bool = True) -> None:
+        """Marks every ledger on the freshest prices (liquidation and drawdown pause included). The loop calls it
+        every second with force=False: the dashboard view is then written every RUNTIME_SECONDS and the state every
+        STATE_SECONDS (a liquidation or a new pause is saved at once); force=True (tests, start-up) writes both."""
         held = self.held_coins()
         prices = self.fresh_prices()
-        if held - set(prices):
+        now = self.clock()
+        if held - set(prices) and (force or now - self._last_rest_mids >= REST_MIDS_SECONDS * 1000):
+            self._last_rest_mids = now
             await self.rest_mids(held - set(prices))
             prices = self.fresh_prices()
         now = self.clock()
         async with self.lock:
+            urgent = False
             for name, ledger in self.ledgers.items():
                 was_paused = ledger.paused(now)
                 liquidated = ledger.mark({c: prices[c] for c in held if c in prices}, now)
                 if liquidated:
+                    urgent = True
                     self.n.critical("PF_LIQUIDATED", ledger=name, positions=liquidated,
                                     equity=round(ledger.equity(), 2))
                 if ledger.paused(now) and not was_paused:
+                    urgent = True
                     self.n.warning("PF_DD_PAUSE", ledger=name, equity=round(ledger.equity(), 2),
                                    until=datetime.fromtimestamp(ledger.paused_until / 1000, UTC).isoformat())
-            self.save()
-            self.write_runtime()
+            if force or urgent or now - self._last_state >= STATE_SECONDS * 1000:
+                self._last_state = now
+                self.save()
+            if force or urgent or now - self._last_runtime >= RUNTIME_SECONDS * 1000:
+                self._last_runtime = now
+                self.write_runtime()
         if now - self._last_history >= EQUITY_HISTORY_SECONDS * 1000:
             self._last_history = now
             for name, ledger in self.ledgers.items():
@@ -483,22 +641,28 @@ class PortfolioSim:
 
     def daily_line(self) -> str:
         now = self.clock()
-        days = (now - self.started_ms) / DAY_MS
-        parts = [f"Trio sim (Hyperliquid) day {days:.0f}"]
-        for cap in self.capitals:
-            b, r = self.ledgers[ledger_name("base", cap)], self.ledgers[ledger_name("real", cap)]
-            parts.append(f"${cap:,}: real ${r.equity():,.0f} ({(r.equity() / r.start_equity - 1) * 100:+.2f}%, "
-                         f"max DD {r.mdd * 100:.1f}%) base ${b.equity():,.0f} "
-                         f"({(b.equity() / b.start_equity - 1) * 100:+.2f}%)")
-        r0 = self.ledgers[ledger_name("real", self.capitals[0])]
-        trades = self.store.pf_trades_since(now - DAY_MS, ledger=r0.name)
-        parts.append(f"closed today {len(trades)} | open {len(r0.P)}")
-        return " | ".join(parts)
+        lines = []
+        for g in self.groups:
+            days = (now - self.group_started.get(g.name, self.started_ms)) / DAY_MS
+            parts = [f"{'Trio' if g.name == TRIO else g.name} sim ({'+'.join(g.labels)}) day {days:.0f}"]
+            for cap in self.capitals:
+                b, r = self.ledgers[ledger_name("base", cap, g.name)], self.ledgers[ledger_name("real", cap, g.name)]
+                parts.append(f"${cap:,}: real ${r.equity():,.0f} ({(r.equity() / r.start_equity - 1) * 100:+.2f}%, "
+                             f"max DD {r.mdd * 100:.1f}%) base ${b.equity():,.0f} "
+                             f"({(b.equity() / b.start_equity - 1) * 100:+.2f}%)")
+            r0 = self.ledgers[ledger_name("real", self.capitals[0], g.name)]
+            trades = self.store.pf_trades_since(now - DAY_MS, ledger=r0.name)
+            parts.append(f"closed today {len(trades)} | open {len(r0.P)}")
+            lines.append(" | ".join(parts))
+        return "\n".join(lines)
 
     def write_runtime(self) -> None:
         now = self.clock()
         self.store.set_state(RUNTIME_KEY, {
             "updated_ms": now, "started_ms": self.started_ms, "enabled": True, "capitals": self.capitals,
+            "groups": [{"name": g.name, "title": g.title, "labels": list(g.labels),
+                        "started_ms": self.group_started.get(g.name, self.started_ms),
+                        "research_year": g.research_year, "research_half": g.research_half} for g in self.groups],
             "wallets": [{"label": w.label, "address": w.address, "weight": w.weight,
                          "equity": self.wallet_equity.get(w.address, (None, None))[0],
                          "equity_at_ms": self.wallet_equity.get(w.address, (None, None))[1],

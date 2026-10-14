@@ -33,6 +33,8 @@ def make_settings(tmp: Path, **overrides: Any) -> Settings:
     # allow_execute: the execution gate is open in the harness; tests of the gate close it explicitly
     base: dict[str, Any] = dict(copy_enabled=True, copy_observe_only=False, allow_execute=True, data_dir=tmp,
                                 _env_file=None)
+    if "portfolio_wallets" in overrides:  # custom simulator wallets: the default extra groups do not apply
+        base.setdefault("portfolio_groups", "")
     base.update(overrides)
     return Settings(**base)
 

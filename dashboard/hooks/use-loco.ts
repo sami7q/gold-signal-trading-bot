@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { livePoll } from "@/lib/live";
 import type {
   Analytics,
   CopyDetail,
@@ -10,7 +11,9 @@ import type {
   LeaderEvent,
   LeaderSummary,
   LocoPositions,
+  PortfolioCompare,
   PortfolioPanel,
+  ResearchData,
   AdviceAlert,
   AdviceData,
   TradeChartData,
@@ -87,30 +90,42 @@ export function useAnalytics(days: number, leader?: string) {
   return useQuery({
     queryKey: ["analytics", days, leader ?? "ALL"],
     queryFn: () => api.get<Analytics>(`/api/analytics?${qs}`),
-    refetchInterval: 30_000,
+    refetchInterval: livePoll(30_000),
   });
 }
 
 /** botup.md §V6: the «new trio» portfolio simulator (both scenarios, Hyperliquid prices). */
-export function usePortfolio(days = 28, capital?: number) {
+export function usePortfolio(days = 28, capital?: number, group = "trio") {
   return useQuery({
-    queryKey: ["portfolio", days, capital ?? null],
-    queryFn: () => api.get<PortfolioPanel>(`/api/portfolio?days=${days}${capital ? `&capital=${capital}` : ""}`),
-    refetchInterval: 15_000,
+    queryKey: ["portfolio", group, days, capital ?? null],
+    queryFn: () =>
+      api.get<PortfolioPanel>(
+        `/api/portfolio?days=${days}&group=${encodeURIComponent(group)}${capital ? `&capital=${capital}` : ""}`,
+      ),
+    refetchInterval: livePoll(15_000),
+  });
+}
+
+/** botup.md §V10: every simulator section side by side. */
+export function usePortfolioCompare(capital?: number) {
+  return useQuery({
+    queryKey: ["portfolio-compare", capital ?? null],
+    queryFn: () => api.get<PortfolioCompare>(`/api/portfolio/compare${capital ? `?capital=${capital}` : ""}`),
+    refetchInterval: livePoll(30_000),
   });
 }
 
 /** botup.md §V7: one trader + coin -- his fills, our orders, our position and its liquidation price. */
-export function useTradeChart(wallet: string | null, coin: string | null, capital?: number, scenario = "real") {
+export function useTradeChart(wallet: string | null, coin: string | null, capital?: number, scenario = "real", group = "trio") {
   return useQuery({
-    queryKey: ["trade-chart", wallet, coin, capital ?? null, scenario],
+    queryKey: ["trade-chart", group, wallet, coin, capital ?? null, scenario],
     enabled: Boolean(wallet && coin),
     queryFn: () =>
       api.get<TradeChartData>(
         `/api/portfolio/chart?wallet=${encodeURIComponent(wallet ?? "")}&coin=${encodeURIComponent(coin ?? "")}` +
-          `&scenario=${scenario}${capital ? `&capital=${capital}` : ""}`,
+          `&scenario=${scenario}&group=${encodeURIComponent(group)}${capital ? `&capital=${capital}` : ""}`,
       ),
-    refetchInterval: 10_000,
+    refetchInterval: livePoll(10_000),
   });
 }
 
@@ -121,7 +136,7 @@ export function useAdvice(wallet: string | null, coin: string | null) {
     enabled: Boolean(wallet && coin),
     queryFn: () =>
       api.get<AdviceData>(`/api/portfolio/advice?wallet=${encodeURIComponent(wallet ?? "")}&coin=${encodeURIComponent(coin ?? "")}`),
-    refetchInterval: (q) => (q.state.data?.pending ? 4_000 : 20_000),
+    refetchInterval: (q) => (q.state.data?.pending ? 4_000 : livePoll(20_000)()),
   });
 }
 
@@ -130,7 +145,7 @@ export function useAdviceAlerts(hours = 24) {
   return useQuery({
     queryKey: ["advice-alerts", hours],
     queryFn: () => api.get<AdviceAlert[]>(`/api/portfolio/alerts?hours=${hours}`),
-    refetchInterval: 30_000,
+    refetchInterval: livePoll(30_000),
   });
 }
 
@@ -143,12 +158,17 @@ export function useRefreshAdvice() {
   });
 }
 
+/** botup.md §V9: the research export (top 10 wallets, mixes, reports). */
+export function useResearch() {
+  return useQuery({ queryKey: ["research"], queryFn: () => api.get<ResearchData>("/api/research"), staleTime: 60_000 });
+}
+
 /** The v5 trio panel: the virtual cross account and the observe-phase numbers. */
 export function useVirtual(days = 28) {
   return useQuery({
     queryKey: ["virtual", days],
     queryFn: () => api.get<VirtualPanel>(`/api/virtual?days=${days}`),
-    refetchInterval: 15_000,
+    refetchInterval: livePoll(15_000),
   });
 }
 

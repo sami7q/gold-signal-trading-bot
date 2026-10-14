@@ -121,11 +121,13 @@ export function LiveTradeChart({
   coin,
   capital,
   scenario,
+  group = "trio",
 }: {
   wallet: string;
   coin: string;
   capital?: number;
   scenario: "real" | "base";
+  group?: string;
 }) {
   const [interval, setInterval_] = useState<IntervalKey>("1h");
   const ms = INTERVALS.find((x) => x.key === interval)!.ms;
@@ -136,7 +138,7 @@ export function LiveTradeChart({
   const linesRef = useRef<IPriceLine[]>([]);
   const [status, setStatus] = useState<"loading" | "live" | "empty" | "error">("loading");
   const [last, setLast] = useState<number | null>(null);
-  const q = useTradeChart(wallet, coin, capital, scenario);
+  const q = useTradeChart(wallet, coin, capital, scenario, group);
   const data = q.data;
 
   // the chart + candles: rebuilt when the coin or the interval changes

@@ -27,6 +27,11 @@ LOCO_ADDRESS = "0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1"
 DEFAULT_PORTFOLIO_WALLETS = ("8bae:0x8bae3527e5a33fa0cf184f37bc112d071463ab6d:1,"
                              "8fc7:0x8fc7c0442e582bca195978c5a4fdec2e7c5bb0f7:1,"
                              "69b0:0x69b05701f8175c276ecd0138387a197948e240bb:1")
+#: botup.md §V10: wallets that only the extra simulator groups copy (the research section's best mixes)
+DEFAULT_PORTFOLIO_EXTRA_WALLETS = ("2ac4:0x2ac4880624dae9e823874d65e43bfeba97fc61b5:1,"
+                                   "2396:0x2396bc99feedc162af809314257571bb7ff07a36:1")
+#: name=label+label+...:realistic year multiple:half-edge multiple (Monte Carlo median) -- research_2026-10-14
+DEFAULT_PORTFOLIO_GROUPS = "mix2ac4=8bae+8fc7+69b0+2ac4:29.01:5.79;mix2396=8bae+8fc7+69b0+2396:29.24:5.69"
 #: The v2 single leader. Its lane keeps every v2 name: state keys, `loco:` client ids, keyring service.
 DEFAULT_LABEL = "loco"
 LABEL_RE = re.compile(r"^[a-z0-9]{2,12}$")
@@ -44,7 +49,8 @@ GLOBAL_ONLY = frozenset({
     "portfolio_enabled", "portfolio_wallets", "portfolio_leverage", "portfolio_start_equities", "portfolio_cap_pct",
     "portfolio_fee_base", "portfolio_slippage", "portfolio_min_order_usd", "portfolio_max_total_x",
     "portfolio_dd_pause_pct", "portfolio_dd_pause_days", "portfolio_copy_hip3", "portfolio_stale_seconds",
-    "portfolio_poll_seconds", "portfolio_expected", "advisor_enabled", "advisor_model", "advisor_refresh_hours",
+    "portfolio_poll_seconds", "portfolio_expected", "portfolio_extra_wallets", "portfolio_groups",
+    "portfolio_trio_research", "advisor_enabled", "advisor_model", "advisor_refresh_hours",
     "advisor_max_daily_calls",
 })
 
@@ -164,6 +170,12 @@ class Settings(BaseSettings):
     #: reference lines on the dashboard chart, label:yearly growth;label:growth (botup.md §V5.0 / §V5.4: realistic year
     #: $10k -> $316,355 = x31.6; Monte Carlo with half the leaders' edge: $64,341 = x6.4)
     portfolio_expected: str = "الاختبار الواقعي لسنة (+3064%):30.64;متحفظ — نصف أفضلية المتداولين (+543%):5.43"
+    #: botup.md §V10 -- more simulator sections next to the trio, on the same fills (only new trades, as the trio).
+    #: Each group gets its own base / real ledgers for every PORTFOLIO_START_EQUITIES balance. Empty = trio only.
+    portfolio_extra_wallets: str = DEFAULT_PORTFOLIO_EXTRA_WALLETS
+    portfolio_groups: str = DEFAULT_PORTFOLIO_GROUPS
+    #: the trio on the same research basis as the groups (hunt2, $50k cap per trade): realistic year:half edge
+    portfolio_trio_research: str = "24.45:5.33"
 
     # -- AI trade advisor (botup.md §V8): numbers for every open simulator trade + Claude's written analysis.
     #    The Anthropic key lives in the OS keyring (`loco-copy set-key anthropic`), never here.

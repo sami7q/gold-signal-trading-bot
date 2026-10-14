@@ -1,7 +1,11 @@
 """The copied leaders' trades from Hyperliquid (botup.md §5.1, v3 §5.4). Public API, no keys.
 
-- One WebSocket, `userFills` for every leader. Pings every 30 s (the pong counts as a frame for the latency breaker).
-  Reconnects with backoff 1 s -> 30 s cap; after every (re)connect the REST backfill fills any gap.
+- One WebSocket, `userFills` for every leader. Pings every 10 s (the pong counts as a frame for the latency breaker).
+  A socket that goes silent for WS_SILENCE_SECONDS is dropped at once (a half-open TCP connection would otherwise
+  hang for minutes); reconnects with backoff 0.5 s -> 15 s cap; after every (re)connect the REST backfill fills any
+  gap. (botup.md §V11: real-time.)
+- `bbo` (best bid / offer, pushed every ~0.1 s) for the coins the simulator wants priced live -- `allMids` is
+  pushed only every ~5 s. The set is re-synced every BBO_SYNC_SECONDS on the open socket (subscribe / unsubscribe).
 - The first WS frame (`isSnapshot: true`) is history: the app stores it and only processes fills newer than
   what it has already seen.
 - `clearinghouseState` snapshots are the safety net for the tracker (and the leader breaker).
@@ -31,6 +35,11 @@ FrameHandler = Callable[[], None]
 RawFillHandler = Callable[[str, list[dict[str, Any]], bool], Awaitable[None]]
 
 WEIGHT_BUDGET_PER_MIN = 900
+PING_SECONDS = 10
+WS_SILENCE_SECONDS = 25.0
+BBO_SYNC_SECONDS = 2.0
+#: Hyperliquid allows 1000 subscriptions per IP; the bbo set is capped well below it
+MAX_BBO = 120
 
 
 def now_ms() -> int:
@@ -150,12 +159,17 @@ class HyperliquidFeed:
                  on_error: Callable[[str], None] | None = None,
                  on_unknown_user: Callable[[str], None] | None = None,
                  raw_users: dict[str, RawFillHandler] | None = None, mid_dexes: list[str] | None = None,
-                 on_mids: Callable[[dict[str, Any]], None] | None = None) -> None:
+                 on_mids: Callable[[dict[str, Any]], None] | None = None,
+                 on_bbo: Callable[[dict[str, Any]], None] | None = None,
+                 bbo_coins: Callable[[], set[str]] | None = None) -> None:
         self._ws_url = ws_url
         self._handlers = {address.lower(): handler for address, handler in users.items()}
         self._raw = {address.lower(): handler for address, handler in (raw_users or {}).items()}
         self._mid_dexes = list(mid_dexes or [])  # "" = main dex
         self._on_mids = on_mids
+        self._on_bbo = on_bbo
+        self._bbo_coins = bbo_coins
+        self._bbo_subscribed: set[str] = set()
         self._client = client
         self._on_frame = on_frame
         self._last_seen = last_seen_ms
@@ -210,11 +224,12 @@ class HyperliquidFeed:
 
     async def run(self) -> None:
         self._start_workers()
-        backoff = 1.0
+        backoff = 0.5
         while True:
             try:
-                async with websockets.connect(self._ws_url, ping_interval=None, close_timeout=5,
+                async with websockets.connect(self._ws_url, ping_interval=None, close_timeout=2, open_timeout=10,
                                               max_size=50 * 1024 * 1024) as ws:
+                    self._bbo_subscribed = set()
                     for user in dict.fromkeys([*self._handlers, *self._raw]):
                         await ws.send(json.dumps({"method": "subscribe",
                                                   "subscription": {"type": "userFills", "user": user}}))
@@ -224,15 +239,21 @@ class HyperliquidFeed:
                     self.connected = True
                     if self._on_connected:
                         self._on_connected()
+                    await self.sync_bbo(ws)
                     await self._backfill()
-                    backoff = 1.0
-                    pinger = asyncio.create_task(self._ping(ws))
+                    backoff = 0.5
+                    helpers = [asyncio.create_task(self._ping(ws)), asyncio.create_task(self._bbo_loop(ws))]
                     try:
-                        async for message in ws:
+                        while True:
+                            try:  # a silent socket is a dead socket: drop it now, not after the TCP timeout
+                                message = await asyncio.wait_for(ws.recv(), timeout=WS_SILENCE_SECONDS)
+                            except TimeoutError:
+                                raise ConnectionError(f"no frame for {WS_SILENCE_SECONDS:.0f} s") from None
                             self._on_frame()
                             await self._dispatch(message)
                     finally:
-                        pinger.cancel()
+                        for h in helpers:
+                            h.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - any failure -> reconnect with backoff
@@ -241,12 +262,28 @@ class HyperliquidFeed:
             self.connected = False
             self.reconnects += 1
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30.0)
+            backoff = min(backoff * 2, 15.0)
 
     async def _ping(self, ws: Any) -> None:
         while True:
-            await asyncio.sleep(20)  # well inside the 60 s latency breaker, and Hyperliquid's 60 s idle timeout
+            await asyncio.sleep(PING_SECONDS)  # the pong keeps a quiet socket inside WS_SILENCE_SECONDS
             await ws.send(json.dumps({"method": "ping"}))
+
+    async def sync_bbo(self, ws: Any) -> None:
+        """Subscribe the coins the simulator wants priced live, unsubscribe the ones it no longer needs."""
+        if self._bbo_coins is None:
+            return
+        wanted = set(sorted(self._bbo_coins())[:MAX_BBO])
+        for coin in sorted(wanted - self._bbo_subscribed):
+            await ws.send(json.dumps({"method": "subscribe", "subscription": {"type": "bbo", "coin": coin}}))
+        for coin in sorted(self._bbo_subscribed - wanted):
+            await ws.send(json.dumps({"method": "unsubscribe", "subscription": {"type": "bbo", "coin": coin}}))
+        self._bbo_subscribed = wanted
+
+    async def _bbo_loop(self, ws: Any) -> None:
+        while True:
+            await asyncio.sleep(BBO_SYNC_SECONDS)
+            await self.sync_bbo(ws)
 
     async def _backfill(self) -> None:
         """Per leader, from the last fill that leader's lane saw."""
@@ -259,8 +296,13 @@ class HyperliquidFeed:
                 await self._deliver(user, handler, fills, False)  # same queue: never interleaved with live frames
 
     async def _dispatch(self, message: str | bytes) -> None:
+        received = now_ms()  # stamped on arrival: queueing behind another wallet's fill does not count as our lag
         msg = json.loads(message)
         channel = msg.get("channel")
+        if channel == "bbo":
+            if self._on_bbo:
+                self._on_bbo(msg.get("data") or {})
+            return
         if channel == "allMids":
             if self._on_mids:
                 self._on_mids(msg.get("data") or {})
@@ -272,7 +314,7 @@ class HyperliquidFeed:
         raw_queue = self._raw_queues.get(user)
         raw_handler = self._raw.get(user)
         if raw_handler is not None:
-            raws = list(data.get("fills", []) or [])
+            raws = [{**x, "_recv": received} for x in data.get("fills", []) or []]
             if raws:
                 if raw_queue is None:
                     await raw_handler(user, raws, bool(data.get("isSnapshot")))
@@ -288,7 +330,6 @@ class HyperliquidFeed:
                 self._on_unknown_user(user or "?")
             return
         is_history = bool(data.get("isSnapshot"))
-        received = now_ms()
         fills = [f for f in (parse_fill(x, received) for x in data.get("fills", []) or []) if f is not None]
         if fills:
             await self._deliver(user, handler, chain_order(fills), is_history)

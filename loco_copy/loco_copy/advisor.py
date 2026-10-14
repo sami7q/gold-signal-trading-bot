@@ -393,10 +393,16 @@ class Advisor:
     # -- one trade -----------------------------------------------------------------------------------------
 
     def open_trades(self) -> list[dict[str, Any]]:
-        """Our open trades on the smallest real account (the advice does not depend on the account size)."""
-        name = ledger_name("real", self.sim.capitals[0])
-        ledger = self.sim.ledgers[name]
-        return [p for p in ledger.positions() if p.get("opened_ms")]
+        """Our open trades on the smallest real account of every simulator section (the advice does not depend
+        on the account size). A trade held by several sections (8bae in the trio and in a mix) is analysed once:
+        the first section that holds it (the trio before the mixes) gives its numbers (§V10)."""
+        out: dict[str, dict[str, Any]] = {}
+        for g in self.sim.groups:
+            name = ledger_name("real", self.sim.capitals[0], g.name)
+            for p in self.sim.ledgers[name].positions():
+                if p.get("opened_ms") and f"{p['wallet']}|{p['coin']}" not in out:
+                    out[f"{p['wallet']}|{p['coin']}"] = p | {"ledger": name}
+        return list(out.values())
 
     async def snapshot(self, pos: dict[str, Any]) -> dict[str, Any]:
         wallet = next(w for w in self.sim.wallets if w.label == pos["wallet"])
@@ -407,7 +413,7 @@ class Advisor:
         stats = trader_stats(trips, coin=pos["coin"], side=pos["side"], age_ms=age) if trips else None
         mkt = indicators(rows)
         at_entry = indicators([k for k in rows if int(k["t"]) <= int(pos["opened_ms"])])
-        ledger = self.sim.ledgers[ledger_name("real", self.sim.capitals[0])]
+        ledger = self.sim.ledgers[pos.get("ledger") or ledger_name("real", self.sim.capitals[0])]
         recent = self.store.pf_events_for(pos["wallet"], pos["coin"], now - HOUR_MS)
         reducing = any(abs(e["start_pos"] + (e["sz"] if e["side"] == "B" else -e["sz"])) < abs(e["start_pos"])
                        for e in recent)

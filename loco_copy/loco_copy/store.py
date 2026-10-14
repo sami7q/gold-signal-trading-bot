@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS pf_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, wallet TEXT NOT NULL, tid INTEGER NOT NULL, coin TEXT NOT NULL,
     side TEXT NOT NULL, px REAL NOT NULL, sz REAL NOT NULL, start_pos REAL NOT NULL, leader_time_ms INTEGER NOT NULL,
     detected_at_ms INTEGER NOT NULL, real_px REAL, base_action TEXT NOT NULL, base_qty REAL NOT NULL,
-    real_action TEXT NOT NULL, real_qty REAL NOT NULL
+    real_action TEXT NOT NULL, real_qty REAL NOT NULL, actions TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_pf_events_detected ON pf_events(detected_at_ms);
 CREATE TABLE IF NOT EXISTS pf_trades (
@@ -173,6 +173,13 @@ class Store:
             if version != SCHEMA_VERSION:
                 raise RuntimeError(f"database schema v{version} != code v{SCHEMA_VERSION}")
         self._db.execute("CREATE INDEX IF NOT EXISTS ix_events_leader ON events(leader, detected_at_ms)")
+        # botup.md §V10 (additive, no version bump): what every simulator group did with a wallet fill, as JSON
+        if "actions" not in {r["name"] for r in self._db.execute("PRAGMA table_info(pf_events)")}:
+            try:
+                self._db.execute("ALTER TABLE pf_events ADD COLUMN actions TEXT")
+            except sqlite3.OperationalError as exc:  # the other process (bot / API) added it first
+                if "duplicate column" not in str(exc):
+                    raise
         self._db.commit()
 
     def _migrate_to_v4(self) -> None:
@@ -490,7 +497,7 @@ class Store:
 
     def pf_insert_event(self, row: dict[str, Any]) -> None:
         cols = ("wallet", "tid", "coin", "side", "px", "sz", "start_pos", "leader_time_ms", "detected_at_ms",
-                "real_px", "base_action", "base_qty", "real_action", "real_qty")
+                "real_px", "base_action", "base_qty", "real_action", "real_qty", "actions")
         with self.tx() as db:
             db.execute(f"INSERT INTO pf_events ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
                        tuple(row.get(c) for c in cols))

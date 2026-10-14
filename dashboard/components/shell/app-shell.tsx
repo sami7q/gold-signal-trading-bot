@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
+import { connectLive } from "@/lib/live";
 import { Menu } from "lucide-react";
 import { Sidebar } from "@/components/shell/sidebar";
 import { StatusStrip } from "@/components/shell/status-strip";
@@ -13,6 +15,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // /login renders its own centered, chrome-free layout.
   const isLoginPage = pathname === "/login";
+  const queryClient = useQueryClient();
+
+  // botup.md §V11: one live stream to the bot while signed in -- pages refetch the moment something changes.
+  useEffect(() => {
+    if (isLoginPage) return;
+    return connectLive(queryClient);
+  }, [isLoginPage, queryClient]);
 
   // Lock background scroll while the mobile drawer is open, and let Escape close it.
   useEffect(() => {

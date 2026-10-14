@@ -410,6 +410,24 @@ def cmd_set_key(s: Settings, a: argparse.Namespace) -> None:
         print(f"Leader {label} now trades on its own account (restart the bot to use it).")
 
 
+def cmd_research_import(s: Settings, a: argparse.Namespace) -> None:
+    """botup.md §V9: copy the research project's export into data/research (latest + a dated copy) for the dashboard."""
+    import json  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    src = Path(a.file)
+    data = json.loads(src.read_text(encoding="utf-8"))  # refuse a broken file before replacing the current one
+    if "top10" not in data or "mixes" not in data:
+        raise SystemExit(f"{src} is not a research export (no top10 / mixes)")
+    dst = s.data_dir / "research"
+    dst.mkdir(parents=True, exist_ok=True)
+    day = str(data.get("generated", ""))[:10] or "undated"
+    shutil.copyfile(src, dst / f"research_{day}.json")
+    shutil.copyfile(src, dst / "latest.json")
+    print(f"Imported: {len(data['top10'])} wallets, {len(data['mixes'])} mixes, generated {data.get('generated')}.")
+
+
 def cmd_api(s: Settings, _a: argparse.Namespace) -> None:
     from loco_copy.web import serve  # noqa: PLC0415
 
@@ -496,6 +514,9 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("--leader", default=None, help="keys of that leader's own Bybit (sub-)account")
     sk.set_defaults(fn=cmd_set_key)
     sub.add_parser("api", help="start the dashboard API (localhost only, behind the tunnel)").set_defaults(fn=cmd_api)
+    ri = sub.add_parser("research-import", help="load the research export (research_latest.json) into the dashboard")
+    ri.add_argument("file")
+    ri.set_defaults(fn=cmd_research_import)
     au = sub.add_parser("add-user", help="create or reset a dashboard login")
     au.add_argument("username")
     au.add_argument("--display-name", default=None)

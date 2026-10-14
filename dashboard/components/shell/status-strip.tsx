@@ -3,6 +3,7 @@
 import { arMode, brokerLabel, cn, formatRelativeTime, formatUsd } from "@/lib/format";
 import type { Mode } from "@/types/api";
 import { useOverview } from "@/hooks/use-loco";
+import { useLiveStatus } from "@/hooks/use-live";
 
 function Dot({ tone, pulse }: { tone: "win" | "loss" | "muted" | "gold"; pulse?: boolean }) {
   const color =
@@ -25,8 +26,11 @@ function StripItem({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
+const LIVE_AR = { live: "لحظي", connecting: "يتصل…", offline: "تحديث كل 5 ث", off: "—" } as const;
+
 export function StatusStrip() {
   const { data, isError } = useOverview();
+  const live = useLiveStatus();
 
   if (isError || !data) {
     return (
@@ -53,6 +57,13 @@ export function StatusStrip() {
           <Dot tone={feedOk ? "win" : "loss"} pulse={feedOk} />
         </span>
         {feedOk ? "متصل لحظيًا" : "منقطع"}
+      </StripItem>
+
+      <StripItem label="اللوحة">
+        <span title="botup §V11: بث مباشر من البوت — الصفحات تتحدث لحظة وصول أي حركة">
+          <Dot tone={live === "live" ? "win" : live === "connecting" ? "gold" : "muted"} pulse={live === "live"} />
+        </span>
+        {LIVE_AR[live]}
       </StripItem>
 
       <StripItem label="الوسيط">

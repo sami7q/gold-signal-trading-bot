@@ -6,6 +6,7 @@ Listens on 127.0.0.1 only; the Cloudflare tunnel is the only way in. Logins are 
 (HttpOnly + Secure + SameSite=None, because the dashboard on Vercel is a different site).
 """
 
+import asyncio
 import json
 import sqlite3
 import time
@@ -18,7 +19,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from loco_copy.auth import new_token, token_hash, verify_password
@@ -215,6 +216,48 @@ def copy_detail_dict(store: Store, s: Settings, c: Copy) -> dict[str, Any]:
             "leader": {"open": open_order, "exit": exit_order, "exit_captured": exit_captured,
                        "exit_time": iso(exit_fill["time_ms"]) if exit_fill is not None else None},
             "orders": [order_dict(o) for o in orders], "timeline": timeline}
+
+
+def pf_groups(rt: dict[str, Any]) -> list[dict[str, Any]]:
+    """The simulator sections of the runtime (botup.md §V10); a runtime written before §V10 is the trio alone."""
+    groups = rt.get("groups")
+    if groups:
+        return list(groups)
+    return [{"name": "trio", "title": "الثلاثي", "labels": [w["label"] for w in rt.get("wallets") or []],
+             "started_ms": rt.get("started_ms"), "research_year": None, "research_half": None}]
+
+
+def pf_ledger_name(scenario: str, capital: int, group: str) -> str:
+    return f"{scenario}:{capital}" if group == "trio" else f"{group}:{scenario}:{capital}"
+
+
+def pf_actions(e: sqlite3.Row, group: str) -> tuple[str, float, str, float] | None:
+    """What one section did with a wallet fill: (base action, base qty, real action, real qty), or None when that
+    section did not see the fill (wallet not in it, or before it started). Rows older than §V10 are the trio's."""
+    raw = e["actions"]
+    if raw:
+        a = json.loads(raw).get(group)
+        return (str(a[0]), float(a[1]), str(a[2]), float(a[3])) if a else None
+    if group == "trio":
+        return e["base_action"], e["base_qty"], e["real_action"], e["real_qty"]
+    return None
+
+
+LIVE_POLL_SECONDS = 0.5
+LIVE_HEARTBEAT_SECONDS = 15.0
+LIVE_AUTH_SECONDS = 60.0
+
+
+def live_snapshot(store: Store) -> dict[str, Any]:
+    """What changed since the last tick (botup.md §V11): the simulator's view time and the newest row of every
+    table the dashboard shows. A few primary-key lookups -- cheap enough to run every half second."""
+    one = store._db.execute  # noqa: SLF001 - read-only lookups on the store's own connection
+    rt = one("SELECT json_extract(value, '$.updated_ms') AS v FROM state WHERE key = 'portfolio_runtime'").fetchone()
+    out: dict[str, Any] = {"rt": rt["v"] if rt else None}
+    for key, table in (("ev", "pf_events"), ("ord", "pf_orders"), ("tr", "pf_trades"), ("al", "pf_alerts"),
+                       ("an", "pf_analysis"), ("log", "log"), ("cp", "events")):
+        out[key] = one(f"SELECT MAX(id) AS v FROM {table}").fetchone()["v"]
+    return out
 
 
 def leader_name(label: str) -> str:
@@ -620,25 +663,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/portfolio")
-    def portfolio(_user: UserDep, store: StoreDep, days: int = 28, capital: int | None = None) -> dict[str, Any]:
-        """The trio simulator on Hyperliquid (botup.md §V6): for one starting balance, both ledgers (base / real),
-        their equity curves, open positions and closed trades; every wallet fill with our price and latency; a
-        summary of every balance; and the go / no-go checks."""
+    def portfolio(_user: UserDep, store: StoreDep, days: int = 28, capital: int | None = None,
+                  group: str = "trio") -> dict[str, Any]:
+        """One simulator section on Hyperliquid (botup.md §V6; sections §V10): for one starting balance, both
+        ledgers (base / real), their equity curves, open positions and closed trades; every fill of the section's
+        wallets with our price and latency; a summary of every balance; and the go / no-go checks."""
         rt = store.get_state("portfolio_runtime")
         if not rt or "capitals" not in rt:
             return {"enabled": False}
+        groups = pf_groups(rt)
+        g = next((x for x in groups if x["name"] == group), groups[0])
+        gname = g["name"]
         capitals: list[int] = rt["capitals"]
         cap = capital if capital in capitals else capitals[0]
-        names = {"base": f"base:{cap}", "real": f"real:{cap}"}
+        names = {sc: pf_ledger_name(sc, cap, gname) for sc in ("base", "real")}
         now = now_ms()
         since = now - max(1, min(days, 365)) * DAY_MS
         curves = {sc: [{"t": iso(ts), "equity": float(eq)} for ts, eq in
                        store.equity_history(f"portfolio:{name}", since)] for sc, name in names.items()}
-        events = store.pf_events_since(since)
-        lat = [float(e["detected_at_ms"] - e["leader_time_ms"]) for e in events]
+        events = []
+        for e in store.pf_events_since(since):
+            a = pf_actions(e, gname)
+            if a is not None:
+                events.append((e, a))
+        lat = [float(e["detected_at_ms"] - e["leader_time_ms"]) for e, _ in events]
         slip: list[float] = []
         recent = []
-        for i, e in enumerate(events):
+        for i, (e, a) in enumerate(events):
             bps = None
             if e["real_px"] and e["px"]:
                 bps = (1 if e["side"] == "B" else -1) * (e["real_px"] / e["px"] - 1) * 10_000
@@ -651,8 +702,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                "px": e["px"], "sz": e["sz"], "start_pos": e["start_pos"],
                                "leader_time": iso(e["leader_time_ms"]), "detected_at": iso(e["detected_at_ms"]),
                                "lag_ms": e["detected_at_ms"] - e["leader_time_ms"], "real_px": e["real_px"],
-                               "slippage_bps": bps, "base_action": e["base_action"], "base_qty": e["base_qty"],
-                               "real_action": e["real_action"], "real_qty": e["real_qty"]})
+                               "slippage_bps": bps, "base_action": a[0], "base_qty": a[1],
+                               "real_action": a[2], "real_qty": a[3]})
         trades = {sc: [dict(r) for r in store.pf_trades_since(since, ledger=name)] for sc, name in names.items()}
         orders = {sc: [{**dict(r), "time": iso(r["ts"])} for r in store.pf_orders_since(since, ledger=name)]
                   for sc, name in names.items()}
@@ -668,14 +719,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 w["fees"] += r["fees"] or 0.0
                 w["liquidated"] += r["reason"] == "LIQUIDATED"
         fills_by_wallet: dict[str, int] = defaultdict(int)
-        for e in events:
+        for e, _ in events:
             fills_by_wallet[e["wallet"]] += 1
         ledgers = rt.get("ledgers") or {}
         real = ledgers.get(names["real"]) or {}
         base = ledgers.get(names["base"]) or {}
         missed = sum(1 for r in store.logs_since(since) if r["type"] == "PF_MISSED_EXIT_CLOSED")
-        stale = sum(1 for e in events if e["real_action"] == "SKIP_STALE")
-        run_days = (now - int(rt.get("started_ms") or now)) / DAY_MS
+        stale = sum(1 for _, a in events if a[2] == "SKIP_STALE")
+        run_days = (now - int(g.get("started_ms") or rt.get("started_ms") or now)) / DAY_MS
         gap = None
         if base.get("equity") and real.get("equity") is not None and base.get("start_equity"):
             gap = (float(real["equity"]) - float(base["equity"])) / float(base["start_equity"]) * 100
@@ -691,17 +742,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         trades_out = {name: [{**r, "opened": iso(r["opened_ms"]), "closed": iso(r["closed_ms"])} for r in rows[:80]]
                       for name, rows in trades.items()}
         expected = []
-        for part in s.portfolio_expected.split(";"):
-            label, _, growth = part.rpartition(":")
-            if label and growth.strip():
-                expected.append({"label": label.strip(), "year": float(growth)})
-        summary = [{"capital": c, **{sc: {k: (ledgers.get(f"{sc}:{c}") or {}).get(k) for k in
+        if gname == "trio":
+            for part in s.portfolio_expected.split(";"):
+                label, _, growth = part.rpartition(":")
+                if label and growth.strip():
+                    expected.append({"label": label.strip(), "year": float(growth)})
+        else:  # the section's own research numbers (research section, hunt2)
+            if g.get("research_year"):
+                y = float(g["research_year"])
+                expected.append({"label": f"الاختبار الواقعي لسنة ({(y - 1) * 100:+,.0f}%)", "year": y})
+            if g.get("research_half"):
+                h = float(g["research_half"])
+                expected.append({"label": f"متحفظ — نصف أفضلية المتداولين ({(h - 1) * 100:+,.0f}%)", "year": h})
+        summary = [{"capital": c, **{sc: {k: (ledgers.get(pf_ledger_name(sc, c, gname)) or {}).get(k) for k in
                                           ("equity", "return_pct", "max_drawdown_pct", "trades", "win_rate",
                                            "liquidations", "open_trades", "exposure_x")}
                                      for sc in ("base", "real")}} for c in capitals]
         return {
             "enabled": True, "days": days, "capital": cap, "capitals": capitals, "summary": summary,
-            "ledger": {"base": base, "real": real}, "runtime": {k: v for k, v in rt.items() if k != "ledgers"},
+            "group": g, "groups": groups,
+            "ledger": {"base": base, "real": real},
+            "runtime": {k: v for k, v in rt.items() if k != "ledgers"} | {
+                "started_ms": g.get("started_ms") or rt.get("started_ms"),
+                "wallets": [w for w in rt.get("wallets") or [] if w["label"] in g["labels"]]},
             "run_days": run_days, "curves": curves, "expected": expected, "orders": orders, "fees_in_period": fees,
             "stats": {"events": len(events), "latency_p50_ms": percentile(lat, 0.5),
                       "latency_p95_ms": percentile(lat, 0.95), "slippage_median_bps": percentile(slip, 0.5),
@@ -712,7 +775,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/portfolio/chart")
     def portfolio_chart(_user: UserDep, store: StoreDep, wallet: str, coin: str, capital: int | None = None,
-                        scenario: Literal["real", "base"] = "real", days: int = 7) -> dict[str, Any]:
+                        scenario: Literal["real", "base"] = "real", days: int = 7,
+                        group: str = "trio") -> dict[str, Any]:
         """The live trade chart (botup.md §V7): for one trader + coin, every fill of the trader (where he opened,
         added, reduced, closed) and every order of ours on that ledger (price, size, fee), plus our open position,
         its average entry and the approximate liquidation price of the account if only this coin moved.
@@ -722,7 +786,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not capitals:
             return {"enabled": False}
         cap = capital if capital in capitals else capitals[0]
-        name = f"{scenario}:{cap}"
+        gname = next((x["name"] for x in pf_groups(rt) if x["name"] == group), "trio")
+        name = pf_ledger_name(scenario, cap, gname)
         since = now_ms() - max(1, min(days, 90)) * DAY_MS
         ledger = (rt.get("ledgers") or {}).get(name) or {}
         pos = next((p for p in ledger.get("positions") or [] if p["wallet"] == wallet and p["coin"] == coin), None)
@@ -742,13 +807,85 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s1 = s0 + (e["sz"] if e["side"] == "B" else -e["sz"])
             kind = ("OPEN" if abs(s0) < 1e-12 else "CLOSE" if abs(s1) < 1e-9 else
                     "FLIP" if (s0 > 0) != (s1 > 0) else "ADD" if abs(s1) > abs(s0) else "REDUCE")
+            a = pf_actions(e, gname)
             fills.append({"t": e["leader_time_ms"], "side": e["side"], "px": e["px"], "sz": e["sz"], "kind": kind,
-                          "pos_after": s1, "our_action": e["real_action"] if scenario == "real" else e["base_action"]})
+                          "pos_after": s1, "our_action": (a[2] if scenario == "real" else a[0]) if a else None})
         orders = [{"t": o["ts"], "kind": o["kind"], "qty": o["qty"], "px": o["px"], "notional": o["notional"],
                    "fee": o["fee"]} for o in store.pf_orders_for(name, wallet, coin, since)]
         return {"enabled": True, "wallet": wallet, "coin": coin, "capital": cap, "scenario": scenario,
-                "ledger": name, "position": pos, "liq_price": liq, "fills": fills, "orders": orders,
+                "group": gname, "ledger": name, "position": pos, "liq_price": liq, "fills": fills, "orders": orders,
                 "updated_ms": rt.get("updated_ms")}
+
+    @app.get("/api/live")
+    async def live(request: Request, _user: UserDep) -> StreamingResponse:
+        """Server-Sent Events (botup.md §V11): one small message whenever the bot writes something new -- the
+        dashboard refetches exactly what changed instead of polling every 15 s. Heartbeat comment every 15 s
+        (keeps the Cloudflare tunnel and any proxy from closing an idle stream); the session is re-checked
+        every minute, so a logout or an expired session ends the stream."""
+        token = request.cookies.get(COOKIE) or ""
+
+        async def events() -> Any:
+            store = Store(s.db_path, cross_thread=True)
+            last: dict[str, Any] | None = None
+            loop = asyncio.get_running_loop()
+            beat = auth = loop.time()
+            try:
+                yield "retry: 2000\n\n"
+                while not await request.is_disconnected():
+                    now = loop.time()
+                    if now - auth >= LIVE_AUTH_SECONDS:
+                        auth = now
+                        if store.session_user(token_hash(token)) is None:
+                            yield "event: auth\ndata: {}\n\n"
+                            return
+                    snap = live_snapshot(store)
+                    if snap != last:
+                        last, beat = snap, now
+                        yield f"data: {json.dumps(snap)}\n\n"
+                    elif now - beat >= LIVE_HEARTBEAT_SECONDS:
+                        beat = now
+                        yield ": ping\n\n"
+                    await asyncio.sleep(LIVE_POLL_SECONDS)
+            finally:
+                store.close()
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
+
+    @app.get("/api/portfolio/compare")
+    def portfolio_compare(_user: UserDep, store: StoreDep, capital: int | None = None) -> dict[str, Any]:
+        """botup.md §V10: every simulator section side by side -- each since its own start, and all of them from
+        the common start (the latest section start) so the comparison is on the same trades."""
+        rt = store.get_state("portfolio_runtime")
+        if not rt or "capitals" not in rt:
+            return {"enabled": False}
+        groups = pf_groups(rt)
+        capitals: list[int] = rt["capitals"]
+        cap = capital if capital in capitals else capitals[0]
+        ledgers = rt.get("ledgers") or {}
+        common = max(int(g.get("started_ms") or 0) for g in groups)
+        now = now_ms()
+        keys = ("equity", "return_pct", "max_drawdown_pct", "drawdown_pct", "trades", "wins", "win_rate",
+                "liquidations", "open_trades", "exposure_x", "fees_paid", "notional", "pauses", "per_wallet")
+        out = []
+        for g in groups:
+            row: dict[str, Any] = {k: g.get(k) for k in ("name", "title", "labels", "started_ms", "research_year",
+                                                         "research_half")}
+            row["days"] = (now - int(g.get("started_ms") or now)) / DAY_MS
+            row["capitals"] = {str(c): {sc: {k: (ledgers.get(pf_ledger_name(sc, c, g["name"])) or {}).get(k)
+                                            for k in keys} for sc in ("base", "real")} for c in capitals}
+            row["curves"] = {}
+            row["since_common"] = {}
+            for sc in ("base", "real"):
+                name = pf_ledger_name(sc, cap, g["name"])
+                pts = store.equity_history(f"portfolio:{name}", int(g.get("started_ms") or 0))
+                row["curves"][sc] = [{"t": iso(ts), "ms": ts, "equity": float(eq)} for ts, eq in pts]
+                at = next((float(eq) for ts, eq in pts if ts >= common), None)
+                cur = (ledgers.get(name) or {}).get("equity")
+                row["since_common"][sc] = (float(cur) / at - 1) * 100 if at and cur is not None else None
+            out.append(row)
+        return {"enabled": True, "capital": cap, "capitals": capitals, "common_start_ms": common,
+                "updated_ms": rt.get("updated_ms"), "groups": out}
 
     @app.get("/api/portfolio/advice")
     def portfolio_advice(_user: UserDep, store: StoreDep, wallet: str, coin: str) -> dict[str, Any]:
@@ -789,6 +926,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         store.set_state(f"advisor_request:{body.wallet}|{body.coin}",
                         {"at": now_ms(), "done": False, "by": user.get("username")})
         return {"ok": True}
+
+    @app.get("/api/research")
+    def research(_user: UserDep) -> dict[str, Any]:
+        """botup.md §V9: the research section -- the latest export of the research project (top 10 wallets after the
+        tests, mixes, reports), imported with `loco-copy research-import`."""
+        p = s.data_dir / "research" / "latest.json"
+        if not p.exists():
+            return {"available": False}
+        data = json.loads(p.read_text(encoding="utf-8"))
+        hist = sorted((x.name for x in (s.data_dir / "research").glob("research_*.json")), reverse=True)
+        return {"available": True, "imported_ms": int(p.stat().st_mtime * 1000), "history": hist, **data}
 
     @app.get("/api/settings")
     def settings_view(_user: UserDep, store: StoreDep) -> dict[str, Any]:

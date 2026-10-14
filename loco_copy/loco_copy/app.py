@@ -774,7 +774,8 @@ class App:
             on_error=lambda err: self.n.warning("WS_DISCONNECTED", error=err),
             on_unknown_user=lambda user: self.n.warning("WS_UNKNOWN_USER", user=user),
             raw_users={a: pf.on_raw_fills for a in pf.addresses} if pf else None,
-            mid_dexes=pf.dexes if pf else None, on_mids=pf.on_mids if pf else None)
+            mid_dexes=pf.dexes if pf else None, on_mids=pf.on_mids if pf else None,
+            on_bbo=pf.on_bbo if pf else None, bbo_coins=pf.bbo_coins if pf else None)
         step = self.base.leader_snapshot_seconds / len(self.lanes)
         tasks += [asyncio.create_task(self.feed.run()), asyncio.create_task(self.reconcile_loop()),
                   asyncio.create_task(self.control_loop()), asyncio.create_task(self.fill_poll_loop())]

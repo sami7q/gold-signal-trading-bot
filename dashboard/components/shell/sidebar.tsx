@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ArrowLeftRight, Radar, Activity, LineChart, SlidersHorizontal, ScrollText, Users, Layers, FlaskConical, X } from "lucide-react";
+import { LayoutDashboard, ArrowLeftRight, Radar, Activity, LineChart, SlidersHorizontal, ScrollText, Users, Layers, FlaskConical, X, Trophy, Blend, FileText, Scale } from "lucide-react";
 import { cn } from "@/lib/format";
 import { UserMenu } from "@/components/shell/user-menu";
 
@@ -10,6 +10,10 @@ const NAV_ITEMS = [
   { href: "/", label: "نظرة عامة", icon: LayoutDashboard },
   { href: "/leaders", label: "المتداولين", icon: Users },
   { href: "/portfolio", label: "محاكي الثلاثي (Hyperliquid)", icon: FlaskConical },
+  // botup.md §V10: the two four-wallet mixes from the research section, and the three side by side
+  { href: "/portfolio/mix2ac4", label: "محاكي الرباعي مع \u20662ac4\u2069", icon: FlaskConical },
+  { href: "/portfolio/mix2396", label: "محاكي الرباعي مع \u20662396\u2069", icon: FlaskConical },
+  { href: "/portfolio/compare", label: "مقارنة المحاكيات", icon: Scale },
   { href: "/trio", label: "الثلاثي (مراقبة)", icon: Layers },
   { href: "/loco", label: "مراكز المتداولين", icon: Radar },
   { href: "/trades", label: "صفقاتنا", icon: ArrowLeftRight },
@@ -17,6 +21,13 @@ const NAV_ITEMS = [
   { href: "/analytics", label: "التحليلات", icon: LineChart },
   { href: "/logs", label: "السجلات", icon: ScrollText },
   { href: "/settings", label: "التحكم والإعدادات", icon: SlidersHorizontal },
+] as const;
+
+// botup.md §V9: the research section -- wallets found in the database, after the tests
+const RESEARCH_ITEMS = [
+  { href: "/research", label: "أفضل 10 محافظ", icon: Trophy },
+  { href: "/research/mixes", label: "الخليط", icon: Blend },
+  { href: "/research/reports", label: "التقارير", icon: FileText },
 ] as const;
 
 export function Brand() {
@@ -56,12 +67,15 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       </div>
 
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
-        {NAV_ITEMS.map((item) => {
+        {[...NAV_ITEMS, ...RESEARCH_ITEMS].map((item, i) => {
           const active = pathname === item.href;
           const Icon = item.icon;
           return (
+            <div key={item.href}>
+              {i === NAV_ITEMS.length ? (
+                <div className="mt-3 border-t border-border-soft px-2.5 pb-1 pt-3 text-[11px] font-medium text-muted-dim">البحث</div>
+              ) : null}
             <Link
-              key={item.href}
               href={item.href}
               onClick={onClose}
               className={cn(
@@ -72,6 +86,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               <Icon className="h-4 w-4" strokeWidth={1.75} />
               {item.label}
             </Link>
+            </div>
           );
         })}
       </nav>

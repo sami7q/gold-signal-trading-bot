@@ -628,8 +628,53 @@ export interface PfWalletStats {
   liquidated: number;
 }
 
+/** botup.md §V10: one simulator section (the trio, or a mix). */
+export interface PfGroup {
+  name: string;
+  title: string;
+  labels: string[];
+  started_ms: number;
+  research_year: number | null;
+  research_half: number | null;
+}
+
+export interface PfCompareLedger {
+  equity: number | null;
+  return_pct: number | null;
+  max_drawdown_pct: number | null;
+  drawdown_pct: number | null;
+  trades: number | null;
+  wins: number | null;
+  win_rate: number | null;
+  liquidations: number | null;
+  open_trades: number | null;
+  exposure_x: number | null;
+  fees_paid: number | null;
+  notional: number | null;
+  pauses: number | null;
+  per_wallet: Record<string, { pnl: number; trades: number; wins: number; fees: number }> | null;
+}
+
+export interface PfCompareGroup extends PfGroup {
+  days: number;
+  capitals: Record<string, { base: PfCompareLedger; real: PfCompareLedger }>;
+  curves: { base: { t: string; ms: number; equity: number }[]; real: { t: string; ms: number; equity: number }[] };
+  since_common: { base: number | null; real: number | null };
+}
+
+export interface PortfolioCompare {
+  enabled: boolean;
+  capital?: number;
+  capitals?: number[];
+  common_start_ms?: number;
+  updated_ms?: number;
+  groups?: PfCompareGroup[];
+}
+
 export interface PortfolioPanel {
   enabled: boolean;
+  group?: PfGroup;
+  groups?: PfGroup[];
   days?: number;
   runtime?: PfRuntime;
   run_days?: number;
@@ -784,4 +829,122 @@ export interface AdviceData {
   pending: boolean;
   calls_today: number;
   max_calls: number;
+}
+
+// -- botup.md §V9: the research section (/api/research) -------------------------------------------------------
+
+export interface ResearchWallet {
+  rank: number | null;
+  address: string;
+  label: string;
+  score: number | null;
+  passed: number | null;
+  tests: Record<string, boolean> | null;
+  metrics: {
+    win: number | null;
+    pf: number | null;
+    n_crypto: number | null;
+    per_day: number | null;
+    hold_med_h: number | null;
+    pos_ratio: number | null;
+    months: number | null;
+    months_pos: number | null;
+    worst_month: number | null;
+    best_month: number | null;
+    top5_share: number | null;
+    av: number | null;
+    last_days: number | null;
+    alltime_pnl: number | null;
+    long_share: number | null;
+    top_coin: string | null;
+    top_coin_share: number | null;
+    coins: number | null;
+  };
+  copy: {
+    base_mult: number | null;
+    base_dd: number | null;
+    real_mult: number | null;
+    real_final: number | null;
+    real_dd: number | null;
+    real_win: number | null;
+    real_closed: number | null;
+    h1_mult: number | null;
+    h2_mult: number | null;
+    no_top5_mult: number | null;
+    delay60_mult: number | null;
+    fee2x_mult: number | null;
+    liq_any: number | null;
+  };
+  monthly_base: Record<string, number> | null;
+}
+
+export interface ResearchRun {
+  final: number;
+  mult: number;
+  dd: number;
+  liq: number;
+  closed?: number;
+  win?: number;
+  losing_months?: number;
+  months?: number;
+  monthly?: Record<string, number>;
+}
+
+export interface ResearchMC {
+  p10: number;
+  median: number;
+  p90: number;
+  p_loss: number;
+  p_x2: number;
+  p_x5: number;
+  dd_median: number;
+  dd_p90: number;
+}
+
+export interface ResearchMix {
+  rank?: number;
+  wallets: string[];
+  labels: string[];
+  real: ResearchRun;
+  h1?: ResearchRun;
+  h2?: ResearchRun;
+  score: number;
+  by_wallet?: Record<string, number> | null;
+  mc?: { "edge_x1.0": ResearchMC; "edge_x0.5": ResearchMC };
+  curve_weekly?: number[];
+  tests?: Record<string, boolean>;
+  passed?: number;
+  near_wallets?: string[];
+}
+
+export interface ResearchData {
+  available: boolean;
+  imported_ms?: number;
+  history?: string[];
+  generated?: string;
+  data_until_ms?: number | null;
+  database?: {
+    wallets: number;
+    with_metrics: number;
+    shortlist: number;
+    near: number;
+    simulated: number;
+    robust_tested: number;
+    passed_all_tests: number;
+    mixes_tested: number;
+    mixes_approved?: number;
+    target_wallets: number;
+  };
+  funnel?: [string, number][];
+  tests?: { key: string; ar: string }[];
+  top10?: ResearchWallet[];
+  near_misses?: ResearchWallet[];
+  mixes?: ResearchMix[];
+  mixes_watch?: ResearchMix[];
+  mix_tests?: { key: string; ar: string }[];
+  mixes_approved?: number;
+  pool?: string[];
+  reference?: Record<string, ResearchMix>;
+  settings?: Record<string, string | number>;
+  caveats?: string[];
 }
