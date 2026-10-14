@@ -496,7 +496,22 @@ export interface PfPosition {
   capped: number;
   opened_ms: number | null;
   realized: number;
+  fees: number;
   maxlev: number;
+}
+
+export interface PfOrder {
+  id: number;
+  ledger: string;
+  wallet: string;
+  coin: string;
+  kind: string;
+  qty: number;
+  px: number;
+  notional: number;
+  fee: number;
+  ts: number;
+  time: string;
 }
 
 export interface PfLedger {
@@ -553,7 +568,13 @@ export interface PfRuntime {
     stale_seconds: number;
   };
   prices: { coins: number; dexes: string[] };
-  ledgers: { base: PfLedger; real: PfLedger };
+  capitals: number[];
+}
+
+export interface PfSummaryRow {
+  capital: number;
+  base: Partial<PfLedger>;
+  real: Partial<PfLedger>;
 }
 
 export interface PfTrade {
@@ -613,7 +634,13 @@ export interface PortfolioPanel {
   runtime?: PfRuntime;
   run_days?: number;
   curves?: { base: { t: string; equity: number }[]; real: { t: string; equity: number }[] };
-  expected?: { backtest_real_year: number; walk_forward_year: number };
+  expected?: { label: string; year: number }[];
+  capital?: number;
+  capitals?: number[];
+  summary?: PfSummaryRow[];
+  ledger?: { base: PfLedger; real: PfLedger };
+  orders?: { base: PfOrder[]; real: PfOrder[] };
+  fees_in_period?: { base: number; real: number };
   stats?: {
     events: number;
     latency_p50_ms: number | null;

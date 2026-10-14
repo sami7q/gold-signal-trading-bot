@@ -89,10 +89,10 @@ export function useAnalytics(days: number, leader?: string) {
 }
 
 /** botup.md §V6: the «new trio» portfolio simulator (both scenarios, Hyperliquid prices). */
-export function usePortfolio(days = 28) {
+export function usePortfolio(days = 28, capital?: number) {
   return useQuery({
-    queryKey: ["portfolio", days],
-    queryFn: () => api.get<PortfolioPanel>(`/api/portfolio?days=${days}`),
+    queryKey: ["portfolio", days, capital ?? null],
+    queryFn: () => api.get<PortfolioPanel>(`/api/portfolio?days=${days}${capital ? `&capital=${capital}` : ""}`),
     refetchInterval: 15_000,
   });
 }

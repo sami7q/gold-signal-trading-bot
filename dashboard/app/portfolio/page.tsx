@@ -25,7 +25,8 @@ import {
 import type { PfCheck, PfLedger, PortfolioPanel } from "@/types/api";
 
 const CHART_TEXT = "#8b8f98";
-const COLORS = { real: "#c9a227", base: "#5b8def", expected: "#6b7280", walk: "#3a404b" };
+const COLORS = { real: "#c9a227", base: "#5b8def" };
+const EXPECTED_COLORS = ["#6b7280", "#3a404b", "#4b5563"];
 const DAY_MS = 86_400_000;
 
 type Scenario = "real" | "base";
@@ -46,6 +47,17 @@ const ACTION_AR: Record<string, { label: string; tone: "gold" | "win" | "loss" |
   SKIP_PAUSED: { label: "موقوف (تراجع 25%)", tone: "loss" },
   SKIP_STALE: { label: "متأخر — لم يُنسخ", tone: "loss" },
   SKIP_NO_EQUITY: { label: "رصيده غير معروف", tone: "loss" },
+};
+
+const ORDER_AR: Record<string, { label: string; tone: "gold" | "win" | "loss" | "warn" | "info" | "neutral" }> = {
+  OPEN: { label: "فتح صفقة", tone: "gold" },
+  ADD: { label: "تعزيز", tone: "win" },
+  REDUCE: { label: "تقليص", tone: "info" },
+  CLOSE: { label: "إغلاق", tone: "info" },
+  FLIP_CLOSE: { label: "انعكاس — إغلاق", tone: "info" },
+  FLIP_OPEN: { label: "انعكاس — فتح", tone: "gold" },
+  RECONCILED: { label: "إغلاق تصحيحي", tone: "warn" },
+  LIQUIDATED: { label: "تصفية", tone: "loss" },
 };
 
 const REASON_AR: Record<string, string> = {
@@ -107,9 +119,8 @@ function CheckRow({ c }: { c: PfCheck }) {
 
 function EquityChart({ d }: { d: PortfolioPanel }) {
   const rt = d.runtime!;
-  const start = rt.ledgers.real.start_equity;
-  const yr = d.expected?.backtest_real_year ?? 1.3;
-  const wf = d.expected?.walk_forward_year ?? 0.69;
+  const start = d.ledger!.real.start_equity;
+  const expected = d.expected ?? [];
   const points = (() => {
     const byT = new Map<string, Record<string, number | string>>();
     for (const p of d.curves?.real ?? []) byT.set(p.t, { t: p.t, real: p.equity });
@@ -118,7 +129,11 @@ function EquityChart({ d }: { d: PortfolioPanel }) {
       .sort((a, b) => String(a.t).localeCompare(String(b.t)))
       .map((p) => {
         const days = Math.max(0, (new Date(String(p.t)).getTime() - rt.started_ms) / DAY_MS);
-        return { ...p, expected: start * Math.pow(1 + yr, days / 365), walk: start * Math.pow(1 + wf, days / 365) };
+        const ref: Record<string, number> = {};
+        expected.forEach((x, i) => {
+          ref[`exp${i}`] = start * Math.pow(x.year, days / 365);
+        });
+        return { ...p, ...ref };
       });
   })();
   if (points.length < 2) {
@@ -140,8 +155,18 @@ function EquityChart({ d }: { d: PortfolioPanel }) {
         <Legend wrapperStyle={{ fontSize: 12 }} />
         <Line type="monotone" dataKey="real" name="واقعي" stroke={COLORS.real} strokeWidth={2} dot={false} />
         <Line type="monotone" dataKey="base" name="أساسي" stroke={COLORS.base} strokeWidth={1.5} dot={false} />
-        <Line type="monotone" dataKey="expected" name="المتوقع (اختبار السنة +130%)" stroke={COLORS.expected} strokeDasharray="5 4" strokeWidth={1} dot={false} />
-        <Line type="monotone" dataKey="walk" name="المتحفظ (+69%)" stroke={COLORS.walk} strokeDasharray="2 4" strokeWidth={1} dot={false} />
+        {expected.map((x, i) => (
+          <Line
+            key={x.label}
+            type="monotone"
+            dataKey={`exp${i}`}
+            name={x.label}
+            stroke={EXPECTED_COLORS[i % EXPECTED_COLORS.length]}
+            strokeDasharray={i === 0 ? "5 4" : "2 4"}
+            strokeWidth={1}
+            dot={false}
+          />
+        ))}
       </LineChart>
     </ResponsiveContainer>
   );
@@ -156,7 +181,7 @@ function LedgerCards({ l, label }: { l: PfLedger; label: string }) {
       sub={
         <span>
           <span className={pnlClass(l.return_pct)}>{`${l.return_pct >= 0 ? "+" : ""}${formatNumber(l.return_pct, 2)}%`}</span>
-          {` · رسوم ${formatUsd(l.fees_paid)} · ${formatNumber(l.fee * 100, 3)}% لكل جهة`}
+          {` · رسوم مخصومة ${formatUsd(l.fees_paid)} (${formatNumber(l.fee * 100, 3)}% لكل أمر)`}
         </span>
       }
     />
@@ -166,7 +191,8 @@ function LedgerCards({ l, label }: { l: PfLedger; label: string }) {
 export default function PortfolioPage() {
   const [days, setDays] = useState(28);
   const [scenario, setScenario] = useState<Scenario>("real");
-  const query = usePortfolio(days);
+  const [capital, setCapital] = useState<number | undefined>(undefined);
+  const query = usePortfolio(days, capital);
   const d = query.data;
   const rt = d?.runtime;
 
@@ -174,15 +200,23 @@ export default function PortfolioPage() {
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="max-w-2xl">
-          <h1 className="text-xl font-semibold text-bone">الثلاثي الجديد — المحاكي</h1>
+          <h1 className="text-xl font-semibold text-bone">محاكي الثلاثي على Hyperliquid</h1>
           <p className="mt-1 text-sm leading-relaxed text-muted">
-            ثلاث محافظ في حساب وهمي واحد بهامش مشترك ورافعة <bdi>3x</bdi>: <bdi>Loco</bdi> بوزن 50%، و<bdi>0x8477</bdi> بوزن 25%،
-            و<bdi>0xc0b2</bdi> بوزن 25%. كل حركة لهم تُنسخ (فتح، تعزيز حتى سقف 20%، تقليص، إغلاق، انعكاس) في العملات الرقمية وأسواق
-            الأسهم والسلع على Hyperliquid — بدون أي أمر حقيقي. «واقعي» = سعر Hyperliquid لحظة التقاط الحركة + 0.095%،
-            و«أساسي» = سعر المحفظة نفسه + 0.045% (مثل الاختبار التاريخي).
+            المتداولون الثلاثة <bdi>8bae</bdi> و<bdi>8fc7</bdi> و<bdi>69b0</bdi> في حساب وهمي واحد بهامش مشترك ورافعة <bdi>3x</bdi>،
+            وكل واحد يُحسب حجمه على رصيد الحساب كاملًا (كما في خطة v5). كل حركة لهم تُنسخ (فتح، تعزيز حتى سقف 20%، تقليص، إغلاق،
+            انعكاس) في العملات الرقمية وأسواق الأسهم والسلع على Hyperliquid — بدون أي أمر حقيقي. ثلاثة حسابات بنفس الحركات:
+            ‏$10,000 و$50,000 و$100,000. «واقعي» = سعر Hyperliquid لحظة التقاط الحركة + 0.095%، و«أساسي» = سعر المتداول نفسه + 0.045%.
           </p>
         </div>
         <div className="flex gap-3">
+          <div>
+            <Label>رأس المال</Label>
+            <Select value={capital ?? d?.capital ?? ""} onChange={(e) => setCapital(Number(e.target.value))}>
+              {(d?.capitals ?? [10000, 50000, 100000]).map((c) => (
+                <option key={c} value={c}>{formatUsd(c)}</option>
+              ))}
+            </Select>
+          </div>
           <div>
             <Label>السيناريو</Label>
             <Select value={scenario} onChange={(e) => setScenario(e.target.value as Scenario)}>
@@ -223,8 +257,8 @@ export default function PortfolioPage() {
 
 function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenario; fetchedAt: number }) {
   const rt = d.runtime!;
-  const l = rt.ledgers[scenario];
-  const real = rt.ledgers.real;
+  const l = d.ledger![scenario];
+  const real = d.ledger!.real;
   const stats = d.stats!;
   const passed = d.checks?.filter((c) => c.pass).length ?? 0;
   const graded = d.checks?.filter((c) => c.pass !== null).length ?? 0;
@@ -257,8 +291,8 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
       ) : null}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <LedgerCards l={rt.ledgers.real} label="واقعي" />
-        <LedgerCards l={rt.ledgers.base} label="أساسي" />
+        <LedgerCards l={d.ledger!.real} label="واقعي" />
+        <LedgerCards l={d.ledger!.base} label="أساسي" />
         <StatCard
           label={`التراجع — ${SCENARIO_AR[scenario]}`}
           value={`${formatNumber(l.drawdown_pct, 1)}%`}
@@ -286,7 +320,7 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
         <StatCard
           label="صفقات مغلقة"
           value={l.trades}
-          sub={l.win_rate === null ? "لا صفقات مغلقة بعد" : `نسبة الربح ${formatNumber(l.win_rate * 100, 0)}% · المتوقع ~79%`}
+          sub={l.win_rate === null ? "لا صفقات مغلقة بعد" : `نسبة الربح ${formatNumber(l.win_rate * 100, 0)}% · الاختبار ~61%`}
         />
         <StatCard
           label="الالتقاط p50 / p95"
@@ -300,9 +334,45 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
       </div>
 
       <Card>
+        <CardHeader title="الحسابات الثلاثة" subtitle="نفس الحركات على ثلاث أرصدة بداية — اختر رأس المال من أعلى الصفحة لتفاصيله" />
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-border-soft text-[11px] text-muted-dim">
+                <Th>رأس المال</Th>
+                <Th end>واقعي</Th>
+                <Th end>%</Th>
+                <Th end>أساسي</Th>
+                <Th end>%</Th>
+                <Th end>أقصى تراجع (واقعي)</Th>
+                <Th end>صفقات مغلقة</Th>
+                <Th end>مفتوحة</Th>
+                <Th end>الحجم ÷ الرصيد</Th>
+              </tr>
+            </thead>
+            <tbody className="font-data whitespace-nowrap">
+              {(d.summary ?? []).map((row) => (
+                <tr key={row.capital} className={cn("border-b border-border-soft/60", row.capital === d.capital && "bg-gold/5")}>
+                  <td className="px-3 py-2 text-bone">{formatUsd(row.capital)}</td>
+                  <td className="px-3 py-2 text-right text-bone">{formatUsd(row.real.equity ?? null)}</td>
+                  <td className={cn("px-3 py-2 text-right", pnlClass(row.real.return_pct ?? 0))}>{`${formatNumber(row.real.return_pct ?? 0, 2)}%`}</td>
+                  <td className="px-3 py-2 text-right text-muted">{formatUsd(row.base.equity ?? null)}</td>
+                  <td className={cn("px-3 py-2 text-right", pnlClass(row.base.return_pct ?? 0))}>{`${formatNumber(row.base.return_pct ?? 0, 2)}%`}</td>
+                  <td className="px-3 py-2 text-right text-muted">{`${formatNumber(row.real.max_drawdown_pct ?? 0, 1)}%`}</td>
+                  <td className="px-3 py-2 text-right text-muted">{row.real.trades ?? 0}</td>
+                  <td className="px-3 py-2 text-right text-muted">{row.real.open_trades ?? 0}</td>
+                  <td className="px-3 py-2 text-right text-muted">{row.real.exposure_x === null || row.real.exposure_x === undefined ? "—" : `${formatNumber(row.real.exposure_x, 2)}x`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card>
         <CardHeader
           title="منحنى الحسابين"
-          subtitle={`بدأت المحاكاة ${formatDateTime(new Date(rt.started_ms).toISOString())} — الخطان المتقطعان: مسار +130% بالسنة (الاختبار الواقعي) و+69% (اختبار بدون معرفة المستقبل)`}
+          subtitle={`${formatUsd(d.capital)} — بدأت المحاكاة ${formatDateTime(new Date(rt.started_ms).toISOString())} — الخطوط المتقطعة: مسار نتيجة الاختبار التاريخي (botup §V5.0 / §V5.4)`}
         />
         <div className="h-80 p-4 pl-0">
           <EquityChart d={d} />
@@ -311,14 +381,14 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-3">
-          <CardHeader title="المحافظ" subtitle={`الحجم = K × الوزن × رصيدنا ÷ رصيد المحفظة · K = ${formatNumber(rt.settings.k, 1)} · السقف ${rt.settings.cap_pct}% هامش من الحصة`} />
+          <CardHeader title="المتداولون" subtitle={`الحجم = K × الوزن × رصيدنا ÷ رصيد المتداول · K = ${formatNumber(rt.settings.k, 1)} · السقف ${rt.settings.cap_pct}% هامش من الرصيد لكل صفقة`} />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[640px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border-soft text-[11px] text-muted-dim">
-                  <Th>المحفظة</Th>
+                  <Th>المتداول</Th>
                   <Th end>الوزن</Th>
-                  <Th end>رصيدها</Th>
+                  <Th end>رصيده</Th>
                   <Th end>حركات</Th>
                   <Th end>مفتوحة</Th>
                   <Th end>صفقات</Th>
@@ -350,18 +420,18 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
             </table>
           </div>
           <p className="border-t border-border-soft px-4 py-2.5 text-xs leading-relaxed text-muted-dim">
-            المراكز التي كانت مفتوحة عند بدء المحاكاة لا تُنسخ — ننتظر حتى تُغلق، ثم ننسخ الصفقة التالية.
+            المراكز التي كانت مفتوحة عند بدء المحاكاة لا تُنسخ — ننتظر حتى تُغلق، ثم ننسخ الصفقة التالية. متداول هادئ لأسابيع أمر طبيعي.
           </p>
         </Card>
 
         <Card className="lg:col-span-2">
-          <CardHeader title="شروط الانتقال للحقيقي" subtitle={`الخطة §9 — ${passed} / ${graded} ناجحة`} />
+          <CardHeader title="شروط الانتقال للحقيقي" subtitle={`botup §V6.8 — ${passed} / ${graded} ناجحة`} />
           <ul className="px-4 py-1">{d.checks?.map((c) => <CheckRow key={c.key} c={c} />)}</ul>
         </Card>
       </div>
 
       <Card>
-        <CardHeader title={`المراكز المفتوحة — ${SCENARIO_AR[scenario]}`} subtitle="حصة كل محفظة مستقلة؛ نفس العملة من محفظتين تظهر في سطرين" />
+        <CardHeader title={`المراكز المفتوحة — ${SCENARIO_AR[scenario]}`} subtitle="حصة كل متداول مستقلة؛ نفس العملة من متداولَين تظهر في سطرين" />
         {!l.positions.length ? (
           <EmptyState icon={FlaskConical} title="لا مراكز مفتوحة الآن" />
         ) : (
@@ -369,13 +439,14 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
             <table className="w-full min-w-[960px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border-soft text-[11px] text-muted-dim">
-                  <Th>المحفظة</Th>
+                  <Th>المتداول</Th>
                   <Th>العملة</Th>
                   <Th>الاتجاه</Th>
                   <Th end>الحجم $</Th>
                   <Th end>الدخول</Th>
                   <Th end>السعر</Th>
                   <Th end>غير محقق</Th>
+                  <Th end>الرسوم</Th>
                   <Th end>السقف المستخدم</Th>
                   <Th end>تعزيزات</Th>
                   <Th>منذ</Th>
@@ -391,6 +462,7 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
                     <td className="px-3 py-2 text-right text-muted">{formatPrice(p.entry)}</td>
                     <td className="px-3 py-2 text-right text-muted">{formatPrice(p.mark)}</td>
                     <td className={cn("px-3 py-2 text-right", pnlClass(p.upnl))}>{formatMoney(p.upnl)}</td>
+                    <td className="px-3 py-2 text-right text-muted">{formatMoney(-p.fees)}</td>
                     <td className={cn("px-3 py-2 text-right", p.capped ? "text-warn" : "text-muted")}>
                       {p.cap ? `${formatNumber(((p.qty * p.entry) / p.cap) * 100, 0)}%` : "—"}
                     </td>
@@ -405,21 +477,68 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
       </Card>
 
       <Card>
-        <CardHeader title={`الصفقات المغلقة — ${SCENARIO_AR[scenario]}`} subtitle="الصافي بعد الرسوم، آخر 80 صفقة في الفترة" />
+        <CardHeader
+          title={`سجل صفقاتنا — ${SCENARIO_AR[scenario]} · ${formatUsd(d.capital)}`}
+          subtitle={`كل أمر نفّذه الحساب الوهمي بعد حركة من الثلاثي، مع الرسوم المخصومة منه — مجموع الرسوم في الفترة ${formatUsd(d.fees_in_period?.[scenario] ?? 0)}`}
+        />
+        {!(d.orders?.[scenario] ?? []).length ? (
+          <EmptyState icon={FlaskConical} title="لا أوامر بعد" description="أول ما يفتح أحد الثلاثة صفقة جديدة، تُفتح هنا خلال ثوانٍ وتُسجَّل." />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] text-left text-sm">
+              <thead>
+                <tr className="border-b border-border-soft text-[11px] text-muted-dim">
+                  <Th>الوقت</Th>
+                  <Th>المتداول</Th>
+                  <Th>العملة</Th>
+                  <Th>العملية</Th>
+                  <Th>الجهة</Th>
+                  <Th end>الكمية</Th>
+                  <Th end>السعر</Th>
+                  <Th end>الحجم $</Th>
+                  <Th end>الرسوم</Th>
+                </tr>
+              </thead>
+              <tbody className="font-data whitespace-nowrap">
+                {(d.orders?.[scenario] ?? []).slice(0, 100).map((o) => {
+                  const k = ORDER_AR[o.kind] ?? { label: o.kind, tone: "neutral" as const };
+                  return (
+                    <tr key={o.id} className="border-b border-border-soft/60">
+                      <td className="px-3 py-2 text-muted">{formatDateTime(o.time)}</td>
+                      <td className="px-3 py-2 font-sans"><WalletBadge wallet={o.wallet} /></td>
+                      <td className="px-3 py-2 text-bone">{o.coin}</td>
+                      <td className="px-3 py-2 font-sans"><Badge tone={k.tone}>{k.label}</Badge></td>
+                      <td className="px-3 py-2"><Side side={o.qty > 0 ? 1 : -1} /></td>
+                      <td className="px-3 py-2 text-right text-muted">{formatNumber(Math.abs(o.qty), 6)}</td>
+                      <td className="px-3 py-2 text-right text-bone">{formatPrice(o.px)}</td>
+                      <td className="px-3 py-2 text-right text-bone">{formatUsd(o.notional)}</td>
+                      <td className="px-3 py-2 text-right text-loss-bright">{formatMoney(-o.fee)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader title={`الصفقات المغلقة — ${SCENARIO_AR[scenario]}`} subtitle="الصافي بعد خصم رسوم الفتح والإغلاق والتعزيزات، آخر 80 صفقة في الفترة" />
         {!trades.length ? (
-          <EmptyState icon={FlaskConical} title="لا صفقات مغلقة في الفترة" description="المتوقع نحو 5 صفقات مغلقة في اليوم للثلاثي معًا." />
+          <EmptyState icon={FlaskConical} title="لا صفقات مغلقة في الفترة" description="المتوقع نحو 5 صفقات جديدة في الأسبوع للثلاثي معًا (botup §V5.2)." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border-soft text-[11px] text-muted-dim">
                   <Th>أُغلقت</Th>
-                  <Th>المحفظة</Th>
+                  <Th>المتداول</Th>
                   <Th>العملة</Th>
                   <Th>الاتجاه</Th>
                   <Th end>أعلى حجم $</Th>
                   <Th end>المدة</Th>
                   <Th end>تعزيزات</Th>
+                  <Th end>الرسوم</Th>
                   <Th end>الصافي</Th>
                   <Th>السبب</Th>
                 </tr>
@@ -436,6 +555,7 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
                       {t.opened && t.closed ? formatDuration(new Date(t.closed).getTime() - new Date(t.opened).getTime()) : "—"}
                     </td>
                     <td className="px-3 py-2 text-right text-muted">{t.adds}</td>
+                    <td className="px-3 py-2 text-right text-muted">{formatMoney(-t.fees)}</td>
                     <td className={cn("px-3 py-2 text-right", pnlClass(t.pnl ?? 0))}>{t.pnl === null ? "—" : formatMoney(t.pnl)}</td>
                     <td className="px-3 py-2 font-sans text-xs text-muted">{REASON_AR[t.reason] ?? t.reason}</td>
                   </tr>
@@ -447,7 +567,7 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
       </Card>
 
       <Card>
-        <CardHeader title="آخر حركات المحافظ" subtitle="كل تنفيذ للمحفظة، وما فعله كل سيناريو به — سعرها مقابل سعر Hyperliquid لحظة التقاطه" />
+        <CardHeader title="آخر حركات المحافظ" subtitle="كل تنفيذ للمتداول، وما فعله كل سيناريو به في حساب $10,000 — سعره مقابل سعر Hyperliquid لحظة التقاطه" />
         {!d.recent?.length ? (
           <EmptyState icon={FlaskConical} title="لا حركات بعد" description="أول حركة تظهر هنا خلال ثوانٍ من تنفيذها." />
         ) : (
@@ -456,7 +576,7 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
               <thead>
                 <tr className="border-b border-border-soft text-[11px] text-muted-dim">
                   <Th>الوقت</Th>
-                  <Th>المحفظة</Th>
+                  <Th>المتداول</Th>
                   <Th>العملة</Th>
                   <Th>الجهة</Th>
                   <Th end>الكمية</Th>

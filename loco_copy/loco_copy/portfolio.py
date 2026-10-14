@@ -1,8 +1,10 @@
-"""The «new trio» live simulator (botup.md §V6): the wallets of `PORTFOLIO_WALLETS` (Loco 50 % + 0x8477 25 % +
-0xc0b2 25 %) copied into one virtual $10,000 cross account at 3x -- every move they make, crypto AND the HIP-3
-markets (xyz: stocks / commodities ...), priced on Hyperliquid itself. No order is ever sent anywhere.
+"""The trio live simulator (botup.md §V6): the wallets of `PORTFOLIO_WALLETS` (8bae + 8fc7 + 69b0, each sized on
+the whole account as in v5 -- weight 1.0) copied into one virtual cross account at 3x -- every move they make,
+crypto AND the HIP-3 markets (xyz: stocks / commodities ...), priced on Hyperliquid itself.
+No order is ever sent anywhere.
 
-Two ledgers run side by side on the same fills (the two scenarios of the spec):
+Two ledgers per starting balance (PORTFOLIO_START_EQUITIES, default $10k / $50k / $100k) run side by side on the
+same fills, named "<scenario>:<capital>" (the two scenarios of the spec):
     base  (أساسي) -- our fill at the wallet's own price, fee 0.045 % per side: the backtest, replayed live;
     real  (واقعي) -- our fill at Hyperliquid's live mid the moment the bot SAW the fill, plus 0.045 % fee and
                      0.05 % slippage (0.095 %); a fill seen later than PORTFOLIO_STALE_SECONDS (feed outage, bot
@@ -15,7 +17,7 @@ Inputs (all public Hyperliquid data, no keys):
     - REST `clearinghouseState` per wallet (main dex + the dexes we hold) -- an exit we missed is closed
       after two snapshots agree the wallet is flat (never on one snapshot, never while a fill is in flight).
 State: `state['portfolio:state']` (both ledgers + feed position), tables `pf_seen` / `pf_events` / `pf_trades`,
-equity history under `portfolio:base` / `portfolio:real`, dashboard view in `state['portfolio_runtime']`.
+equity history under `portfolio:<scenario>:<capital>`, dashboard view in `state['portfolio_runtime']`.
 """
 
 from __future__ import annotations
@@ -36,7 +38,8 @@ from loco_copy.pf_ledger import DAY_MS, Ledger, Outcome, split_key
 from loco_copy.store import Store
 from loco_copy.tracker import aggregate_burst, chain_order
 
-STATE_KEY = "portfolio:state"
+#: v2 (2026-10-14): wallets 8bae + 8fc7 + 69b0 and three capitals -- the v1 state (Loco trio, $10k) is left unused
+STATE_KEY = "portfolio:state:v2"
 RUNTIME_KEY = "portfolio_runtime"
 MARK_SECONDS = 10
 EQUITY_HISTORY_SECONDS = 300
@@ -74,8 +77,6 @@ def parse_wallets(raw: str) -> list[Wallet]:
         out.append(Wallet(label, address, weight))
     if len({w.label for w in out}) != len(out) or len({w.address for w in out}) != len(out):
         raise ValueError("PORTFOLIO_WALLETS: labels and addresses must be unique")
-    if out and sum(w.weight for w in out) > 1.0001:
-        raise ValueError("PORTFOLIO_WALLETS: the weights add up to more than 1")
     return out
 
 
@@ -91,6 +92,18 @@ def parse_any_perp_fill(raw: dict[str, Any], received_at_ms: int, *, hip3: bool)
                       start_position=Decimal(str(raw.get("startPosition") or "0")), time_ms=int(raw["time"]),
                       tid=int(raw["tid"]), oid=int(raw["oid"]) if raw.get("oid") is not None else None,
                       received_at_ms=received_at_ms)
+
+
+def parse_capitals(raw: str) -> list[int]:
+    """`PORTFOLIO_START_EQUITIES=10000,50000,100000` -- one pair of ledgers (base / real) per starting balance."""
+    out = sorted({int(float(x)) for x in raw.split(",") if x.strip()})
+    if not out or any(c <= 0 for c in out):
+        raise ValueError("PORTFOLIO_START_EQUITIES: one or more positive amounts, e.g. 10000,50000,100000")
+    return out
+
+
+def ledger_name(scenario: str, capital: int) -> str:
+    return f"{scenario}:{capital}"
 
 
 def dex_of(coin: str) -> str:
@@ -117,18 +130,21 @@ class PortfolioSim:
         self.last_fill_at: dict[str, int] = {}  # wallet|coin -> when we last processed a fill of it
         self.lock = asyncio.Lock()
         self.started_ms = 0
-        self.ledgers = {
-            "base": self._ledger("base", float(s.portfolio_fee_base)),
-            "real": self._ledger("real", float(s.portfolio_fee_base + s.portfolio_slippage)),
-        }
+        self.capitals = parse_capitals(s.portfolio_start_equities)
+        self.ledgers: dict[str, Ledger] = {}
+        for cap in self.capitals:  # "base:10000", "real:10000", "base:50000", ...
+            self.ledgers[ledger_name("base", cap)] = self._ledger(ledger_name("base", cap), cap,
+                                                                  float(s.portfolio_fee_base))
+            self.ledgers[ledger_name("real", cap)] = self._ledger(ledger_name("real", cap), cap,
+                                                                  float(s.portfolio_fee_base + s.portfolio_slippage))
         self.backfill_wanted = asyncio.Event()
         self._last_history = 0
         self._snap_turn = 0
         self._poll_turn = 0
 
-    def _ledger(self, name: str, fee: float) -> Ledger:
+    def _ledger(self, name: str, capital: int, fee: float) -> Ledger:
         s = self.s
-        return Ledger(name, start_equity=float(s.portfolio_start_equity), leverage=s.portfolio_leverage, fee=fee,
+        return Ledger(name, start_equity=float(capital), leverage=s.portfolio_leverage, fee=fee,
                       cap_pct=float(s.portfolio_cap_pct), min_order=float(s.portfolio_min_order_usd),
                       max_total_x=float(s.portfolio_max_total_x),
                       dd_pause_pct=float(s.portfolio_dd_pause_pct) if s.portfolio_dd_pause_pct else None,
@@ -175,6 +191,10 @@ class PortfolioSim:
             if ledger.closed:
                 self.store.pf_insert_trades(ledger.closed)
                 ledger.closed = []
+            if ledger.orders:
+                self.log_orders(ledger)
+                self.store.pf_insert_orders(ledger.orders)
+                ledger.orders = []
 
     # -- start-up -------------------------------------------------------------------------------------------
 
@@ -235,6 +255,17 @@ class PortfolioSim:
             self.last_seen[address] = max(self.last_seen.get(address, 0), *(f.time_ms for f in new))
             self.save()
 
+    def log_orders(self, ledger: Ledger) -> None:
+        """Every simulated order of the smallest real account also goes to the bot log (dashboard «السجلات»):
+        which trader, coin, what we did, size, price and the fee taken off it."""
+        if ledger.name != ledger_name("real", self.capitals[0]):
+            return
+        for o in ledger.orders:
+            self.n.info("PF_ORDER", account=ledger.name, wallet=o["wallet"], coin=o["coin"], kind=o["kind"],
+                        side="BUY" if o["qty"] > 0 else "SELL", qty=round(abs(o["qty"]), 8), px=o["px"],
+                        notional=round(o["notional"], 2), fee=round(o["fee"], 4),
+                        equity=round(ledger.equity(), 2))
+
     def our_price(self, f: LeaderFill) -> tuple[float, bool]:
         """(the price the real ledger gets, whether it is the live mid)."""
         mid = self.mids.get(f.coin)
@@ -243,6 +274,8 @@ class PortfolioSim:
         return float(f.px), False
 
     def process(self, w: Wallet, f: LeaderFill) -> dict[str, Outcome]:
+        """One wallet fill through every ledger: base ones at its price, real ones at the live mid (and no new
+        trade when the fill is stale). The event row records what the smallest account did."""
         lag = f.received_at_ms - f.time_ms
         stale = lag > self.s.portfolio_stale_seconds * 1000
         weq = self.wallet_equity.get(w.address)
@@ -250,11 +283,15 @@ class PortfolioSim:
         px = float(f.px)
         real_px, live = self.our_price(f)
         s0, d = float(f.start_position), float(f.signed_sz)
-        out = {
-            "base": self.ledgers["base"].on_fill(w.label, w.weight, f.coin, s0, d, px, f.time_ms, wallet_eq),
-            "real": self.ledgers["real"].on_fill(w.label, w.weight, f.coin, s0, d, real_px, f.time_ms, wallet_eq,
-                                                 allow_new=not stale),
-        }
+        out: dict[str, Outcome] = {}
+        for name, ledger in self.ledgers.items():
+            if name.startswith("base:"):
+                out[name] = ledger.on_fill(w.label, w.weight, f.coin, s0, d, px, f.time_ms, wallet_eq)
+            else:
+                out[name] = ledger.on_fill(w.label, w.weight, f.coin, s0, d, real_px, f.time_ms, wallet_eq,
+                                           allow_new=not stale)
+        first = self.capitals[0]
+        out["base"], out["real"] = out[ledger_name("base", first)], out[ledger_name("real", first)]
         self.last_fill_at[f"{w.label}|{f.coin}"] = self.clock()
         self.store.pf_insert_event({
             "wallet": w.label, "tid": f.tid, "coin": f.coin, "side": f.side, "px": px, "sz": float(f.sz),
@@ -264,7 +301,7 @@ class PortfolioSim:
         if out["real"].action in ("OPEN", "CLOSE", "FLIP") or out["base"].action in ("OPEN", "CLOSE", "FLIP"):
             self.n.info("PF_FILL", wallet=w.label, coin=f.coin, base=out["base"].action, real=out["real"].action,
                         px=px, real_px=real_px, lag_ms=lag, wallet_equity=round(wallet_eq),
-                        equity_real=round(self.ledgers["real"].equity(), 2))
+                        equity_real=round(self.ledgers[ledger_name("real", first)].equity(), 2))
         if stale and out["real"].action == "SKIP_STALE":
             self.n.warning("PF_STALE_FILL", wallet=w.label, coin=f.coin, lag_s=lag // 1000)
         return out
@@ -446,19 +483,22 @@ class PortfolioSim:
 
     def daily_line(self) -> str:
         now = self.clock()
-        b, r = self.ledgers["base"], self.ledgers["real"]
-        trades = self.store.pf_trades_since(now - DAY_MS, ledger="real")
         days = (now - self.started_ms) / DAY_MS
-        r_ret = (r.equity() / r.start_equity - 1) * 100
-        return (f"New trio sim day {days:.0f} | real ${r.equity():,.2f} ({r_ret:+.2f}%)"
-                f" | base ${b.equity():,.2f} ({(b.equity() / b.start_equity - 1) * 100:+.2f}%)"
-                f" | max DD real {r.mdd * 100:.1f}% | closed today {len(trades)} | open {len(r.P)}"
-                f" | exposure {r.notional() / r.equity() if r.equity() > 0 else 0:.2f}x")
+        parts = [f"Trio sim (Hyperliquid) day {days:.0f}"]
+        for cap in self.capitals:
+            b, r = self.ledgers[ledger_name("base", cap)], self.ledgers[ledger_name("real", cap)]
+            parts.append(f"${cap:,}: real ${r.equity():,.0f} ({(r.equity() / r.start_equity - 1) * 100:+.2f}%, "
+                         f"max DD {r.mdd * 100:.1f}%) base ${b.equity():,.0f} "
+                         f"({(b.equity() / b.start_equity - 1) * 100:+.2f}%)")
+        r0 = self.ledgers[ledger_name("real", self.capitals[0])]
+        trades = self.store.pf_trades_since(now - DAY_MS, ledger=r0.name)
+        parts.append(f"closed today {len(trades)} | open {len(r0.P)}")
+        return " | ".join(parts)
 
     def write_runtime(self) -> None:
         now = self.clock()
         self.store.set_state(RUNTIME_KEY, {
-            "updated_ms": now, "started_ms": self.started_ms, "enabled": True,
+            "updated_ms": now, "started_ms": self.started_ms, "enabled": True, "capitals": self.capitals,
             "wallets": [{"label": w.label, "address": w.address, "weight": w.weight,
                          "equity": self.wallet_equity.get(w.address, (None, None))[0],
                          "equity_at_ms": self.wallet_equity.get(w.address, (None, None))[1],

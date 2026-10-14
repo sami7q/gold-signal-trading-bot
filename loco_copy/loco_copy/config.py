@@ -23,10 +23,10 @@ from loco_copy.constants import LIVE_CONFIRM_PHRASE
 #: The project folder (the one holding pyproject.toml), independent of the current working directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOCO_ADDRESS = "0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1"
-#: botup.md §V6 (portfolio-strategy-v1.md, 2026-10-14): Loco 50 % + 0x8477 25 % + 0xc0b2 25 %.
-DEFAULT_PORTFOLIO_WALLETS = ("loco:0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1:0.50,"
-                             "8477:0x8477e447846c758f5a675856001ea72298fd9cb5:0.25,"
-                             "c0b2:0xc0b2a1ce425d0cd8bc321c445fa6ae0eaed2e688:0.25")
+#: botup.md §V6 (owner, 2026-10-14): the v5 trio 8bae + 8fc7 + 69b0, each sized on the whole account (weight 1).
+DEFAULT_PORTFOLIO_WALLETS = ("8bae:0x8bae3527e5a33fa0cf184f37bc112d071463ab6d:1,"
+                             "8fc7:0x8fc7c0442e582bca195978c5a4fdec2e7c5bb0f7:1,"
+                             "69b0:0x69b05701f8175c276ecd0138387a197948e240bb:1")
 #: The v2 single leader. Its lane keeps every v2 name: state keys, `loco:` client ids, keyring service.
 DEFAULT_LABEL = "loco"
 LABEL_RE = re.compile(r"^[a-z0-9]{2,12}$")
@@ -41,10 +41,10 @@ GLOBAL_ONLY = frozenset({
     "shared_equity", "account_kill_dd_pct", "virtual_start_equity", "virtual_fee_rate", "fill_poll_seconds",
     "api_host", "api_port", "dashboard_origins", "api_cookie_secure", "session_days", "alert_telegram_token",
     "alert_telegram_chat_id", "hl_info_url", "hl_ws_url", "stale_feed_seconds",
-    "portfolio_enabled", "portfolio_wallets", "portfolio_leverage", "portfolio_start_equity", "portfolio_cap_pct",
+    "portfolio_enabled", "portfolio_wallets", "portfolio_leverage", "portfolio_start_equities", "portfolio_cap_pct",
     "portfolio_fee_base", "portfolio_slippage", "portfolio_min_order_usd", "portfolio_max_total_x",
     "portfolio_dd_pause_pct", "portfolio_dd_pause_days", "portfolio_copy_hip3", "portfolio_stale_seconds",
-    "portfolio_poll_seconds",
+    "portfolio_poll_seconds", "portfolio_expected",
 })
 
 
@@ -138,12 +138,13 @@ class Settings(BaseSettings):
     virtual_start_equity: Decimal = Field(default=Decimal("10000"), gt=0)
     virtual_fee_rate: Decimal = Field(default=Decimal("0.00055"), ge=0)
 
-    # -- the «new trio» portfolio simulator (botup.md §V6 = portfolio-strategy-v1.md). Simulation only: it never
-    #    sends an order. Weights are shares of ONE virtual account: R = K x w x E / W, CAP = cap% x L x w x E.
+    # -- the trio simulator on Hyperliquid (botup.md §V6). Simulation only: it never sends an order. Weight w of a
+    #    wallet: R = K x w x E / W, CAP = cap% x L x w x E (w = 1: sized on the whole account, as in v5).
     portfolio_enabled: bool = True
     portfolio_wallets: str = DEFAULT_PORTFOLIO_WALLETS
     portfolio_leverage: int = Field(default=3, ge=1, le=20)
-    portfolio_start_equity: Decimal = Field(default=Decimal("10000"), gt=0)
+    #: one pair of ledgers (base / real) per starting balance, all on the same fills
+    portfolio_start_equities: str = "10000,50000,100000"
     portfolio_cap_pct: Decimal = Field(default=Decimal("20"), gt=0, le=100)
     #: Hyperliquid taker fee (the "base" scenario); the "real" one adds PORTFOLIO_SLIPPAGE (0.045 + 0.05 = 0.095 %)
     portfolio_fee_base: Decimal = Field(default=Decimal("0.00045"), ge=0)
@@ -159,6 +160,9 @@ class Settings(BaseSettings):
     portfolio_stale_seconds: int = Field(default=120, ge=10)
     #: REST gap poll: every wallet once per this many seconds (in turn), next to the WebSocket
     portfolio_poll_seconds: int = Field(default=60, ge=10)
+    #: reference lines on the dashboard chart, label:yearly growth;label:growth (botup.md §V5.0 / §V5.4: realistic year
+    #: $10k -> $316,355 = x31.6; Monte Carlo with half the leaders' edge: $64,341 = x6.4)
+    portfolio_expected: str = "الاختبار الواقعي لسنة (+3064%):30.64;متحفظ — نصف أفضلية المتداولين (+543%):5.43"
 
     broker: Literal["paper", "bybit"] = "paper"
     broker_env: Literal["demo", "live"] = "demo"

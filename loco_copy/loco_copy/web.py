@@ -615,16 +615,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/portfolio")
-    def portfolio(_user: UserDep, store: StoreDep, days: int = 28) -> dict[str, Any]:
-        """The «new trio» simulator (botup.md §V6): both ledgers (base / real), their equity curves, open
-        positions, closed trades, every wallet fill with our price and latency, and the §9 go / no-go checks."""
+    def portfolio(_user: UserDep, store: StoreDep, days: int = 28, capital: int | None = None) -> dict[str, Any]:
+        """The trio simulator on Hyperliquid (botup.md §V6): for one starting balance, both ledgers (base / real),
+        their equity curves, open positions and closed trades; every wallet fill with our price and latency; a
+        summary of every balance; and the go / no-go checks."""
         rt = store.get_state("portfolio_runtime")
-        if not rt:
+        if not rt or "capitals" not in rt:
             return {"enabled": False}
+        capitals: list[int] = rt["capitals"]
+        cap = capital if capital in capitals else capitals[0]
+        names = {"base": f"base:{cap}", "real": f"real:{cap}"}
         now = now_ms()
         since = now - max(1, min(days, 365)) * DAY_MS
-        curves = {name: [{"t": iso(ts), "equity": float(eq)} for ts, eq in
-                         store.equity_history(f"portfolio:{name}", since)] for name in ("base", "real")}
+        curves = {sc: [{"t": iso(ts), "equity": float(eq)} for ts, eq in
+                       store.equity_history(f"portfolio:{name}", since)] for sc, name in names.items()}
         events = store.pf_events_since(since)
         lat = [float(e["detected_at_ms"] - e["leader_time_ms"]) for e in events]
         slip: list[float] = []
@@ -644,7 +648,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                "lag_ms": e["detected_at_ms"] - e["leader_time_ms"], "real_px": e["real_px"],
                                "slippage_bps": bps, "base_action": e["base_action"], "base_qty": e["base_qty"],
                                "real_action": e["real_action"], "real_qty": e["real_qty"]})
-        trades = {name: [dict(r) for r in store.pf_trades_since(since, ledger=name)] for name in ("base", "real")}
+        trades = {sc: [dict(r) for r in store.pf_trades_since(since, ledger=name)] for sc, name in names.items()}
+        orders = {sc: [{**dict(r), "time": iso(r["ts"])} for r in store.pf_orders_since(since, ledger=name)]
+                  for sc, name in names.items()}
+        fees = {sc: sum(o["fee"] for o in rows) for sc, rows in orders.items()}
         by_wallet: dict[str, dict[str, dict[str, Any]]] = {}
         for name, rows in trades.items():
             for r in rows:
@@ -659,8 +666,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for e in events:
             fills_by_wallet[e["wallet"]] += 1
         ledgers = rt.get("ledgers") or {}
-        real = ledgers.get("real") or {}
-        base = ledgers.get("base") or {}
+        real = ledgers.get(names["real"]) or {}
+        base = ledgers.get(names["base"]) or {}
         missed = sum(1 for r in store.logs_since(since) if r["type"] == "PF_MISSED_EXIT_CLOSED")
         stale = sum(1 for e in events if e["real_action"] == "SKIP_STALE")
         run_days = (now - int(rt.get("started_ms") or now)) / DAY_MS
@@ -678,9 +685,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ]
         trades_out = {name: [{**r, "opened": iso(r["opened_ms"]), "closed": iso(r["closed_ms"])} for r in rows[:80]]
                       for name, rows in trades.items()}
+        expected = []
+        for part in s.portfolio_expected.split(";"):
+            label, _, growth = part.rpartition(":")
+            if label and growth.strip():
+                expected.append({"label": label.strip(), "year": float(growth)})
+        summary = [{"capital": c, **{sc: {k: (ledgers.get(f"{sc}:{c}") or {}).get(k) for k in
+                                          ("equity", "return_pct", "max_drawdown_pct", "trades", "win_rate",
+                                           "liquidations", "open_trades", "exposure_x")}
+                                     for sc in ("base", "real")}} for c in capitals]
         return {
-            "enabled": True, "days": days, "runtime": rt, "run_days": run_days, "curves": curves,
-            "expected": {"backtest_real_year": 1.30, "walk_forward_year": 0.69},
+            "enabled": True, "days": days, "capital": cap, "capitals": capitals, "summary": summary,
+            "ledger": {"base": base, "real": real}, "runtime": {k: v for k, v in rt.items() if k != "ledgers"},
+            "run_days": run_days, "curves": curves, "expected": expected, "orders": orders, "fees_in_period": fees,
             "stats": {"events": len(events), "latency_p50_ms": percentile(lat, 0.5),
                       "latency_p95_ms": percentile(lat, 0.95), "slippage_median_bps": percentile(slip, 0.5),
                       "slippage_samples": len(slip), "stale": stale, "missed_exits": missed},

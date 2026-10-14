@@ -9,7 +9,7 @@ import { UserMenu } from "@/components/shell/user-menu";
 const NAV_ITEMS = [
   { href: "/", label: "نظرة عامة", icon: LayoutDashboard },
   { href: "/leaders", label: "المتداولين", icon: Users },
-  { href: "/portfolio", label: "الثلاثي الجديد (محاكاة)", icon: FlaskConical },
+  { href: "/portfolio", label: "محاكي الثلاثي (Hyperliquid)", icon: FlaskConical },
   { href: "/trio", label: "الثلاثي (مراقبة)", icon: Layers },
   { href: "/loco", label: "مراكز المتداولين", icon: Radar },
   { href: "/trades", label: "صفقاتنا", icon: ArrowLeftRight },

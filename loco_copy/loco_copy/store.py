@@ -104,6 +104,12 @@ CREATE TABLE IF NOT EXISTS pf_trades (
     reason TEXT NOT NULL, exit_px REAL
 );
 CREATE INDEX IF NOT EXISTS ix_pf_trades_closed ON pf_trades(ledger, closed_ms);
+CREATE TABLE IF NOT EXISTS pf_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ledger TEXT NOT NULL, wallet TEXT NOT NULL, coin TEXT NOT NULL,
+    kind TEXT NOT NULL, qty REAL NOT NULL, px REAL NOT NULL, notional REAL NOT NULL,
+    fee REAL NOT NULL, ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_pf_orders_ledger ON pf_orders(ledger, ts);
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
@@ -484,6 +490,16 @@ class Store:
         with self.tx() as db:
             db.executemany(f"INSERT INTO pf_trades ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
                            [tuple(r.get(c) for c in cols) for r in rows])
+
+    def pf_insert_orders(self, rows: list[dict[str, Any]]) -> None:
+        cols = ("ledger", "wallet", "coin", "kind", "qty", "px", "notional", "fee", "ts")
+        with self.tx() as db:
+            db.executemany(f"INSERT INTO pf_orders ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                           [tuple(r.get(c) for c in cols) for r in rows])
+
+    def pf_orders_since(self, since_ms: int, *, ledger: str, limit: int = 200) -> list[sqlite3.Row]:
+        return list(self._db.execute("SELECT * FROM pf_orders WHERE ledger = ? AND ts >= ? ORDER BY id DESC LIMIT ?",
+                                     (ledger, since_ms, limit)))
 
     def pf_trades_since(self, since_ms: int, *, ledger: str | None = None) -> list[sqlite3.Row]:
         q = "SELECT * FROM pf_trades WHERE closed_ms >= ?"

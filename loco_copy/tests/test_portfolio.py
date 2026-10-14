@@ -158,7 +158,7 @@ async def test_live_prices_staleness_and_dedupe(tmp_path):
     now[0] = T0 + 500
     sim.on_mids({"mids": {"BTC": "101"}})
     await sim.on_raw_fills(LOCO, [raw(0, "BTC", "B", 100, 1, 0, 1)], False)
-    base, real = sim.ledgers["base"], sim.ledgers["real"]
+    base, real = sim.ledgers["base:10000"], sim.ledgers["real:10000"]
     assert base.P["loco|BTC"]["a"] == 100 and real.P["loco|BTC"]["a"] == 101  # real = live mid when seen
     await sim.on_raw_fills(LOCO, [raw(0, "BTC", "B", 100, 1, 0, 1)], False)  # same tid again: ignored
     assert len(store.pf_events_since(0)) == 1
@@ -166,7 +166,7 @@ async def test_live_prices_staleness_and_dedupe(tmp_path):
     await sim.on_raw_fills(W8477, [raw(1000, "xyz:TSLA", "A", 400, 10, 0, 2)], False)
     assert "8477|xyz:TSLA" in base.P and "8477|xyz:TSLA" not in real.P
     assert store.pf_events_since(0)[0]["real_action"] == "SKIP_STALE"
-    assert sim.ledgers["real"].on_fill("8477", 0.25, "xyz:TSLA", -10, 10, 400.0, T0 + 2000, 1.0).action == "WAIT"
+    assert sim.ledgers["real:10000"].on_fill("8477", 0.25, "xyz:TSLA", -10, 10, 400.0, T0 + 2000, 1.0).action == "WAIT"
 
 
 async def test_spot_and_outcome_fills_are_dropped():
@@ -175,7 +175,7 @@ async def test_spot_and_outcome_fills_are_dropped():
     assert parse_any_perp_fill(raw(0, "xyz:TSLA", "B", 1, 1, 0, 1), T0, hip3=False) is None
     assert parse_any_perp_fill(raw(0, "xyz:TSLA", "B", 1, 1, 0, 1), T0, hip3=True) is not None
     with pytest.raises(ValueError):
-        parse_wallets(f"a:{LOCO}:0.7,b:{W8477}:0.7")
+        parse_wallets(f"a:{LOCO}:1.5,b:{W8477}:1")
 
 
 async def test_missed_exit_needs_two_flat_snapshots(tmp_path):
@@ -187,14 +187,14 @@ async def test_missed_exit_needs_two_flat_snapshots(tmp_path):
     client.positions[LOCO] = [{"position": {"coin": "BTC", "szi": "1"}}]
     now[0] += 60_000
     await sim.check_missed_exits(sim.wallets[0])
-    assert "loco|BTC" in sim.ledgers["real"].P
+    assert "loco|BTC" in sim.ledgers["real:10000"].P
     client.positions[LOCO] = []  # the wallet is flat but its close never reached us
     now[0] += 60_000
     await sim.check_missed_exits(sim.wallets[0])
-    assert "loco|BTC" in sim.ledgers["real"].P  # one snapshot is never enough
+    assert "loco|BTC" in sim.ledgers["real:10000"].P  # one snapshot is never enough
     now[0] += 60_000
     await sim.check_missed_exits(sim.wallets[0])
-    assert "loco|BTC" not in sim.ledgers["real"].P and "loco|BTC" not in sim.ledgers["base"].P
+    assert "loco|BTC" not in sim.ledgers["real:10000"].P and "loco|BTC" not in sim.ledgers["base:10000"].P
     assert store.pf_trades_since(0)[0]["reason"] == "RECONCILED"
 
 
@@ -234,7 +234,14 @@ async def test_dashboard_api(tmp_path):
     with TestClient(app, headers={"origin": ORIGIN}) as c:
         login(c)
         d = c.get("/api/portfolio").json()
-    assert d["enabled"] and d["runtime"]["ledgers"]["real"]["positions"][0]["coin"] == "BTC"
+        d50 = c.get("/api/portfolio?capital=50000").json()
+    assert d["enabled"] and d["capital"] == 10000 and d["capitals"] == [10000, 50000, 100000]
+    assert d["ledger"]["real"]["positions"][0]["coin"] == "BTC"
+    big = d["summary"][2]["real"]  # $100k: same move, 10x the size
+    assert big["equity"] is not None and d["summary"][0]["real"]["open_trades"] == big["open_trades"] == 1
+    pos10, pos50 = d["ledger"]["real"]["positions"][0], d50["ledger"]["real"]["positions"][0]
+    assert d50["capital"] == 50000 and pos50["notional"] == pytest.approx(5 * pos10["notional"], rel=1e-6)
+    assert d["expected"][0]["year"] == pytest.approx(30.64)
     assert d["recent"][0]["slippage_bps"] == pytest.approx(10, abs=0.01)
     assert d["stats"]["latency_p50_ms"] == pytest.approx(300)
     assert {c["key"] for c in d["checks"]} >= {"days", "max_dd", "liquidations", "missed_exits"}
@@ -247,13 +254,32 @@ async def test_removed_wallet_is_followed_to_its_exits_only(tmp_path):
     await sim.start()
     now[0] = T0 + 100
     await sim.on_raw_fills(W8477, [raw(0, "ETH", "B", 10, 100, 0, 1)], False)
-    assert "8477|ETH" in sim.ledgers["base"].P
+    assert "8477|ETH" in sim.ledgers["base:10000"].P
     s2 = make_settings(tmp_path, portfolio_wallets=f"loco:{LOCO}:0.5")  # 8477 taken out
     sim2 = PortfolioSim(s2, store, Notifier(store, echo=False), sim.client, clock=lambda: now[0])
     await sim2.start()
     assert W8477 in sim2.addresses and sim2.by_address[W8477].weight == 0
     now[0] += 1000
     await sim2.on_raw_fills(W8477, [raw(1000, "BTC", "B", 100, 1, 0, 2)], False)  # a new trade: never copied
-    assert "8477|BTC" not in sim2.ledgers["base"].P
+    assert "8477|BTC" not in sim2.ledgers["base:10000"].P
     await sim2.on_raw_fills(W8477, [raw(1001, "ETH", "A", 11, 100, 100, 3)], False)  # its exit: followed
-    assert "8477|ETH" not in sim2.ledgers["base"].P
+    assert "8477|ETH" not in sim2.ledgers["base:10000"].P
+
+
+async def test_every_order_is_logged_with_its_fee(tmp_path):
+    now = [T0 - 1000]
+    sim, store, _ = make_sim(tmp_path, now)
+    await sim.start()
+    now[0] = T0 + 500
+    sim.on_mids({"mids": {"BTC": "100"}})
+    await sim.on_raw_fills(LOCO, [raw(0, "BTC", "B", 100, 1, 0, 1)], False)  # open
+    await sim.on_raw_fills(LOCO, [raw(100, "BTC", "A", 100, 1, 1, 2)], False)  # close
+    rows = store.pf_orders_since(0, ledger="real:10000")
+    assert [r["kind"] for r in rows] == ["CLOSE", "OPEN"]
+    assert rows[1]["fee"] == pytest.approx(rows[1]["notional"] * 0.00095)
+    big = store.pf_orders_since(0, ledger="real:100000")
+    assert big[1]["notional"] == pytest.approx(10 * rows[1]["notional"])
+    trade = store.pf_trades_since(0, ledger="real:10000")[0]
+    assert trade["pnl"] == pytest.approx(-(rows[0]["fee"] + rows[1]["fee"]))  # flat price: the fees are the loss
+    logged = [json.loads(r["payload"]) for r in store.logs_since(0) if r["type"] == "PF_ORDER"]
+    assert [x["kind"] for x in logged] == ["OPEN", "CLOSE"] and logged[0]["account"] == "real:10000"

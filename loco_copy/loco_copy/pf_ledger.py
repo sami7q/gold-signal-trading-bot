@@ -83,6 +83,9 @@ class Ledger:
         self.per_wallet: dict[str, dict[str, float]] = {}
         #: closed trades not yet written to the database (the simulator drains it)
         self.closed: list[dict[str, Any]] = []
+        #: every simulated order (our side: qty, price, fee) not yet written to the database -- the order log
+        self.orders: list[dict[str, Any]] = []
+        self._ctx: tuple[int, str] = (0, "")  # (time, kind) of the order being booked
 
     # -- account --------------------------------------------------------------------------------------------
 
@@ -116,6 +119,10 @@ class Ledger:
         fe = abs(dq) * px * self.fee
         self.cash -= fe
         self.fees_paid += fe
+        wallet, coin = split_key(k)
+        t, kind = self._ctx
+        self.orders.append({"ledger": self.name, "wallet": wallet, "coin": coin, "kind": kind, "qty": dq, "px": px,
+                            "notional": abs(dq) * px, "fee": fe, "ts": t})
         tr = self.T.get(k)
         if tr is not None:
             tr["pnl"] -= fe
@@ -179,6 +186,7 @@ class Ledger:
         if flat1:
             q = self.P[k]["q"] if k in self.P else 0.0
             had = k in self.T
+            self._ctx = (t, "CLOSE")
             self._close_trade(k, px, t, "CLOSE")
             return Outcome("CLOSE" if had else "IGNORED", -q, px)
         base, dd = s0, d
@@ -186,6 +194,7 @@ class Ledger:
         closed_q = 0.0
         if flip:
             closed_q = -self.P[k]["q"] if k in self.P else 0.0
+            self._ctx = (t, "FLIP_CLOSE")
             self._close_trade(k, px, t, "FLIP")
             base, dd = 0.0, s1
             action = "FLIP"
@@ -220,6 +229,7 @@ class Ledger:
             if tr["pend"] * px >= self.min_order:
                 q = tr["pend"] * (1 if s1 > 0 else -1)
                 was_open = tr["opened"]
+                self._ctx = (t, "ADD" if was_open else "FLIP_OPEN" if action == "FLIP" else "OPEN")
                 if was_open:
                     tr["adds"] += 1
                 self._trade(k, q, px)
@@ -234,6 +244,7 @@ class Ledger:
             rq = abs(p["q"]) * (1 - frac)
             if rq * px >= self.min_order:
                 q = -rq * (1 if p["q"] > 0 else -1)
+                self._ctx = (t, "REDUCE")
                 self._trade(k, q, px)
         tr["pend"] *= frac
         return Outcome(action or "REDUCE", q, px)
@@ -244,6 +255,7 @@ class Ledger:
         if k not in self.P and k not in self.T:
             return False
         self.M[coin] = px
+        self._ctx = (t, reason)
         self._close_trade(k, px, t, reason)
         self.WAIT[k] = False
         return True
@@ -265,6 +277,12 @@ class Ledger:
             liquidated = list(self.P)
             for k in liquidated:
                 self.WAIT[k] = True
+                lw, lc = split_key(k)
+                lp = self.P[k]
+                self.orders.append({"ledger": self.name, "wallet": lw, "coin": lc, "kind": "LIQUIDATED",
+                                    "qty": -lp["q"], "px": prices.get(lc, self.M.get(lc, lp["a"])),
+                                    "notional": abs(lp["q"]) * prices.get(lc, self.M.get(lc, lp["a"])), "fee": 0.0,
+                                    "ts": t})
                 tr = self.T.pop(k, None)
                 if tr is not None and tr["opened"]:
                     wallet, coin = split_key(k)
@@ -304,6 +322,7 @@ class Ledger:
                         "entry": p["a"], "mark": m, "notional": abs(p["q"]) * m, "upnl": p["q"] * (m - p["a"]),
                         "cap": tr.get("cap"), "r": tr.get("R"), "adds": tr.get("adds", 0),
                         "capped": tr.get("capped", 0), "opened_ms": tr.get("t0"), "realized": tr.get("pnl", 0.0),
+                        "fees": tr.get("fees", 0.0),
                         "maxlev": self.maxlev(coin)})
         return sorted(out, key=lambda x: -x["notional"])
 
