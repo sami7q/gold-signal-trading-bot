@@ -49,6 +49,23 @@ const ACTION_AR: Record<string, { label: string; tone: "gold" | "win" | "loss" |
   SKIP_NO_EQUITY: { label: "رصيده غير معروف", tone: "loss" },
 };
 
+/** Why a fill did what it did -- every case the ledger can return (pf_ledger.Outcome). */
+const ACTION_WHY: Record<string, string> = {
+  OPEN: "نُسخت: فُتحت صفقة",
+  ADD: "نُسخت: عُزّزت الصفقة",
+  REDUCE: "نُسخت: قُلّصت بنفس نسبة المتداول",
+  CLOSE: "نُسخت: أُغلقت مع المتداول",
+  FLIP: "نُسخت: أُغلقت وفُتحت بالاتجاه المعاكس",
+  PENDING: "لم تُنفّذ بعد: الحجم أقل من $10 — يُجمع مع التعزيز التالي",
+  CAPPED: "رُفضت: الصفقة بلغت سقف 20% من الرصيد",
+  EXPOSURE: "رُفضت: الحجم الكلي سيتجاوز 6 أضعاف الرصيد",
+  WAIT: "لم تُنسخ: مركز فتحه المتداول قبل بدء المحاكي — يُنتظر حتى يغلقه",
+  IGNORED: "لا شيء: لا نحمل حصة في هذه الصفقة",
+  SKIP_PAUSED: "رُفضت: الحساب نزل 25% من قمته — لا صفقات جديدة 7 أيام",
+  SKIP_STALE: "رُفضت: وصلت الحركة بعد أكثر من دقيقتين",
+  SKIP_NO_EQUITY: "رُفضت: رصيد المتداول غير معروف — لا يمكن حساب الحجم",
+};
+
 const ORDER_AR: Record<string, { label: string; tone: "gold" | "win" | "loss" | "warn" | "info" | "neutral" }> = {
   OPEN: { label: "فتح صفقة", tone: "gold" },
   ADD: { label: "تعزيز", tone: "win" },
@@ -82,7 +99,11 @@ const CHECKS: Record<PfCheck["key"], { label: string; target: string; show: (v: 
 
 function ActionBadge({ action }: { action: string }) {
   const a = ACTION_AR[action] ?? { label: action, tone: "neutral" as const };
-  return <Badge tone={a.tone}>{a.label}</Badge>;
+  return (
+    <span title={ACTION_WHY[action]}>
+      <Badge tone={a.tone}>{a.label}</Badge>
+    </span>
+  );
 }
 
 function Side({ side }: { side: number }) {
@@ -246,6 +267,16 @@ export default function PortfolioPage() {
             icon={FlaskConical}
             title="المحاكي لم يبدأ بعد"
             description="يبدأ تلقائيًا عند تشغيل البوت بالإصدار الجديد (PORTFOLIO_ENABLED=true، وهو الافتراضي) — أعد تشغيل البوت على السيرفر."
+          />
+        </Card>
+      ) : !d.ledger?.real || !d.ledger?.base || !d.stats ? (
+        // The page and the server's API are from different versions (the page was published before the bot was
+        // updated): say so instead of crashing on the missing fields.
+        <Card>
+          <EmptyState
+            icon={FlaskConical}
+            title="البوت على السيرفر بإصدار أقدم من هذه الصفحة"
+            description="حدّث ملفات البوت على السيرفر وأعد تشغيله وتشغيل واجهة اللوحة، ثم حدّث الصفحة."
           />
         </Card>
       ) : (
@@ -572,7 +603,7 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
           <EmptyState icon={FlaskConical} title="لا حركات بعد" description="أول حركة تظهر هنا خلال ثوانٍ من تنفيذها." />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1040px] text-left text-sm">
+            <table className="w-full min-w-[1320px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border-soft text-[11px] text-muted-dim">
                   <Th>الوقت</Th>
@@ -587,6 +618,7 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
                   <Th end>الالتقاط</Th>
                   <Th>واقعي</Th>
                   <Th>أساسي</Th>
+                  <Th>السبب (واقعي)</Th>
                 </tr>
               </thead>
               <tbody className="font-data whitespace-nowrap">
@@ -606,6 +638,10 @@ function Body({ d, scenario, fetchedAt }: { d: PortfolioPanel; scenario: Scenari
                     <td className={cn("px-3 py-2 text-right", e.lag_ms > 10_000 ? "text-warn" : "text-muted")}>{formatMs(e.lag_ms)}</td>
                     <td className="px-3 py-2"><ActionBadge action={e.real_action} /></td>
                     <td className="px-3 py-2"><ActionBadge action={e.base_action} /></td>
+                    <td dir="rtl" className={cn("px-3 py-2 text-start font-sans text-xs",
+                      /^(رُفضت|لم)/.test(ACTION_WHY[e.real_action] ?? "") ? "text-warn" : "text-muted")}>
+                      {ACTION_WHY[e.real_action] ?? e.real_action}
+                    </td>
                   </tr>
                 ))}
               </tbody>

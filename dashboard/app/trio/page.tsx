@@ -11,6 +11,7 @@ import { Label, Select } from "@/components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { useVirtual } from "@/hooks/use-loco";
 import {
+  arRejection,
   cn,
   formatDateTime,
   formatMoney,
@@ -28,6 +29,20 @@ import type { GoCheck, VirtualPanel } from "@/types/api";
 
 const CHART_TEXT = "#8b8f98";
 const GOLD = "#c9a227";
+
+/** What happened to a leader move that was not rejected (a rejection shows its own reason). */
+const DECISION_WHY: Record<string, string> = {
+  COPIED: "نُسخت: فُتحت صفقة على الحساب",
+  OBSERVED_ONLY: "نُسخت افتراضيًا: فُتحت صفقة على الحساب الافتراضي",
+  ADDED: "نُسخت: عُزّزت الصفقة بنفس النسبة",
+  ADD_PENDING: "لم تُنفّذ بعد: الحجم أقل من الحد الأدنى — يُجمع مع التعزيز التالي",
+  ADD_CAPPED: "لم تُنسخ: الصفقة بلغت سقف 20% من الرصيد",
+  REDUCED: "نُسخت: قُلّصت بنفس نسبة المتداول",
+  CLOSED: "نُسخت: أُغلقت مع المتداول",
+  FOLLOWED: "نُسخت: تمت متابعة الخروج",
+  NO_MATCHING_COPY: "لا شيء: لا صفقة لنا مقابلها (فُتحت قبل البدء أو رُفضت)",
+  FAILED: "فشل التنفيذ — انظر السجلات",
+};
 
 // botup.md v5 §V5.6 -- every check must pass before the trio may trade even on the Bybit demo.
 const CHECKS: Record<GoCheck["key"], { label: string; target: string; show: (v: number | null) => string }> = {
@@ -347,7 +362,7 @@ export default function TrioPage() {
               <EmptyState icon={Layers} title="لا حركات بعد" description="المتداولون الثلاثة يفتحون نحو 5 صفقات في الأسبوع معًا." />
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[960px] text-left text-sm">
+                <table className="w-full min-w-[1240px] text-left text-sm">
                   <thead>
                     <tr className="border-b border-border-soft text-[11px] text-muted-dim">
                       <Th>الوقت</Th>
@@ -359,6 +374,7 @@ export default function TrioPage() {
                       <Th end>الفرق</Th>
                       <Th end>الالتقاط</Th>
                       <Th>القرار</Th>
+                      <Th>السبب</Th>
                     </tr>
                   </thead>
                   <tbody className="font-data whitespace-nowrap">
@@ -375,6 +391,10 @@ export default function TrioPage() {
                         </td>
                         <td className={cn("px-3 py-2 text-right", e.lag_ms > 10_000 ? "text-warn" : "text-muted")}>{formatMs(e.lag_ms)}</td>
                         <td className="px-3 py-2"><DecisionBadge decision={e.decision} /></td>
+                        <td dir="rtl" className={cn("max-w-[26rem] px-3 py-2 text-start font-sans text-xs",
+                          e.rejection ? "text-warn" : "text-muted")}>
+                          {e.rejection ? arRejection(e.rejection) : DECISION_WHY[e.decision] ?? e.detail ?? "—"}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

@@ -51,7 +51,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <Menu className="h-5 w-5" strokeWidth={1.75} />
           </button>
-          <span className="font-data text-sm font-semibold tracking-tight text-gold-bright">LOCO</span>
+          <span className="text-sm font-bold text-gold-bright">بوت الفلوووووس</span>
           <div className="min-w-0 flex-1" />
           <UserMenu variant="mobile" />
         </div>

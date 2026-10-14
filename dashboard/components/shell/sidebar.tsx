@@ -22,8 +22,7 @@ const NAV_ITEMS = [
 export function Brand() {
   return (
     <span className="flex items-center gap-2">
-      <span className="font-data text-lg font-semibold tracking-tight text-gold-bright">LOCO</span>
-      <span className="text-sm font-medium text-muted">نسخ الصفقات</span>
+      <span className="text-lg font-bold text-gold-bright">بوت الفلوووووس</span>
     </span>
   );
 }

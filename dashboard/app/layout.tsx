@@ -17,7 +17,7 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LOCO — نسخ صفقات",
+  title: "بوت الفلوووووس",
   description: "لوحة تحكم بوت نسخ صفقات المتداولين من Hyperliquid إلى Bybit.",
 };
 

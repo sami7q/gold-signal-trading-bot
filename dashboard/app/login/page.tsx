@@ -46,10 +46,8 @@ function LoginForm() {
     <div className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-1.5 text-center">
-          <span className="font-data text-2xl font-semibold tracking-tight text-gold-bright">
-            LOCO
-          </span>
-          <span className="text-sm font-medium text-muted">نسخ صفقات المتداولين إلى Bybit</span>
+          <span className="text-2xl font-bold text-gold-bright">بوت الفلوووووس</span>
+          <span className="text-sm font-medium text-muted">نسخ صفقات المتداولين</span>
         </div>
 
         <form
