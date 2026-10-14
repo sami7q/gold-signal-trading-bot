@@ -1,7 +1,7 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, isNotFound } from "@/lib/api";
 import { livePoll } from "@/lib/live";
 import type {
   Analytics,
@@ -50,6 +50,7 @@ export function useCopies(status?: string, limit = 200, leader?: string) {
   return useQuery({
     queryKey: ["copies", status ?? "ALL", limit, leader ?? "ALL"],
     queryFn: () => api.get<CopyTrade[]>(`/api/copies?${qs}`),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -74,6 +75,7 @@ export function useEvents(decision?: string, limit = 200, leader?: string) {
   return useQuery({
     queryKey: ["events", decision ?? "ALL", limit, leader ?? "ALL"],
     queryFn: () => api.get<LeaderEvent[]>(`/api/events?${qs}`),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -82,6 +84,7 @@ export function useLogs(level?: string, limit = 300) {
   return useQuery({
     queryKey: ["logs", level ?? "ALL", limit],
     queryFn: () => api.get<LogEntry[]>(`/api/logs?${qs}`),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -90,29 +93,42 @@ export function useAnalytics(days: number, leader?: string) {
   return useQuery({
     queryKey: ["analytics", days, leader ?? "ALL"],
     queryFn: () => api.get<Analytics>(`/api/analytics?${qs}`),
+    placeholderData: keepPreviousData,
     refetchInterval: livePoll(30_000),
   });
 }
 
-/** botup.md §V6: the «new trio» portfolio simulator (both scenarios, Hyperliquid prices). */
+/** Query options shared by the hooks and the sidebar's hover prefetch (botup.md §V12): same key, same fetch. */
+export const portfolioOptions = (days = 28, capital?: number, group = "trio") => ({
+  queryKey: ["portfolio", group, days, capital ?? null] as const,
+  queryFn: () =>
+    api.get<PortfolioPanel>(
+      `/api/portfolio?days=${days}&group=${encodeURIComponent(group)}${capital ? `&capital=${capital}` : ""}`,
+    ),
+});
+
+export const compareOptions = (capital?: number) => ({
+  queryKey: ["portfolio-compare", capital ?? null] as const,
+  queryFn: () => api.get<PortfolioCompare>(`/api/portfolio/compare${capital ? `?capital=${capital}` : ""}`),
+});
+
+export const researchOptions = () => ({
+  queryKey: ["research"] as const,
+  queryFn: () => api.get<ResearchData>("/api/research"),
+});
+
+/** botup.md §V6: the «new trio» portfolio simulator (both scenarios, Hyperliquid prices); §V10 any section. */
 export function usePortfolio(days = 28, capital?: number, group = "trio") {
   return useQuery({
-    queryKey: ["portfolio", group, days, capital ?? null],
-    queryFn: () =>
-      api.get<PortfolioPanel>(
-        `/api/portfolio?days=${days}&group=${encodeURIComponent(group)}${capital ? `&capital=${capital}` : ""}`,
-      ),
+    ...portfolioOptions(days, capital, group),
     refetchInterval: livePoll(15_000),
+    placeholderData: keepPreviousData, // switching balance / period keeps the page on screen while it loads
   });
 }
 
 /** botup.md §V10: every simulator section side by side. */
 export function usePortfolioCompare(capital?: number) {
-  return useQuery({
-    queryKey: ["portfolio-compare", capital ?? null],
-    queryFn: () => api.get<PortfolioCompare>(`/api/portfolio/compare${capital ? `?capital=${capital}` : ""}`),
-    refetchInterval: livePoll(30_000),
-  });
+  return useQuery({ ...compareOptions(capital), refetchInterval: livePoll(30_000), placeholderData: keepPreviousData });
 }
 
 /** botup.md §V7: one trader + coin -- his fills, our orders, our position and its liquidation price. */
@@ -160,7 +176,7 @@ export function useRefreshAdvice() {
 
 /** botup.md §V9: the research export (top 10 wallets, mixes, reports). */
 export function useResearch() {
-  return useQuery({ queryKey: ["research"], queryFn: () => api.get<ResearchData>("/api/research"), staleTime: 60_000 });
+  return useQuery({ ...researchOptions(), staleTime: 60_000, retry: (n, e) => !isNotFound(e) && n < 1 });
 }
 
 /** The v5 trio panel: the virtual cross account and the observe-phase numbers. */

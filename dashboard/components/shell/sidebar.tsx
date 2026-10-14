@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { compareOptions, portfolioOptions, researchOptions } from "@/hooks/use-loco";
 import { LayoutDashboard, ArrowLeftRight, Radar, Activity, LineChart, SlidersHorizontal, ScrollText, Users, Layers, FlaskConical, X, Trophy, Blend, FileText, Scale } from "lucide-react";
 import { cn } from "@/lib/format";
 import { UserMenu } from "@/components/shell/user-menu";
@@ -38,8 +40,19 @@ export function Brand() {
   );
 }
 
+/** botup.md §V12: the data a page needs first, fetched while the pointer is still over its link. */
+function prefetchFor(qc: QueryClient, href: string): void {
+  const fresh = { staleTime: 10_000 };
+  if (href === "/portfolio") void qc.prefetchQuery({ ...portfolioOptions(28, undefined, "trio"), ...fresh });
+  else if (href === "/portfolio/compare") void qc.prefetchQuery({ ...compareOptions(), ...fresh });
+  else if (href.startsWith("/portfolio/")) void qc.prefetchQuery({ ...portfolioOptions(28, undefined, href.split("/")[2]), ...fresh });
+  else if (href.startsWith("/research")) void qc.prefetchQuery({ ...researchOptions(), ...fresh });
+}
+
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const warm = (href: string) => prefetchFor(queryClient, href);
 
   return (
     <aside
@@ -78,6 +91,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             <Link
               href={item.href}
               onClick={onClose}
+              onMouseEnter={() => warm(item.href)}
+              onFocus={() => warm(item.href)}
               className={cn(
                 "flex items-center gap-2.5 rounded px-2.5 py-2.5 text-sm transition-colors lg:py-2",
                 active ? "bg-gold/10 text-gold-bright" : "text-muted hover:bg-white/5 hover:text-bone",

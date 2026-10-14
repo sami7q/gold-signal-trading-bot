@@ -11,6 +11,7 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-stat
 import { LiveTradeChart } from "@/components/trade/live-chart";
 import { AiAdvisor } from "@/components/trade/ai-advisor";
 import { useAdviceAlerts, usePortfolio } from "@/hooks/use-loco";
+import { ServerOutdated } from "@/components/ui/server-outdated";
 import {
   cn,
   formatDateTime,
@@ -242,6 +243,8 @@ export function PortfolioView({ group = "trio" }: { group?: string }) {
   const isTrio = group === "trio";
   const labels = g?.labels ?? GROUP_LABELS[group] ?? [];
   const wrongGroup = d?.enabled && g !== undefined && g.name !== group;
+  // a bot from before §V10 ignores ?group= and answers with the trio: never show the trio under a mix's title
+  const oldServer = !isTrio && d?.enabled === true && g === undefined;
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -290,6 +293,8 @@ export function PortfolioView({ group = "trio" }: { group?: string }) {
         <LoadingState />
       ) : query.isError || !d ? (
         <ErrorState message={(query.error as Error | null)?.message ?? "—"} />
+      ) : oldServer ? (
+        <ServerOutdated what="محاكيات الرباعيين" />
       ) : wrongGroup ? (
         <Card>
           <EmptyState

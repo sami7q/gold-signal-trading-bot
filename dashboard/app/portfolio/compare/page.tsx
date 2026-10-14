@@ -11,6 +11,8 @@ import { StatCard } from "@/components/ui/stat-card";
 import { Label, Select } from "@/components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { usePortfolioCompare } from "@/hooks/use-loco";
+import { isNotFound } from "@/lib/api";
+import { ServerOutdated } from "@/components/ui/server-outdated";
 import { cn, formatDateTime, formatMoney, formatNumber, formatUsd, pnlClass } from "@/lib/format";
 import type { PfCompareGroup, PortfolioCompare } from "@/types/api";
 
@@ -327,6 +329,8 @@ export default function PortfolioComparePage() {
       </div>
       {q.isLoading ? (
         <LoadingState />
+      ) : isNotFound(q.error) ? (
+        <ServerOutdated what="صفحة المقارنة" />
       ) : q.isError || !d ? (
         <ErrorState message={(q.error as Error | null)?.message ?? "—"} />
       ) : !d.enabled || !d.groups?.length ? (

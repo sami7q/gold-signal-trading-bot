@@ -6,6 +6,8 @@ import { FileSearch } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { useResearch } from "@/hooks/use-loco";
+import { isNotFound } from "@/lib/api";
+import { ServerOutdated } from "@/components/ui/server-outdated";
 import { cn, formatNumber } from "@/lib/format";
 import type { ResearchData } from "@/types/api";
 
@@ -53,6 +55,7 @@ export function WalletChip({ label, address }: { label: string; address?: string
 export function ResearchGate({ children }: { children: (d: ResearchData) => React.ReactNode }) {
   const q = useResearch();
   if (q.isLoading) return <LoadingState />;
+  if (isNotFound(q.error)) return <ServerOutdated what="صفحات البحث" />;
   if (q.isError || !q.data) return <ErrorState message={(q.error as Error | null)?.message ?? "—"} />;
   if (!q.data.available) {
     return (
