@@ -614,6 +614,80 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "checks": checks,
         }
 
+    @app.get("/api/portfolio")
+    def portfolio(_user: UserDep, store: StoreDep, days: int = 28) -> dict[str, Any]:
+        """The «new trio» simulator (botup.md §V6): both ledgers (base / real), their equity curves, open
+        positions, closed trades, every wallet fill with our price and latency, and the §9 go / no-go checks."""
+        rt = store.get_state("portfolio_runtime")
+        if not rt:
+            return {"enabled": False}
+        now = now_ms()
+        since = now - max(1, min(days, 365)) * DAY_MS
+        curves = {name: [{"t": iso(ts), "equity": float(eq)} for ts, eq in
+                         store.equity_history(f"portfolio:{name}", since)] for name in ("base", "real")}
+        events = store.pf_events_since(since)
+        lat = [float(e["detected_at_ms"] - e["leader_time_ms"]) for e in events]
+        slip: list[float] = []
+        recent = []
+        for i, e in enumerate(events):
+            bps = None
+            if e["real_px"] and e["px"]:
+                bps = (1 if e["side"] == "B" else -1) * (e["real_px"] / e["px"] - 1) * 10_000
+                if abs(bps) < 5000:
+                    slip.append(bps)
+                else:
+                    bps = None
+            if i < 60:
+                recent.append({"id": e["id"], "wallet": e["wallet"], "coin": e["coin"], "side": e["side"],
+                               "px": e["px"], "sz": e["sz"], "start_pos": e["start_pos"],
+                               "leader_time": iso(e["leader_time_ms"]), "detected_at": iso(e["detected_at_ms"]),
+                               "lag_ms": e["detected_at_ms"] - e["leader_time_ms"], "real_px": e["real_px"],
+                               "slippage_bps": bps, "base_action": e["base_action"], "base_qty": e["base_qty"],
+                               "real_action": e["real_action"], "real_qty": e["real_qty"]})
+        trades = {name: [dict(r) for r in store.pf_trades_since(since, ledger=name)] for name in ("base", "real")}
+        by_wallet: dict[str, dict[str, dict[str, Any]]] = {}
+        for name, rows in trades.items():
+            for r in rows:
+                w = by_wallet.setdefault(r["wallet"], {}).setdefault(
+                    name, {"trades": 0, "wins": 0, "pnl": 0.0, "fees": 0.0, "liquidated": 0})
+                w["trades"] += 1
+                w["wins"] += (r["pnl"] or 0) > 0
+                w["pnl"] += r["pnl"] or 0.0
+                w["fees"] += r["fees"] or 0.0
+                w["liquidated"] += r["reason"] == "LIQUIDATED"
+        fills_by_wallet: dict[str, int] = defaultdict(int)
+        for e in events:
+            fills_by_wallet[e["wallet"]] += 1
+        ledgers = rt.get("ledgers") or {}
+        real = ledgers.get("real") or {}
+        base = ledgers.get("base") or {}
+        missed = sum(1 for r in store.logs_since(since) if r["type"] == "PF_MISSED_EXIT_CLOSED")
+        stale = sum(1 for e in events if e["real_action"] == "SKIP_STALE")
+        run_days = (now - int(rt.get("started_ms") or now)) / DAY_MS
+        gap = None
+        if base.get("equity") and real.get("equity") is not None and base.get("start_equity"):
+            gap = (float(real["equity"]) - float(base["equity"])) / float(base["start_equity"]) * 100
+        checks = [
+            {"key": "days", "value": run_days, "pass": run_days >= 14},
+            {"key": "max_dd", "value": real.get("max_drawdown_pct"),
+             "pass": None if real.get("max_drawdown_pct") is None else real["max_drawdown_pct"] < 20},
+            {"key": "liquidations", "value": real.get("liquidations", 0), "pass": not real.get("liquidations")},
+            {"key": "missed_exits", "value": missed, "pass": missed == 0},
+            {"key": "stale", "value": stale, "pass": stale == 0},
+            {"key": "real_vs_base", "value": gap, "pass": None},
+        ]
+        trades_out = {name: [{**r, "opened": iso(r["opened_ms"]), "closed": iso(r["closed_ms"])} for r in rows[:80]]
+                      for name, rows in trades.items()}
+        return {
+            "enabled": True, "days": days, "runtime": rt, "run_days": run_days, "curves": curves,
+            "expected": {"backtest_real_year": 1.30, "walk_forward_year": 0.69},
+            "stats": {"events": len(events), "latency_p50_ms": percentile(lat, 0.5),
+                      "latency_p95_ms": percentile(lat, 0.95), "slippage_median_bps": percentile(slip, 0.5),
+                      "slippage_samples": len(slip), "stale": stale, "missed_exits": missed},
+            "by_wallet": by_wallet, "fills_by_wallet": fills_by_wallet, "trades": trades_out, "recent": recent,
+            "checks": checks,
+        }
+
     @app.get("/api/settings")
     def settings_view(_user: UserDep, store: StoreDep) -> dict[str, Any]:
         base = lanes[default_label]

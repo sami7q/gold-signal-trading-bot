@@ -27,6 +27,8 @@ from loco_copy.tracker import chain_order, is_main_perp
 
 FillHandler = Callable[[list[LeaderFill], bool], Awaitable[None]]  # (one delivery in chain order, is_history)
 FrameHandler = Callable[[], None]
+#: raw `userFills` items of one address, every dex (the portfolio simulator, botup.md §V6), and is_history
+RawFillHandler = Callable[[str, list[dict[str, Any]], bool], Awaitable[None]]
 
 WEIGHT_BUDGET_PER_MIN = 900
 
@@ -146,9 +148,14 @@ class HyperliquidFeed:
                  on_frame: FrameHandler, last_seen_ms: Callable[[str], int | None],
                  on_connected: Callable[[], None] | None = None,
                  on_error: Callable[[str], None] | None = None,
-                 on_unknown_user: Callable[[str], None] | None = None) -> None:
+                 on_unknown_user: Callable[[str], None] | None = None,
+                 raw_users: dict[str, RawFillHandler] | None = None, mid_dexes: list[str] | None = None,
+                 on_mids: Callable[[dict[str, Any]], None] | None = None) -> None:
         self._ws_url = ws_url
         self._handlers = {address.lower(): handler for address, handler in users.items()}
+        self._raw = {address.lower(): handler for address, handler in (raw_users or {}).items()}
+        self._mid_dexes = list(mid_dexes or [])  # "" = main dex
+        self._on_mids = on_mids
         self._client = client
         self._on_frame = on_frame
         self._last_seen = last_seen_ms
@@ -158,6 +165,7 @@ class HyperliquidFeed:
         self.connected = False
         self.reconnects = 0
         self._queues: dict[str, asyncio.Queue[tuple[list[LeaderFill], bool]]] = {}
+        self._raw_queues: dict[str, asyncio.Queue[tuple[list[dict[str, Any]], bool]]] = {}
         self._workers: list[asyncio.Task[None]] = []
 
     def _start_workers(self) -> None:
@@ -169,6 +177,20 @@ class HyperliquidFeed:
             queue: asyncio.Queue[tuple[list[LeaderFill], bool]] = asyncio.Queue()
             self._queues[user] = queue
             self._workers.append(asyncio.create_task(self._work(queue, handler)))
+        for user, raw_handler in self._raw.items():
+            raw_queue: asyncio.Queue[tuple[list[dict[str, Any]], bool]] = asyncio.Queue()
+            self._raw_queues[user] = raw_queue
+            self._workers.append(asyncio.create_task(self._work_raw(user, raw_queue, raw_handler)))
+
+    async def _work_raw(self, user: str, queue: asyncio.Queue[tuple[list[dict[str, Any]], bool]],
+                        handler: RawFillHandler) -> None:
+        while True:
+            raws, is_history = await queue.get()
+            try:
+                await handler(user, raws, is_history)
+            except Exception as exc:  # noqa: BLE001 - the simulator must never stop the feed
+                if self._on_error:
+                    self._on_error(f"raw handler: {type(exc).__name__}: {exc}")
 
     async def _work(self, queue: asyncio.Queue[tuple[list[LeaderFill], bool]], handler: FillHandler) -> None:
         while True:
@@ -193,9 +215,12 @@ class HyperliquidFeed:
             try:
                 async with websockets.connect(self._ws_url, ping_interval=None, close_timeout=5,
                                               max_size=50 * 1024 * 1024) as ws:
-                    for user in self._handlers:
+                    for user in dict.fromkeys([*self._handlers, *self._raw]):
                         await ws.send(json.dumps({"method": "subscribe",
                                                   "subscription": {"type": "userFills", "user": user}}))
+                    for dex in self._mid_dexes:
+                        sub: dict[str, Any] = {"type": "allMids"} | ({"dex": dex} if dex else {})
+                        await ws.send(json.dumps({"method": "subscribe", "subscription": sub}))
                     self.connected = True
                     if self._on_connected:
                         self._on_connected()
@@ -235,10 +260,26 @@ class HyperliquidFeed:
 
     async def _dispatch(self, message: str | bytes) -> None:
         msg = json.loads(message)
-        if msg.get("channel") != "userFills":
+        channel = msg.get("channel")
+        if channel == "allMids":
+            if self._on_mids:
+                self._on_mids(msg.get("data") or {})
+            return
+        if channel != "userFills":
             return
         data = msg.get("data") or {}
         user = str(data.get("user") or "").lower()
+        raw_queue = self._raw_queues.get(user)
+        raw_handler = self._raw.get(user)
+        if raw_handler is not None:
+            raws = list(data.get("fills", []) or [])
+            if raws:
+                if raw_queue is None:
+                    await raw_handler(user, raws, bool(data.get("isSnapshot")))
+                else:
+                    raw_queue.put_nowait((raws, bool(data.get("isSnapshot"))))
+            if user not in self._handlers:
+                return
         handler = self._handlers.get(user)
         if handler is None and not user and len(self._handlers) == 1:
             handler = next(iter(self._handlers.values()))  # a frame without `user` can only be the one leader

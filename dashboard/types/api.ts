@@ -478,3 +478,154 @@ export interface LeaderSummary {
   virtual_account: string | null;
   virtual: LaneLedger | null;
 }
+
+// -- botup.md §V6: the «new trio» portfolio simulator (/api/portfolio) ---------------------------------------
+
+export interface PfPosition {
+  wallet: string;
+  coin: string;
+  side: number;
+  qty: number;
+  entry: number;
+  mark: number;
+  notional: number;
+  upnl: number;
+  cap: number | null;
+  r: number | null;
+  adds: number;
+  capped: number;
+  opened_ms: number | null;
+  realized: number;
+  maxlev: number;
+}
+
+export interface PfLedger {
+  name: "base" | "real";
+  equity: number;
+  cash: number;
+  unrealized: number;
+  start_equity: number;
+  return_pct: number;
+  notional: number;
+  exposure_x: number | null;
+  maintenance: number;
+  liq_distance: number | null;
+  peak: number;
+  drawdown_pct: number;
+  max_drawdown_pct: number;
+  paused_until: number | null;
+  pauses: number;
+  liquidations: number;
+  trades: number;
+  wins: number;
+  win_rate: number | null;
+  fees_paid: number;
+  open_trades: number;
+  leverage: number;
+  fee: number;
+  positions: PfPosition[];
+}
+
+export interface PfWallet {
+  label: string;
+  address: string;
+  weight: number;
+  equity: number | null;
+  equity_at_ms: number | null;
+  last_fill_ms: number | null;
+}
+
+export interface PfRuntime {
+  updated_ms: number;
+  started_ms: number;
+  wallets: PfWallet[];
+  settings: {
+    leverage: number;
+    k: number;
+    cap_pct: number;
+    fee_base: number;
+    fee_real: number;
+    min_order: number;
+    max_total_x: number;
+    dd_pause_pct: number;
+    dd_pause_days: number;
+    copy_hip3: boolean;
+    stale_seconds: number;
+  };
+  prices: { coins: number; dexes: string[] };
+  ledgers: { base: PfLedger; real: PfLedger };
+}
+
+export interface PfTrade {
+  id: number;
+  ledger: string;
+  wallet: string;
+  coin: string;
+  side: number;
+  opened: string | null;
+  closed: string | null;
+  pnl: number | null;
+  fees: number;
+  max_notional: number;
+  cap: number | null;
+  adds: number;
+  capped: number;
+  reason: string;
+  exit_px: number | null;
+}
+
+export interface PfEvent {
+  id: number;
+  wallet: string;
+  coin: string;
+  side: "B" | "A";
+  px: number;
+  sz: number;
+  start_pos: number;
+  leader_time: string;
+  detected_at: string;
+  lag_ms: number;
+  real_px: number | null;
+  slippage_bps: number | null;
+  base_action: string;
+  base_qty: number;
+  real_action: string;
+  real_qty: number;
+}
+
+export interface PfCheck {
+  key: "days" | "max_dd" | "liquidations" | "missed_exits" | "stale" | "real_vs_base";
+  value: number | null;
+  pass: boolean | null;
+}
+
+export interface PfWalletStats {
+  trades: number;
+  wins: number;
+  pnl: number;
+  fees: number;
+  liquidated: number;
+}
+
+export interface PortfolioPanel {
+  enabled: boolean;
+  days?: number;
+  runtime?: PfRuntime;
+  run_days?: number;
+  curves?: { base: { t: string; equity: number }[]; real: { t: string; equity: number }[] };
+  expected?: { backtest_real_year: number; walk_forward_year: number };
+  stats?: {
+    events: number;
+    latency_p50_ms: number | null;
+    latency_p95_ms: number | null;
+    slippage_median_bps: number | null;
+    slippage_samples: number;
+    stale: number;
+    missed_exits: number;
+  };
+  by_wallet?: Record<string, Partial<Record<"base" | "real", PfWalletStats>>>;
+  fills_by_wallet?: Record<string, number>;
+  trades?: { base: PfTrade[]; real: PfTrade[] };
+  recent?: PfEvent[];
+  checks?: PfCheck[];
+}

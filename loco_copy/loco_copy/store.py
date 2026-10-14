@@ -87,6 +87,23 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
     password_hash TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pf_seen (
+    wallet TEXT NOT NULL, tid INTEGER NOT NULL, time_ms INTEGER NOT NULL, PRIMARY KEY (wallet, tid)
+);
+CREATE TABLE IF NOT EXISTS pf_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, wallet TEXT NOT NULL, tid INTEGER NOT NULL, coin TEXT NOT NULL,
+    side TEXT NOT NULL, px REAL NOT NULL, sz REAL NOT NULL, start_pos REAL NOT NULL, leader_time_ms INTEGER NOT NULL,
+    detected_at_ms INTEGER NOT NULL, real_px REAL, base_action TEXT NOT NULL, base_qty REAL NOT NULL,
+    real_action TEXT NOT NULL, real_qty REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_pf_events_detected ON pf_events(detected_at_ms);
+CREATE TABLE IF NOT EXISTS pf_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ledger TEXT NOT NULL, wallet TEXT NOT NULL, coin TEXT NOT NULL,
+    side INTEGER NOT NULL, opened_ms INTEGER, closed_ms INTEGER NOT NULL, pnl REAL, fees REAL NOT NULL,
+    max_notional REAL NOT NULL, cap REAL, r REAL, adds INTEGER NOT NULL, capped INTEGER NOT NULL,
+    reason TEXT NOT NULL, exit_px REAL
+);
+CREATE INDEX IF NOT EXISTS ix_pf_trades_closed ON pf_trades(ledger, closed_ms);
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
@@ -440,6 +457,44 @@ class Store:
             args += list(levels)
         return list(self._db.execute(q + " ORDER BY id", args))
 
+
+    # -- the «new trio» portfolio simulator (botup.md §V6; tables created above, additive) ------------------
+
+    def pf_mark_seen(self, wallet: str, f: LeaderFill) -> bool:
+        """True the first time this wallet fill (tid) is seen."""
+        with self.tx() as db:
+            cur = db.execute("INSERT OR IGNORE INTO pf_seen (wallet, tid, time_ms) VALUES (?,?,?)",
+                             (wallet, f.tid, f.time_ms))
+            return cur.rowcount == 1
+
+    def pf_prune_seen(self, before_ms: int) -> None:
+        with self.tx() as db:
+            db.execute("DELETE FROM pf_seen WHERE time_ms < ?", (before_ms,))
+
+    def pf_insert_event(self, row: dict[str, Any]) -> None:
+        cols = ("wallet", "tid", "coin", "side", "px", "sz", "start_pos", "leader_time_ms", "detected_at_ms",
+                "real_px", "base_action", "base_qty", "real_action", "real_qty")
+        with self.tx() as db:
+            db.execute(f"INSERT INTO pf_events ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                       tuple(row.get(c) for c in cols))
+
+    def pf_insert_trades(self, rows: list[dict[str, Any]]) -> None:
+        cols = ("ledger", "wallet", "coin", "side", "opened_ms", "closed_ms", "pnl", "fees", "max_notional", "cap",
+                "r", "adds", "capped", "reason", "exit_px")
+        with self.tx() as db:
+            db.executemany(f"INSERT INTO pf_trades ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                           [tuple(r.get(c) for c in cols) for r in rows])
+
+    def pf_trades_since(self, since_ms: int, *, ledger: str | None = None) -> list[sqlite3.Row]:
+        q = "SELECT * FROM pf_trades WHERE closed_ms >= ?"
+        args: list[Any] = [since_ms]
+        if ledger:
+            q, args = q + " AND ledger = ?", [*args, ledger]
+        return list(self._db.execute(q + " ORDER BY closed_ms DESC", args))
+
+    def pf_events_since(self, since_ms: int, *, limit: int = 100000) -> list[sqlite3.Row]:
+        return list(self._db.execute("SELECT * FROM pf_events WHERE detected_at_ms >= ? ORDER BY id DESC LIMIT ?",
+                                     (since_ms, limit)))
 
     # -- dashboard users / sessions --------------------------------------------------------------------------
 

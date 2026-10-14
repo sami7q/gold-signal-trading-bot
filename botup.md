@@ -1,318 +1,328 @@
-# botup.md — loco-copy v4: «Loco 20% Cap, Cross» (follow adds, cross margin, Bybit demo)
+# botup.md — loco-copy الإصدار v4: «سقف 20% بهامش مشترك» (نسخ التعزيزات، هامش Cross، حساب Bybit التجريبي)
 
-> **Audience:** whoever implements the next step inside `loco_copy/`. Read `loco_copy/README.md` first.
+> **لمن هذا الملف:** لكل من ينفّذ الخطوة التالية داخل `loco_copy/`. اقرأ `loco_copy/README.md` أولًا.
 >
-> **Revised:** 2026-10-11. **Supersedes v3** (multi-leader lanes, first-fill only). v3 is kept at
-> `docs/strategy/botup_v3_2026-10-11.md`; the lane code already in `config.py` stays and is reused.
+> **آخر مراجعة:** 2026-10-11. **يحلّ محل v3** (متداولون متعددون، أول صفقة فقط). نسخة v3 محفوظة في
+> `docs/strategy/botup_v3_2026-10-11.md`؛ كود المتداولين الموجود في `config.py` يبقى ويُعاد استخدامه.
+> النسخة الإنجليزية من هذا الملف محفوظة في `docs/strategy/botup_v5_2026-10-12_en.md`.
 >
-> **The strategy:** `docs/strategy/Loco_Copy_Strategy_Final_Bybit.md` (owner's final spec, v1.0). Implement it
-> **literally**, with the corrections in §2. Anything not in that spec is not part of the strategy.
+> **الاستراتيجية:** `docs/strategy/Loco_Copy_Strategy_Final_Bybit.md` (المواصفة النهائية للمالك، الإصدار 1.0). تُنفَّذ
+> **حرفيًا**، مع التصحيحات في §2. كل ما ليس في تلك المواصفة ليس جزءًا من الاستراتيجية.
 >
-> **Current decision (2026-10-12):** trio plan approved — see **§V5.0–V5.8** at the end of this file (documentation only; code not started).
-> **Where v4 (§0–§12) and V5 differ, V5 wins:** leaders = 8bae + 8fc7 + 69b0 in one shared account (Loco = watch-only), leverage **3** (not 5), size `R = 0.8·L·E0/W0` per lane with the 20 % margin cap, no $ cap, account kill switch 25 %. The v4 per-fill algorithm (§4), symbol corrections (§2) and safety rules stay valid for every lane.
+> **القرار الأحدث (2026-10-14):** محاكي «الثلاثي الجديد» (Loco ‏50% + ‏0x8477 ‏25% + ‏0xc0b2 ‏25%، أسعار Hyperliquid،
+> كل الأسواق) **مبني ومختبر ويعمل داخل البوت ولوحة التحكم (صفحة `/portfolio`)** — انظر **§V6** في آخر الملف. ثلاثي v5 أدناه
+> يبقى يعمل بالتوازي بلا تغيير.
 >
-> **Hard rules (unchanged):** simulation first, demo second, real money last · exits are never blocked ·
-> keys only in the OS keyring · not financial advice.
+> **القرار السابق (2026-10-12):** خطة الثلاثي معتمدة — انظر **§V5.0–V5.8** في آخر الملف. **نُفّذت الخطة وتعمل منذ 2026-10-12 (مرحلة المراقبة، بدون أي أوامر) — الحالة والملاحظات في §V5.9.**
+> **حيث يختلف v4 (§0–§12) عن v5، الكلمة لـ v5:** المتداولون = 8bae + 8fc7 + 69b0 في حساب واحد مشترك (Loco = مراقبة فقط)، الرافعة **3** (لا 5)، الحجم `R = 0.8·L·E0/W0` لكل متداول مع سقف هامش 20%، بدون سقف بالدولار، قاطع الحساب عند 25%. خوارزمية v4 لكل صفقة (§4) وتصحيحات الرموز (§2) وقواعد الأمان تبقى سارية على كل متداول.
+>
+> **قواعد ثابتة (لم تتغير):** المحاكاة أولًا، الحساب التجريبي ثانيًا، المال الحقيقي أخيرًا · الخروج لا يُمنع أبدًا ·
+> المفاتيح في مخزن مفاتيح النظام فقط · ليست نصيحة مالية.
 
 ---
 
-## 0. What changes from v3
+## 0. ما الذي تغيّر عن v3
 
-| Area | v3 (today) | v4 (this plan) |
+| المجال | v3 (سابقًا) | v4 (هذه الخطة) |
 |---|---|---|
-| Leaders | lanes `loco` + `3ea` | **lane `loco` only.** `3ea` is removed from `LEADERS` (no strategy supports it). |
-| Entry | first fill only, adds ignored (`IGNORED_ADD`) | **every fill is copied**: open, adds (DCA), partial exits, close, flip |
-| Size | 10 % of equity × 20x on the first fill | ratio `R = K × E0 / W0` fixed per trade, `K = 0.8 × leverage`; adds stop at the **20 % margin cap** |
-| Margin | ISOLATED, 20x | **CROSS** (Bybit unified `REGULAR_MARGIN`), leverage **5** (or 3), per symbol `min(L, maxLeverage)` |
-| Exits | Loco's exit **or** TP +2.5 % | **only** Loco's exit (no TP, no SL, no trailing) |
-| Owner decisions | D-1 open | **D-1 = (b) follow adds with a cap** (decided). D-2 = one Bybit demo account (single leader). D-3 n/a. |
+| المتداولون | `loco` + `3ea` | **`loco` فقط.** حُذف `3ea` من `LEADERS` (لا استراتيجية تناسبه). |
+| الدخول | أول صفقة فقط، والتعزيزات متجاهلة (`IGNORED_ADD`) | **كل حركة تُنسخ**: فتح، تعزيز (DCA)، خروج جزئي، إغلاق، انعكاس |
+| الحجم | 10% من الرصيد × 20x على أول صفقة | نسبة `R = K × E0 / W0` ثابتة لكل صفقة، `K = 0.8 × الرافعة`؛ التعزيزات تتوقف عند **سقف هامش 20%** |
+| الهامش | معزول (ISOLATED) 20x | **مشترك (CROSS)** (‏`REGULAR_MARGIN` في حساب Bybit الموحّد)، رافعة **5** (أو 3)، لكل رمز `min(L, maxLeverage)` |
+| الخروج | خروج Loco **أو** هدف ربح +2.5% | خروج Loco **فقط** (بدون هدف ربح، بدون وقف خسارة، بدون وقف متحرك) |
+| قرارات المالك | D-1 مفتوح | **D-1 = (ب) نسخ التعزيزات مع سقف** (تقرّر). D-2 = حساب Bybit تجريبي واحد (متداول واحد). D-3 لا ينطبق. |
 
-Research behind it (independently verified, `hyperliquid_copy_research/reports/2026-10-11_verify_external_ar.md`,
+البحث وراء هذا القرار (تحقّق منه بشكل مستقل، `hyperliquid_copy_research/reports/2026-10-11_verify_external_ar.md`،
 `2026-10-11_year_loco_ar.md`):
-- Ignoring adds at 20x loses money (365 d first-fill: −$9,122 fixed margin, 86 liquidations).
-- DCA **without** a per-trade cap is wiped out in Oct–Dec 2025 (3x and 5x reach $0).
-- This spec (cross + 20 % cap) had **0 liquidations** for one year, also when started on 2025-09-27 (before the
-  10 Oct 2025 crash).
+- تجاهل التعزيزات برافعة 20x خاسر (365 يومًا بأول صفقة: −$9,122 بهامش ثابت، 86 تصفية).
+- التعزيز (DCA) **بدون** سقف لكل صفقة يُمسح بالكامل في أكتوبر–ديسمبر 2025 (3x و5x يصلان إلى $0).
+- هذه المواصفة (هامش مشترك + سقف 20%) كان فيها **0 تصفيات** على سنة كاملة، حتى عند البدء في 2025-09-27 (قبل
+  انهيار 10 أكتوبر 2025).
 
 ---
 
-## 1. Expected behaviour (benchmarks for the 30-day demo)
+## 1. السلوك المتوقع (مرجع لمرحلة الحساب التجريبي 30 يومًا)
 
-Verified backtest, 2025-10-10 → 2026-10-09, $10,000, Loco crypto perps only (what Bybit can trade), taker fee +
-slippage 0.095 % per side, cross margin, no funding:
+اختبار تاريخي مُتحقَّق منه، 2025-10-10 ← 2026-10-09، ‏$10,000، عقود Loco الرقمية فقط (ما يمكن تداوله في Bybit)، رسوم
+تنفيذ + انزلاق 0.095% لكل جهة، هامش مشترك، بدون تمويل (funding):
 
-| | 3x cross | 5x cross |
+| | 3x مشترك | 5x مشترك |
 |---|---|---|
-| $10,000 after 1 year | $17,841 (+78 %) | $25,518 (+155 %) |
-| Win rate (closed trades) | 78.6 % | 78.6 % |
-| Max drawdown, live equity | 16.4 % | 26.7 % |
-| Liquidations | 0 | 0 |
-| Closed trades | 416 / year (≈ 1.1 / day) | 416 / year |
-| Closest to liquidation (equity ÷ maintenance, HL rule) | ≈ 7× | ≈ 3.9× (2026-10-08) |
+| ‏$10,000 بعد سنة | $17,841 (+78%) | $25,518 (+155%) |
+| نسبة الربح (الصفقات المغلقة) | 78.6% | 78.6% |
+| أقصى تراجع للرصيد الحي | 16.4% | 26.7% |
+| التصفيات | 0 | 0 |
+| الصفقات المغلقة | 416 / سنة (≈ 1.1 / يوم) | 416 / سنة |
+| أقرب مسافة من التصفية (الرصيد ÷ هامش الصيانة، قاعدة Hyperliquid) | ≈ 7× | ≈ 3.9× (2026-10-08) |
 
-Monthly net at 5x (same run): Oct-25 +$2,576 · Nov +$1,173 · Dec +$396 · Jan −$1,000 · Feb +$2,272 · Mar +$1,039 ·
-Apr −$859 · May +$473 · Jun +$965 · Jul +$299 · Aug +$5,560 · Sep +$5,070 · Oct-26 +$583.
-Source: `data/hunt/verify_sim_a.json` keys `3x_cross_cryptoonly_taker+slip`, `5x_cross_cryptoonly_taker+slip`.
+الصافي الشهري عند 5x (نفس التشغيل): أكتوبر-25 +$2,576 · نوفمبر +$1,173 · ديسمبر +$396 · يناير −$1,000 · فبراير +$2,272 ·
+مارس +$1,039 · أبريل −$859 · مايو +$473 · يونيو +$965 · يوليو +$299 · أغسطس +$5,560 · سبتمبر +$5,070 · أكتوبر-26 +$583.
+المصدر: `data/hunt/verify_sim_a.json` المفتاحان `3x_cross_cryptoonly_taker+slip` و`5x_cross_cryptoonly_taker+slip`.
 
 ---
 
-## 2. Corrections to the spec (apply these; they do not change the strategy)
+## 2. تصحيحات على المواصفة (تُطبَّق؛ ولا تغيّر الاستراتيجية)
 
-| # | Spec text | Correction | Why |
+| # | نص المواصفة | التصحيح | السبب |
 |---|---|---|---|
-| C-1 | §3: «kPEPE → 1000PEPEUSDT … convert size ÷1000 and price ×1000» | **No conversion** when the target is `1000PEPEUSDT` (1 contract = 1000 PEPE = 1 kPEPE). Convert only if the only listed symbol is `PEPEUSDT` (then size ×1000, price ÷1000). Keep the existing `symbols.py` logic (`price_multiplier`), which is already correct. | Wrong conversion would trade 1000× too small / mis-price. |
-| C-2 | §8: «about 690 trades a year», «win ≈ 80–81 %» | With `copy_xyz_dex=false`: **≈ 416 trades/year**, win **≈ 79 %** (see §1). 690 / 81 % include the xyz stock markets and maker fees. | Go/no-go must use crypto-only numbers. |
-| C-3 | §4.1: `E0 = unified account totalEquity` | Read `totalEquity` of the **account** row (`get_wallet_balance accountType=UNIFIED` → `list[0].totalEquity`), not the USDT coin `equity` that `BybitBroker.account()` returns today. | Matches the spec and the backtest (equity incl. unrealized PnL). |
-| C-4 | §5: reconciliation «correct with a market order» | Allowed only when the Hyperliquid snapshot is **fresh (< 90 s)** and the correction stays within `CAP_NOTIONAL`; otherwise mark the copy `unsynced` and alert (existing «never guess» rule). Never opens a trade. | A stale snapshot must not move money. |
-| C-5 | §8: median holding ≈ 7 h | Not verified by the research (180 d crypto median was ≈ 10.5 h). Do not use as a go/no-go metric. | Unverified number. |
-| C-6 | Liquidation maths | The backtest used Hyperliquid's maintenance (`notional / (2 × maxLeverage)`). Bybit uses risk-limit tiers (`riskLimit` / `maintenanceMargin` from `/v5/market/risk-limit`). The paper broker and the dashboard «distance to liquidation» must use Bybit's tier-1 MMR per symbol. | Demo = Bybit rules. |
+| C-1 | §3: «kPEPE ← 1000PEPEUSDT … حوّل الحجم ÷1000 والسعر ×1000» | **بدون تحويل** عندما يكون الهدف `1000PEPEUSDT` (عقد واحد = 1000 PEPE = 1 kPEPE). التحويل فقط إذا كان الرمز الوحيد المدرج `PEPEUSDT` (عندها الحجم ×1000 والسعر ÷1000). يبقى منطق `symbols.py` الحالي (`price_multiplier`) فهو صحيح أصلًا. | التحويل الخاطئ يتداول بحجم أصغر 1000 مرة أو بسعر خاطئ. |
+| C-2 | §8: «حوالي 690 صفقة في السنة»، «نسبة ربح ≈ 80–81%» | مع `copy_xyz_dex=false`: **≈ 416 صفقة/سنة**، نسبة ربح **≈ 79%** (انظر §1). أرقام 690 / 81% تشمل أسواق الأسهم xyz ورسوم الصانع. | شروط الانتقال يجب أن تستخدم أرقام العملات الرقمية فقط. |
+| C-3 | §4.1: `E0 = totalEquity للحساب الموحّد` | يُقرأ `totalEquity` من سطر **الحساب** (`get_wallet_balance accountType=UNIFIED` ← `list[0].totalEquity`)، لا `equity` لعملة USDT الذي كان يعيده `BybitBroker.account()`. | يطابق المواصفة والاختبار التاريخي (الرصيد شاملًا الربح غير المحقق). |
+| C-4 | §5: المطابقة «تُصحَّح بأمر سوق» | مسموح فقط عندما تكون لقطة Hyperliquid **حديثة (< 90 ثانية)** ويبقى التصحيح ضمن `CAP_NOTIONAL`؛ وإلا تُعلَّم الصفقة «غير متزامنة» ويُرسل تنبيه (قاعدة «لا تخمين أبدًا» الحالية). لا تفتح صفقة أبدًا. | لقطة قديمة يجب ألا تحرّك المال. |
+| C-5 | §8: وسيط مدة الاحتفاظ ≈ 7 ساعات | لم يتحقق منه البحث (وسيط 180 يومًا للعملات الرقمية كان ≈ 10.5 ساعة). لا يُستخدم كشرط انتقال. | رقم غير مُتحقَّق. |
+| C-6 | حساب التصفية | الاختبار التاريخي استخدم صيانة Hyperliquid (`الحجم / (2 × maxLeverage)`). Bybit يستخدم شرائح حدود المخاطرة (`riskLimit` / `maintenanceMargin` من `/v5/market/risk-limit`). الحساب الورقي و«المسافة من التصفية» في لوحة التحكم يستخدمان نسبة الصيانة للشريحة الأولى في Bybit لكل رمز. | الحساب التجريبي = قواعد Bybit. |
 
 ---
 
-## 3. Configuration (`.env`)
+## 3. الإعدادات (`.env`)
 
 ```env
 LEADERS=loco:0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1
-STRATEGY=cap20_cross            # new; the only strategy allowed with FOLLOW_ADDS=true
-MARGIN_MODE=CROSS               # new; cap20_cross refuses ISOLATED
-LEVERAGE=5                      # 5 (aggressive) or 3 (calmer); never change during a run
-SIZE_K=                         # empty = 0.8 x LEVERAGE (4.0 at 5x, 2.4 at 3x)
+STRATEGY=cap20_cross            # جديد؛ الاستراتيجية الوحيدة المسموح معها FOLLOW_ADDS=true
+MARGIN_MODE=CROSS               # جديد؛ cap20_cross ترفض ISOLATED
+LEVERAGE=5                      # 5 (هجومي) أو 3 (أهدأ)؛ لا تُغيَّر أثناء التشغيل
+SIZE_K=                         # فارغ = 0.8 × الرافعة (4.0 عند 5x، و2.4 عند 3x)
 PER_TRADE_MARGIN_CAP_PCT=20
 FOLLOW_ADDS=true
 FOLLOW_REDUCES=true
-TAKE_PROFIT_ROI=                # empty = no TP (required by cap20_cross)
-PROTECTIVE_SL_PCT=              # empty (required)
+TAKE_PROFIT_ROI=                # فارغ = بدون هدف ربح (مطلوب في cap20_cross)
+PROTECTIVE_SL_PCT=              # فارغ (مطلوب)
 COPY_XYZ_DEX=false
 COPY_SPOT=false
-FILL_POLL_SECONDS=2             # REST poll fallback next to the WS
+FILL_POLL_SECONDS=2             # سحب احتياطي عبر REST بجانب الاتصال اللحظي
 RECONCILE_SECONDS=60
 LEADER_EQUITY_REFRESH_SECONDS=300
 MAX_TOTAL_NOTIONAL_X_EQUITY=6.0
 FEED_OUTAGE_BLOCK_SECONDS=120
-# Not part of the strategy -> OFF for cap20_cross (they would make the demo deviate from the backtest):
-DAILY_LOSS_LIMIT_PCT=           # off
-LEADER_DD_BREAKER_PCT=          # off
-MAX_ENTRY_DRIFT=                # off
-MAX_SIGNAL_AGE_MS=              # off for adds/reduces/closes; opens use FEED_OUTAGE_BLOCK_SECONDS
-MAX_OPEN_POSITIONS=             # off
-BROKER=paper                    # paper -> bybit demo (M3) -> live (M5, owner only)
+# ليست جزءًا من الاستراتيجية -> متوقفة في cap20_cross (تجعل التجريبي يبتعد عن الاختبار التاريخي):
+DAILY_LOSS_LIMIT_PCT=           # متوقف
+LEADER_DD_BREAKER_PCT=          # متوقف
+MAX_ENTRY_DRIFT=                # متوقف
+MAX_SIGNAL_AGE_MS=              # متوقف للتعزيز/التقليص/الإغلاق؛ الفتح يخضع لـ FEED_OUTAGE_BLOCK_SECONDS
+MAX_OPEN_POSITIONS=             # متوقف
+BROKER=paper                    # paper -> bybit تجريبي (M3) -> حقيقي (M5، للمالك فقط)
 BROKER_ENV=demo
-ALLOW_EXECUTE__LOCO=false       # true only for the Bybit demo step (M3)
+ALLOW_EXECUTE__LOCO=false       # true فقط في خطوة Bybit التجريبية (M3)
 ```
 
-`config.py` validation for `STRATEGY=cap20_cross`: `MARGIN_MODE=CROSS`, `FOLLOW_ADDS=true`, TP and SL empty,
-`LEVERAGE` in {3, 5} (warn otherwise), `PER_TRADE_MARGIN_CAP_PCT` in (0, 100]. The old refusal
-«FOLLOW_ADDS=true is not supported» stays for every other strategy.
+تحقق `config.py` عند `STRATEGY=cap20_cross`: ‏`MARGIN_MODE=CROSS`، و`FOLLOW_ADDS=true`، وهدف الربح ووقف الخسارة فارغان،
+و`LEVERAGE` من {3، 5} (تحذير غير ذلك)، و`PER_TRADE_MARGIN_CAP_PCT` ضمن (0، 100]. الرفض القديم
+«FOLLOW_ADDS=true غير مدعوم» يبقى لكل استراتيجية أخرى.
 
 ---
 
-## 4. Algorithm (per coin, per trade) — the spec, in bot terms
+## 4. الخوارزمية (لكل عملة، لكل صفقة) — المواصفة بلغة البوت
 
 ```text
-on fill f (dedupe by tid, ignore coin starting '@', containing '/' or ':' or starting '#'):
+عند كل حركة f (إزالة التكرار حسب tid، وتجاهل العملات التي تبدأ بـ '@' أو تحتوي '/' أو ':' أو تبدأ بـ '#'):
   before = f.start_position ; after = before + signed(f.sz)
-  if coin is pre-existing (snapshot at bot start, position != 0): ignore until leader is flat, then normal
-  if before == 0 and after != 0:                 # OPEN  (spec 4.1)
-      E0 = broker.total_equity() ; W0 = cached leader equity (portfolio "day" last value, ≤ 300 s old)
-      R = K * E0 / W0 ; CAP = cap_pct * L * E0 ; set leverage min(L, maxLeverage) (cross)
-      trade = {R, CAP, pending: 0, capped: false} ; then treat |after| as an ADD
-  elif sign(after) == sign(before) and |after| > |before|:   # ADD (4.2)
-      if trade.capped: log ADD_CAPPED; return
+  إذا كانت العملة مركزًا قديمًا (في لقطة بدء البوت، position != 0): تُتجاهل حتى يصبح المتداول بلا مركز، ثم عادي
+  if before == 0 and after != 0:                 # فتح OPEN (المواصفة 4.1)
+      E0 = broker.total_equity() ; W0 = رصيد المتداول المخزّن (آخر قيمة portfolio "day"، عمرها ≤ 300 ثانية)
+      R = K * E0 / W0 ; CAP = cap_pct * L * E0 ; ضبط الرافعة min(L, maxLeverage) (مشترك)
+      trade = {R, CAP, pending: 0, capped: false} ; ثم يُعامل |after| كتعزيز ADD
+  elif sign(after) == sign(before) and |after| > |before|:   # تعزيز ADD (4.2)
+      if trade.capped: سجّل ADD_CAPPED; return
       pending += (|after|-|before|) * R
       room = max(0, CAP - our_qty * our_avg) / price
-      if room == 0: trade.capped = true; record qty_at_cap, leader_pos_at_cap; return
+      if room == 0: trade.capped = true; سجّل qty_at_cap و leader_pos_at_cap; return
       pending = min(pending, room)
-      if pending * price >= minNotional: MARKET (same side) qty=floor_step(pending), limited by free margin
-                                         and by MAX_TOTAL_NOTIONAL_X_EQUITY; pending -= executed
-  elif after != 0 and |after| < |before|:        # REDUCE (4.3)
-      frac = |after| / |before| ; MARKET reduce-only our_qty*(1-frac) (skip if < min, reconcile catches it)
+      if pending * price >= minNotional: أمر سوق (نفس الاتجاه) qty=floor_step(pending)، مقيّد بالهامش المتاح
+                                         و MAX_TOTAL_NOTIONAL_X_EQUITY؛ pending -= المنفّذ
+  elif after != 0 and |after| < |before|:        # تقليص REDUCE (4.3)
+      frac = |after| / |before| ; أمر سوق تقليص فقط our_qty*(1-frac) (يُتخطّى إذا < الحد الأدنى، والمطابقة تلتقطه)
       pending *= frac
-  elif after == 0:                               # CLOSE (4.4): reduce-only 100 %, clear trade
-  else:                                          # FLIP (4.5): CLOSE, then OPEN with |after|
+  elif after == 0:                               # إغلاق CLOSE (4.4): تقليص فقط 100%، وتُمسح الصفقة
+  else:                                          # انعكاس FLIP (4.5): إغلاق، ثم فتح بـ |after|
 ```
 
-Client ids (idempotent, existing scheme extended): `loco:{coin}:{ep}:open|add|reduce|close:{tid}`.
+معرّفات الأوامر (لا تتكرر، توسيع للنظام الحالي): `loco:{coin}:{ep}:open|add|reduce|close:{tid}`.
 
 ---
 
-## 5. Code changes, file by file
+## 5. تغييرات الكود، ملفًا ملفًا
 
-| File | Change |
+| الملف | التغيير |
 |---|---|
-| `config.py` | New fields: `strategy`, `margin_mode`, `size_k` (None → 0.8 × L), `per_trade_margin_cap_pct`, `copy_xyz_dex`, `copy_spot`, `fill_poll_seconds`, `leader_equity_refresh_seconds`, `max_total_notional_x_equity`, `feed_outage_block_seconds`. Make `daily_loss_limit_pct`, `leader_dd_breaker_pct`, `max_entry_drift`, `max_signal_age_ms`, `max_open_positions`, `take_profit_roi` **optional (None = off)**. Validation of §3. |
-| `models.py` | `LeaderEvent` gains `leader_pos_before`, `leader_pos_after`, `leader_qty_delta` (adds need the size, today only `fraction` exists). `Copy` gains `ratio_r`, `cap_notional`, `pending_qty`, `capped`, `qty_at_cap`, `leader_pos_at_cap`, `adds_done`, `avg_entry` (volume-weighted, used for `room`). |
-| `store.py` | **Schema v4** migration (backup first): add the `Copy` columns above to `copies`; new `state` keys `leader_equity:loco` (value + taken_at), `preexisting:loco` (coins at start). |
-| `tracker.py` | Emit ADD with `leader_qty_delta`; FLIP emitted as CLOSE + OPEN (same tid, ordered). Keep `chain_order()`. Exclude `#NNN` and `xyz:`/spot coins at the source (`is_main_perp`). |
-| `feed.py` | Keep WS `userFills`; add a REST poll (`userFillsByTime`, `aggregateByTime=false`, from `last_fill_ms`) every `FILL_POLL_SECONDS` as a gap filler; dedupe by tid. New task: leader equity from `{"type":"portfolio"}` → `"day"` → last `accountValueHistory` value every 300 s → `state leader_equity:loco`. Snapshot (`clearinghouseState`) every 60 s for reconciliation. Track «last good HL contact» for the outage rule. |
-| `sizing.py` | New pure functions: `copy_ratio(k, e0, w0)`, `cap_notional(cap_pct, lev, e0)`, `add_order_qty(pending, room, price, instrument, free_margin, lev, exposure_left)`, `reduce_qty(our_qty, frac, instrument)` (exists, reuse). Remove TP maths from the cap20 path. |
-| `engine.py` | New handler `Cap20CrossStrategy` used when `STRATEGY=cap20_cross`: OPEN / ADD / REDUCE / CLOSE / FLIP exactly as §4. Decisions: `COPIED`, `ADDED`, `ADD_PENDING`, `ADD_CAPPED`, `REDUCED`, `CLOSED`, `SKIPPED_PREEXISTING`, `SYMBOL_NOT_LISTED` (skip the whole trade). The first-fill strategy stays for replay comparison only. |
-| `rules.py` | cap20 path checks only: symbol listed + trading, execution gate (`ALLOW_EXECUTE__LOCO`), kill switch, **feed outage > 120 s → block OPEN and ADD** (`FEED_OUTAGE`), **exposure > 6 × equity → block ADD/OPEN** (`EXPOSURE_LIMIT`). Exits are never blocked by any rule. |
-| `brokers/bybit.py` | `ensure_cross_leverage(symbol, L)`: account margin mode `REGULAR_MARGIN` once (`/v5/account/set-margin-mode`), then `/v5/position/set-leverage` buy=sell=`min(L, leverageFilter.maxLeverage)` (ignore «leverage not modified»). `total_equity()` = `list[0].totalEquity` (C-3). `market_open` used for adds too (one-way, `positionIdx=0`). Remove `set_take_profit` calls from the cap20 path. Instruments: keep `qtyStep`, `minOrderQty`, `minNotionalValue`, add `maxLeverage`. |
-| `brokers/paper.py` | Cross-margin paper account: equity = cash + Σ unrealized; liquidation when equity ≤ Σ maintenance (Bybit tier-1 MMR per symbol, C-6); fee 0.055 % + slippage 4 bps default. |
-| `reconcile.py` | Every 60 s per active trade: `target = min(|szi|·R, CAP/avg)` if not capped, else `qty_at_cap · |szi| / |szi_at_cap|`; `szi == 0` → close ours 100 %; correct when `|ours − target| · px > max(minNotional, 0.5 % · E0)` under C-4. Never opens a new trade. |
-| `risk.py` | Kill switch / `data/STOP` unchanged. Daily-loss and leader-DD breakers inactive when their setting is None. New: exposure check, feed-outage state. |
-| `replay.py` + `tools/build_fixtures.py` | Replay the cap20 strategy over recorded fills + candles. New fixture `tests/fixtures/benchmark_cap20.json` built from the research run (§1) for 3x and 5x. |
-| `cli.py` | `loco-copy strategy` (prints the active parameters, K, cap, R of open trades), `--strategy` flag on `replay`. |
-| `web.py` + `dashboard/` | Copy rows show `R`, `CAP`, used cap %, `pending`, `capped`, adds done, leader position. Overview shows total notional ÷ equity and distance to liquidation (Bybit MMR). Settings page: strategy card (read-only parameters). |
+| `config.py` | حقول جديدة: `strategy`، `margin_mode`، `size_k` (None ← 0.8 × L)، `per_trade_margin_cap_pct`، `copy_xyz_dex`، `copy_spot`، `fill_poll_seconds`، `leader_equity_refresh_seconds`، `max_total_notional_x_equity`، `feed_outage_block_seconds`. تصبح `daily_loss_limit_pct` و`leader_dd_breaker_pct` و`max_entry_drift` و`max_signal_age_ms` و`max_open_positions` و`take_profit_roi` **اختيارية (None = متوقف)**. تحقق §3. |
+| `models.py` | `LeaderEvent` يضاف إليه `leader_pos_before` و`leader_pos_after` و`leader_qty_delta` (التعزيز يحتاج الحجم، وكان يوجد `fraction` فقط). `Copy` يضاف إليه `ratio_r` و`cap_notional` و`pending_qty` و`capped` و`qty_at_cap` و`leader_pos_at_cap` و`adds_done` و`avg_entry` (متوسط مرجّح بالحجم، يُستخدم لحساب `room`). |
+| `store.py` | ترحيل **المخطط v4** (نسخة احتياطية أولًا): إضافة أعمدة `Copy` أعلاه إلى `copies`؛ مفاتيح `state` جديدة `leader_equity:loco` (القيمة + وقت أخذها) و`preexisting:loco` (العملات عند البدء). |
+| `tracker.py` | إطلاق ADD مع `leader_qty_delta`؛ الانعكاس FLIP يُطلق كإغلاق + فتح (نفس tid، بالترتيب). يبقى `chain_order()`. استبعاد عملات `#NNN` و`xyz:` والفوري من المصدر (`is_main_perp`). |
+| `feed.py` | يبقى اتصال `userFills` اللحظي؛ يضاف سحب REST ‏(`userFillsByTime`، `aggregateByTime=false`، من `last_fill_ms`) كل `FILL_POLL_SECONDS` لسد الفجوات؛ إزالة التكرار حسب tid. مهمة جديدة: رصيد المتداول من `{"type":"portfolio"}` ← `"day"` ← آخر قيمة `accountValueHistory` كل 300 ثانية ← `state leader_equity:loco`. لقطة (`clearinghouseState`) كل 60 ثانية للمطابقة. تتبّع «آخر اتصال ناجح بـ Hyperliquid» لقاعدة الانقطاع. |
+| `sizing.py` | دوال جديدة: `copy_ratio(k, e0, w0)`، `cap_notional(cap_pct, lev, e0)`، `add_order_qty(pending, room, price, instrument, free_margin, lev, exposure_left)`، `reduce_qty(our_qty, frac, instrument)` (موجودة، يُعاد استخدامها). إزالة حساب هدف الربح من مسار cap20. |
+| `engine.py` | معالج جديد `Cap20CrossStrategy` يُستخدم عند `STRATEGY=cap20_cross`: فتح / تعزيز / تقليص / إغلاق / انعكاس كما في §4 تمامًا. القرارات: `COPIED`، `ADDED`، `ADD_PENDING`، `ADD_CAPPED`، `REDUCED`، `CLOSED`، `SKIPPED_PREEXISTING`، `SYMBOL_NOT_LISTED` (تُتخطّى الصفقة كاملة). استراتيجية «أول صفقة» تبقى للمقارنة في إعادة التشغيل فقط. |
+| `rules.py` | فحوص مسار cap20 فقط: الرمز مدرج ومتاح للتداول، بوابة التنفيذ (`ALLOW_EXECUTE__LOCO`)، الإيقاف الطارئ، **انقطاع المصدر > 120 ثانية ← منع الفتح والتعزيز** (`FEED_OUTAGE`)، **الحجم > 6 × الرصيد ← منع التعزيز/الفتح** (`EXPOSURE_LIMIT`). الخروج لا تمنعه أي قاعدة. |
+| `brokers/bybit.py` | `ensure_cross_leverage(symbol, L)`: وضع هامش الحساب `REGULAR_MARGIN` مرة واحدة (`/v5/account/set-margin-mode`)، ثم `/v5/position/set-leverage` شراء=بيع=`min(L, leverageFilter.maxLeverage)` (تجاهل «الرافعة لم تتغير»). `total_equity()` = `list[0].totalEquity` (C-3). `market_open` يُستخدم للتعزيز أيضًا (اتجاه واحد، `positionIdx=0`). إزالة استدعاءات `set_take_profit` من مسار cap20. الأدوات: يبقى `qtyStep` و`minOrderQty` و`minNotionalValue`، ويضاف `maxLeverage`. |
+| `brokers/paper.py` | حساب ورقي بهامش مشترك: الرصيد = النقد + مجموع الربح غير المحقق؛ التصفية عندما الرصيد ≤ مجموع الصيانة (نسبة الشريحة الأولى في Bybit لكل رمز، C-6)؛ رسوم 0.055% + انزلاق 4 نقاط أساس افتراضيًا. |
+| `reconcile.py` | كل 60 ثانية لكل صفقة نشطة: `target = min(|szi|·R, CAP/avg)` إن لم تبلغ السقف، وإلا `qty_at_cap · |szi| / |szi_at_cap|`؛ `szi == 0` ← إغلاق صفقتنا 100%؛ التصحيح عندما `|ours − target| · px > max(minNotional, 0.5% · E0)` ضمن C-4. لا تفتح صفقة جديدة أبدًا. |
+| `risk.py` | الإيقاف الطارئ / `data/STOP` بلا تغيير. قاطعا الخسارة اليومية وتراجع المتداول متوقفان حين يكون إعدادهما None. جديد: فحص الحجم الكلي، وحالة انقطاع المصدر. |
+| `replay.py` + `tools/build_fixtures.py` | إعادة تشغيل استراتيجية cap20 على الحركات المسجّلة + الشموع. ملف مرجعي جديد `tests/fixtures/benchmark_cap20.json` من تشغيل البحث (§1) عند 3x و5x. |
+| `cli.py` | `loco-copy strategy` (يطبع الإعدادات الفعّالة وK والسقف وR للصفقات المفتوحة)، وخيار `--strategy` في `replay`. |
+| `web.py` + `dashboard/` | صفوف الصفقات تعرض `R` و`CAP` ونسبة السقف المستخدمة و`pending` و`capped` والتعزيزات المنفّذة ومركز المتداول. النظرة العامة تعرض الحجم الكلي ÷ الرصيد والمسافة من التصفية (صيانة Bybit). صفحة الإعدادات: بطاقة الاستراتيجية (للعرض فقط). |
 
 ---
 
-## 6. Tests (all new tests must pass `check.ps1`)
+## 6. الاختبارات (كل اختبار جديد يجب أن ينجح في `check.ps1`)
 
-| Test | Asserts |
+| الاختبار | ما يتحقق منه |
 |---|---|
-| `test_cap20_sizing.py` | `R`, `K = 0.8 L`, `CAP = 0.2 · L · E0` at 3x and 5x; R fixed for the whole trade |
-| `test_cap20_adds.py` | adds follow `dq · R`; pending accumulates below minNotional; stops at the cap (`ADD_CAPPED`), later adds ignored, reduces still followed |
-| `test_cap20_reduce_close_flip.py` | proportional reduce, pending scaled, close 100 %, flip = close + new trade with new R |
-| `test_cap20_preexisting.py` | coin open at start is ignored until flat, then copied |
-| `test_cap20_symbols.py` | xyz / spot / `#` ignored; `kPEPE → 1000PEPEUSDT` with **no** size/price conversion (C-1); unlisted → whole trade skipped |
-| `test_cap20_reconcile.py` | target formula (capped / not capped), threshold, stale snapshot → unsynced (C-4), never opens |
-| `test_cap20_risk.py` | exposure 6× blocks adds not exits; feed outage 120 s blocks opens/adds, exits continue |
-| `test_bybit_cross.py` (contract, demo) | margin mode `REGULAR_MARGIN`, set-leverage per symbol, totalEquity parsing |
-| `test_replay_matches_cap20.py` | replay of the fixture reproduces `benchmark_cap20.json` within 2 % final equity, same liquidation count (0) |
-| existing tests | first-fill tests keep running with `STRATEGY=first_fill` |
+| `test_cap20_sizing.py` | `R`، و`K = 0.8 L`، و`CAP = 0.2 · L · E0` عند 3x و5x؛ R ثابتة طوال الصفقة |
+| `test_cap20_adds.py` | التعزيزات تتبع `dq · R`؛ المؤجَّل يتراكم تحت الحد الأدنى؛ التوقف عند السقف (`ADD_CAPPED`)، والتعزيزات اللاحقة متجاهلة، والتقليص يُتابَع |
+| `test_cap20_reduce_close_flip.py` | تقليص بنفس النسبة، والمؤجَّل يُقلَّص، والإغلاق 100%، والانعكاس = إغلاق + صفقة جديدة بـ R جديدة |
+| `test_cap20_preexisting.py` | العملة المفتوحة عند البدء تُتجاهل حتى يغلقها المتداول، ثم تُنسخ |
+| `test_cap20_symbols.py` | تجاهل xyz / الفوري / `#`؛ ‏`kPEPE ← 1000PEPEUSDT` **بدون** تحويل للحجم أو السعر (C-1)؛ غير المدرج ← تُتخطّى الصفقة كاملة |
+| `test_cap20_reconcile.py` | معادلة الهدف (بلغت السقف / لم تبلغ)، والحد الأدنى للتصحيح، واللقطة القديمة ← غير متزامنة (C-4)، ولا فتح أبدًا |
+| `test_cap20_risk.py` | الحجم 6× يمنع التعزيز لا الخروج؛ انقطاع المصدر 120 ثانية يمنع الفتح والتعزيز، والخروج مستمر |
+| `test_bybit_cross.py` (عقد، تجريبي) | وضع الهامش `REGULAR_MARGIN`، وضبط الرافعة لكل رمز، وقراءة totalEquity |
+| `test_replay_matches_cap20.py` | إعادة تشغيل البيانات المرجعية تطابق `benchmark_cap20.json` بفرق أقل من 2% في الرصيد النهائي، ونفس عدد التصفيات (0) |
+| الاختبارات الحالية | اختبارات «أول صفقة» تبقى تعمل مع `STRATEGY=first_fill` |
 
 ---
 
-## 7. Rollout
+## 7. خطة الإطلاق
 
-| Step | What | Exit criteria |
+| الخطوة | ماذا | شرط الإنجاز |
 |---|---|---|
-| M0 | Backup DB (`loco-copy backup`); remove `3ea` from `LEADERS`; tag `v3-final` | clean `check.ps1` |
-| M1 | Implement §5 + §6 with `BROKER=paper`; replay the year | `test_replay_matches_cap20` green; 3x ≈ $17.8k, 5x ≈ $25.5k |
-| M2 | Live feed, `BROKER=paper`, mode OBSERVE, 7 days | 0 missed exits; tracker == snapshot; paper follows every add / reduce |
-| M3 | Bybit **demo**: account in cross mode, demo API key in keyring, `ALLOW_EXECUTE__LOCO=true`, EXECUTE, 30 days | go/no-go §8 |
-| M4 | Owner review of the 30 days | written decision in this file |
-| M5 | Real money (owner only): small capital, same parameters | 30 days inside the demo envelope |
+| M0 | نسخة احتياطية لقاعدة البيانات (`loco-copy backup`)؛ حذف `3ea` من `LEADERS`؛ وسم `v3-final` | `check.ps1` نظيف |
+| M1 | تنفيذ §5 + §6 مع `BROKER=paper`؛ إعادة تشغيل السنة | `test_replay_matches_cap20` ناجح؛ 3x ≈ $17.8k، و5x ≈ $25.5k |
+| M2 | المصدر الحي، `BROKER=paper`، وضع المحاكاة، 7 أيام | 0 إغلاقات فائتة؛ المتتبّع == اللقطة؛ الحساب الورقي يتبع كل تعزيز / تقليص |
+| M3 | Bybit **التجريبي**: الحساب بهامش مشترك، مفتاح API التجريبي في المخزن، `ALLOW_EXECUTE__LOCO=true`، تنفيذ، 30 يومًا | شروط الانتقال §8 |
+| M4 | مراجعة المالك للثلاثين يومًا | قرار مكتوب في هذا الملف |
+| M5 | مال حقيقي (للمالك فقط): رأس مال صغير، نفس الإعدادات | 30 يومًا ضمن حدود التجريبي |
+
+**الحالة 2026-10-12:** M0 أُنجز (نسخة احتياطية لقاعدة البيانات، وحذف `3ea`) ما عدا وسم git باسم `v3-final` · M1 أُنجز
+(اختبار `test_replay_matches_cap20` ناجح، §V5.9) · من هنا يسير الثلاثي حسب §V5.5 ← §V5.6 ← الحساب التجريبي (v5 تتقدم على M2–M3).
 
 ---
 
-## 8. Go / no-go (30-day demo)
+## 8. شروط الانتقال (التجريبي 30 يومًا)
 
-| Metric | Target |
+| المقياس | الهدف |
 |---|---|
-| Missed exits | 0 |
-| Liquidations | 0 |
-| Detection latency | p50 < 2 s, p95 < 5 s (poll is 2 s) |
-| Entry/add slippage vs leader price | median < 10 bps |
-| Capture | ≥ 95 % of Loco's crypto trades that are listed on Bybit |
-| Tracking error | live equity vs replay of the same fills (same R, cap, fees): investigate if > 15 % |
-| Live drawdown | < 20 % at 3x, < 30 % at 5x |
-| Exposure | total notional ≤ 6 × equity at all times |
+| الإغلاقات الفائتة | 0 |
+| التصفيات | 0 |
+| زمن الالتقاط | الوسيط < ثانيتين، p95 < 5 ثوانٍ (السحب كل ثانيتين) |
+| انزلاق الدخول/التعزيز عن سعر المتداول | الوسيط < 10 نقاط أساس |
+| نسبة الالتقاط | ≥ 95% من صفقات Loco الرقمية المدرجة في Bybit |
+| خطأ التتبّع | الرصيد الحي مقابل إعادة تشغيل نفس الحركات (نفس R والسقف والرسوم): يُبحث إذا تجاوز 15% |
+| التراجع الحي | < 20% عند 3x، و< 30% عند 5x |
+| الحجم الكلي | ≤ 6 × الرصيد في كل الأوقات |
 
 ---
 
-## 9. Operations
+## 9. التشغيل اليومي
 
-- Bybit **demo** account: set the unified account to cross margin once (the bot also checks it). Demo API key:
-  trade-only, no withdrawal, IP whitelist, stored with `loco-copy set-key bybit-demo`. A demo account
-  untouched for 30 days is wiped: keep the bot running.
-- Daily: `loco-copy status`, `loco-copy strategy`, `loco-copy events --since 1d` (look for `ADD_CAPPED`,
-  `SYMBOL_NOT_LISTED`, `EXPOSURE_LIMIT`, `FEED_OUTAGE`, `unsynced`).
-- Weekly: `loco-copy report --since 7d` vs the replay of the same week.
-- Pause new trades: `loco-copy kill` or `data/STOP` (exits continue).
-- Funding is not in the benchmark: log it per copy (`copies.funding`) and include it in the weekly report.
-
----
-
-## 10. Out of scope for v4
-
-- Lane `3ea` (no profitable strategy found; research `reports/2026-10-11_deep_study_5_ar.md`).
-- Wallet `0x7d93e65089f457d7186355e1ff3c0f4c1f2e620b`: promising on 180 d, **not yet tested on 365 d** or with
-  this cap20 method. Do not add a lane before that research is done.
-- xyz stock / commodity markets (not on Bybit).
+- حساب Bybit **التجريبي**: يُضبط الحساب الموحّد على الهامش المشترك مرة واحدة (والبوت يتحقق أيضًا). مفتاح API التجريبي:
+  تداول فقط، بدون سحب، مقيّد بعنوان IP، ويُحفظ بالأمر `loco-copy set-key bybit-demo`. الحساب التجريبي الذي لا يُستخدم
+  30 يومًا يُمسح: أبقِ البوت يعمل.
+- يوميًا: `loco-copy status` و`loco-copy strategy` و`loco-copy events --since 1d` (ابحث عن `ADD_CAPPED`
+  و`SYMBOL_NOT_LISTED` و`EXPOSURE_LIMIT` و`FEED_OUTAGE` وغير المتزامن).
+- أسبوعيًا: `loco-copy report --since 7d` مقابل إعادة تشغيل نفس الأسبوع.
+- إيقاف الصفقات الجديدة: `loco-copy kill` أو ملف `data/STOP` (الخروج مستمر).
+- التمويل (funding) ليس في الاختبار التاريخي: يُسجَّل لكل صفقة (`copies.funding`) ويُضمَّن في التقرير الأسبوعي.
 
 ---
 
-## 11. Security (unchanged)
+## 10. خارج نطاق v4
 
-Keys only in the OS keyring, never in `.env`, git, chats, dashboard or logs · demo and live keys separate ·
-live needs `BROKER_ENV=live` + `LIVE_CONFIRM` + `ALLOW_EXECUTE__LOCO=true` + dashboard `ENABLE EXECUTION` ·
-API on localhost behind the tunnel, CSRF origin guard on every POST.
+- المتداول `3ea` (لم توجد استراتيجية رابحة له؛ البحث `reports/2026-10-11_deep_study_5_ar.md`).
+- المحفظة `0x7d93e65089f457d7186355e1ff3c0f4c1f2e620b`: واعدة على 180 يومًا، **لم تُختبر بعد على 365 يومًا** ولا
+  بطريقة cap20 هذه. لا يُضاف متداول قبل إنهاء هذا البحث.
+- أسواق الأسهم والسلع xyz (غير موجودة في Bybit).
 
 ---
 
-## 12. References
+## 11. الأمان (بلا تغيير)
 
-- Strategy spec: `docs/strategy/Loco_Copy_Strategy_Final_Bybit.md`.
-- Verification: research `reports/2026-10-11_verify_external_ar.md`, code `hl_verify_trades.py`,
-  `hl_verify_sim.py`, results `data/hunt/verify_sim_a.json`.
-- One-year comparison of copy methods: research `reports/2026-10-11_year_loco_ar.md` (`hl_year.py`).
-- Bybit v5: set-margin-mode, set-leverage, instruments-info, risk-limit, wallet-balance; demo trading
+المفاتيح في مخزن مفاتيح النظام فقط، ولا تكون أبدًا في `.env` أو git أو المحادثات أو لوحة التحكم أو السجلات · مفاتيح التجريبي
+والحقيقي منفصلة · الحقيقي يحتاج `BROKER_ENV=live` + `LIVE_CONFIRM` + `ALLOW_EXECUTE__LOCO=true` + تأكيد `ENABLE EXECUTION`
+في لوحة التحكم · الواجهة البرمجية على localhost خلف النفق، مع حماية مصدر الطلب (CSRF) على كل طلب POST.
+
+---
+
+## 12. المراجع
+
+- مواصفة الاستراتيجية: `docs/strategy/Loco_Copy_Strategy_Final_Bybit.md`.
+- التحقق: البحث `reports/2026-10-11_verify_external_ar.md`، والكود `hl_verify_trades.py` و
+  `hl_verify_sim.py`، والنتائج `data/hunt/verify_sim_a.json`.
+- مقارنة طرق النسخ على سنة: البحث `reports/2026-10-11_year_loco_ar.md` (`hl_year.py`).
+- Bybit v5: ‏set-margin-mode، set-leverage، instruments-info، risk-limit، wallet-balance؛ التداول التجريبي
   https://bybit-exchange.github.io/docs/v5/demo
-- Hyperliquid info API (`userFillsByTime`, `portfolio`, `clearinghouseState`) and WebSocket `userFills`.
+- واجهة معلومات Hyperliquid (`userFillsByTime`، `portfolio`، `clearinghouseState`) واتصال `userFills` اللحظي.
 
-*Not financial advice. Past performance does not guarantee future results.*
-
----
-**2026-10-12 — lane `8bae` added in WATCH only.** `.env`: `LEADERS=loco:0xf97a…,8bae:0x8bae3527e5a33fa0cf184f37bc112d071463ab6d`,
-`COPY_ENABLED__8BAE=false`, `COPY_OBSERVE_ONLY__8BAE=true`, `ALLOW_EXECUTE__8BAE=false` (no orders; Loco lane unchanged).
-Validation: 365-day study `hyperliquid_copy_research/reports/2026-10-12_0x8bae3527_full_ar.md` (3x realistic $102,645 from $10k, DD 22.7%).
-Restart the bot to load it. Execution for this lane only after the observe period and an explicit decision.
+*ليست نصيحة مالية. الأداء السابق لا يضمن النتائج المستقبلية.*
 
 ---
+**2026-10-12 — أُضيف المتداول `8bae` بوضع المراقبة فقط.** `.env`: `LEADERS=loco:0xf97a…,8bae:0x8bae3527e5a33fa0cf184f37bc112d071463ab6d`،
+`COPY_ENABLED__8BAE=false`، `COPY_OBSERVE_ONLY__8BAE=true`، `ALLOW_EXECUTE__8BAE=false` (بدون أوامر؛ Loco بلا تغيير).
+التحقق: دراسة 365 يومًا `hyperliquid_copy_research/reports/2026-10-12_0x8bae3527_full_ar.md` (‏3x واقعي $102,645 من $10k، تراجع 22.7%).
+أعد تشغيل البوت ليُحمَّل. التنفيذ لهذا المتداول فقط بعد فترة المراقبة وقرار صريح.
 
-# v5 addendum (2026-10-12) — «Trio» portfolio: 8bae + 8fc7 + 69b0 in ONE cross account (observe first)
+---
 
-## V5.0 Owner decision (2026-10-12) — APPROVED · documentation only (code not started)
+# إضافة v5 (2026-10-12) — محفظة «الثلاثي»: 8bae + 8fc7 + 69b0 في حساب واحد بهامش مشترك (المراقبة أولًا)
 
-**Chosen plan («طريقة الخطة»):** the trio 8bae + 8fc7 + 69b0 in ONE Bybit **CROSS** account · size follows each leader's own size
-(`R_i = K × E0 / W0_i`, `K = 0.8 × L`) · per-trade margin cap **20 %** of equity · leverage **3** · no $ cap · exits only with the leader ·
-crypto only · every fill copied (adds up to the cap, reduces, close, flip). Loco = watch-only lane.
+## V5.0 قرار المالك (2026-10-12) — معتمد · نُفّذ في 2026-10-12 (مرحلة المراقبة تعمل، §V5.9)
 
-**Rejected:** fixed 10 % of equity per trade — 3x: $65,608, max DD 49.2 % · 5x: $100,958, max DD 76.4 %, 1 liquidation.
+**الخطة المختارة («طريقة الخطة»):** الثلاثي 8bae + 8fc7 + 69b0 في حساب Bybit واحد بهامش **مشترك (CROSS)** · الحجم يتبع حجم كل
+متداول (`R_i = K × E0 / W0_i`، `K = 0.8 × L`) · سقف هامش لكل صفقة **20%** من الرصيد · رافعة **3** · بدون سقف بالدولار · الخروج
+مع المتداول فقط · عملات رقمية فقط · كل حركة تُنسخ (التعزيز حتى السقف، والتقليص، والإغلاق، والانعكاس). Loco = مراقبة فقط.
 
-**Expected (backtest, last 12 months, realistic):** $10,000 → **$316,355**, max DD 21.6 %, 0 liquidations, 214 closed trades, win 61 %.
-Realistic = leader trips < 60 min skipped · every fill 15 min late with drift against us · fee+slippage 0.15 %/side ·
-funding 0.01 %/8h on every position · 1h/4h candles. Source: `hyperliquid_copy_research/data/a365/fixed10_compare.json`
-(`plan_cap20_L3`). In-sample leader selection; if the leaders' edge halves, expect ~$64k (Monte Carlo). Not a guarantee.
+**المرفوض:** 10% ثابتة من الرصيد لكل صفقة — 3x: ‏$65,608، أقصى تراجع 49.2% · 5x: ‏$100,958، أقصى تراجع 76.4%، تصفية واحدة.
 
-Monthly reference (use it to judge the observe/demo phases):
+**المتوقع (اختبار تاريخي، آخر 12 شهرًا، واقعي):** ‏$10,000 ← **$316,355**، أقصى تراجع 21.6%، 0 تصفيات، 214 صفقة مغلقة، نسبة ربح 61%.
+الواقعي = صفقات المتداول الأقصر من 60 دقيقة مُستبعدة · كل حركة متأخرة 15 دقيقة مع انحراف السعر ضدنا · رسوم + انزلاق 0.15% لكل
+جهة · تمويل 0.01% كل 8 ساعات على كل مركز · شموع ساعة/4 ساعات. المصدر: `hyperliquid_copy_research/data/a365/fixed10_compare.json`
+(`plan_cap20_L3`). اختيار المتداولين داخل نفس العينة؛ إذا انخفضت أفضلية المتداولين للنصف فالمتوقع ~$64k (مونت كارلو). ليس ضمانًا.
 
-| month | P&L | % | equity at month end |
+المرجع الشهري (يُستخدم للحكم على مرحلتي المراقبة والتجريبي):
+
+| الشهر | الربح/الخسارة | % | الرصيد في نهاية الشهر |
 |---|---|---|---|
-| 2025-10 (from 11th) | +$2,443 | +24.4 % | $12,443 |
-| 2025-11 | +$4,217 | +33.9 % | $16,660 |
-| 2025-12 | +$9,350 | +56.1 % | $26,010 |
-| 2026-01 | +$7,113 | +27.3 % | $33,123 |
-| 2026-02 | +$12,685 | +38.3 % | $45,808 |
-| 2026-03 | +$12,970 | +28.3 % | $58,778 |
-| 2026-04 | −$5,486 | −9.3 % | $53,292 |
-| 2026-05 | +$17,443 | +32.7 % | $70,735 |
-| 2026-06 | +$14,295 | +20.2 % | $85,030 |
-| 2026-07 | +$37,917 | +44.6 % | $122,947 |
-| 2026-08 | +$87,243 | +71.0 % | $210,190 |
-| 2026-09 | +$97,824 | +46.5 % | $308,014 |
-| 2026-10 (to 10th) | +$8,342 | +2.7 % | $316,355 |
+| 2025-10 (من 11) | +$2,443 | +24.4% | $12,443 |
+| 2025-11 | +$4,217 | +33.9% | $16,660 |
+| 2025-12 | +$9,350 | +56.1% | $26,010 |
+| 2026-01 | +$7,113 | +27.3% | $33,123 |
+| 2026-02 | +$12,685 | +38.3% | $45,808 |
+| 2026-03 | +$12,970 | +28.3% | $58,778 |
+| 2026-04 | −$5,486 | −9.3% | $53,292 |
+| 2026-05 | +$17,443 | +32.7% | $70,735 |
+| 2026-06 | +$14,295 | +20.2% | $85,030 |
+| 2026-07 | +$37,917 | +44.6% | $122,947 |
+| 2026-08 | +$87,243 | +71.0% | $210,190 |
+| 2026-09 | +$97,824 | +46.5% | $308,014 |
+| 2026-10 (حتى 10) | +$8,342 | +2.7% | $316,355 |
 
-**Status:** today's code is v3 (first fill only, `RISK_PER_TRADE` 10 %, adds ignored; `config.py` rejects `FOLLOW_ADDS=true`).
-V4 cap20 + V5 shared account (§V5.8) are **not implemented**. The lanes 8bae / 8fc7 / 69b0 are in WATCH (no orders).
+**الحالة (محدّثة 2026-10-12):** استراتيجية السقف (v4) والحساب المشترك (v5) **مُنفّذتان ومُختبرتان وتعملان على السيرفر**
+(§V5.8 أُنجز، والتفاصيل في §V5.9). منذ 2026-10-12 يعمل السيرفر بمرحلة المراقبة: 8bae و8fc7 و69b0 في وضع المحاكاة على الحساب
+الافتراضي للثلاثي (بدون أي أوامر)، وLoco مراقبة فقط، والمتداول `3ea` حُذف، وكل بوابات التنفيذ `ALLOW_EXECUTE__*` مقفلة.
+مراجعة شروط الانتقال (§V5.6) حوالي 2026-11-09.
 
-**Target settings for when the code exists** — do NOT put them in `.env` before that (start-up would fail or behave as v3):
+**الإعدادات** — موجودة في ملف `.env` على السيرفر منذ 2026-10-12 (`COPY_RATIO_K` و`SIZE_K` إعداد واحد باسمين؛ فارغ = 0.8 × الرافعة):
 
 ```dotenv
 STRATEGY=cap20_cross
 MARGIN_MODE=CROSS
 LEVERAGE=3
-COPY_RATIO_K=2.4                 # 0.8 x LEVERAGE
+COPY_RATIO_K=2.4                 # 0.8 × الرافعة
 PER_TRADE_MARGIN_CAP_PCT=20
 FOLLOW_ADDS=true
 FOLLOW_REDUCES=true
-TAKE_PROFIT_ROI=                 # off
-PROTECTIVE_SL_PCT=               # off
-MAX_NOTIONAL_PER_COIN=           # no $ cap (owner, 2026-10-12)
-SHARED_EQUITY=true               # one account equity for all lanes
-ACCOUNT_KILL_DD_PCT=25           # block OPEN/ADD on all lanes below 75 % of peak; exits never blocked
-ALLOW_EXECUTE__8BAE=false        # true only after §V5.6 go/no-go
+TAKE_PROFIT_ROI=                 # متوقف
+PROTECTIVE_SL_PCT=               # متوقف
+MAX_NOTIONAL_PER_COIN=           # بدون سقف بالدولار (المالك، 2026-10-12)
+SHARED_EQUITY=true               # رصيد حساب واحد لكل المتداولين
+ACCOUNT_KILL_DD_PCT=25           # منع الفتح/التعزيز لكل المتداولين تحت 75% من القمة؛ الخروج لا يُمنع أبدًا
+ALLOW_EXECUTE__8BAE=false        # true فقط بعد نجاح شروط §V5.6
 ALLOW_EXECUTE__8FC7=false
 ALLOW_EXECUTE__69B0=false
 ```
 
-> Owner's request: watch the three leaders trading **together** before any money. Loco stays a watch-only lane.
-> Research: `hyperliquid_copy_research/reports/2026-10-12_final_plan_nocap_ar.md` (365-day data, 3,720 wallets).
-> Nothing below sends an order until §V5.6 go/no-go passes and the owner sets `ALLOW_EXECUTE__<LANE>=true`.
+> طلب المالك: مراقبة المتداولين الثلاثة وهم يتداولون **معًا** قبل أي مال. Loco يبقى مراقبة فقط.
+> البحث: `hyperliquid_copy_research/reports/2026-10-12_final_plan_nocap_ar.md` (بيانات 365 يومًا، 3,720 محفظة).
+> لا شيء أدناه يرسل أمرًا قبل نجاح شروط §V5.6 وأن يضبط المالك `ALLOW_EXECUTE__<LANE>=true`.
 
-## V5.1 Lanes (`.env`, already written 2026-10-12, validated: 4 lanes parse)
+## V5.1 المتداولون (`.env`، كُتبت في 2026-10-12، وتحقق: 4 متداولين تُقرأ بشكل صحيح)
 
 ```dotenv
 LEADERS=loco:0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1,8bae:0x8bae3527e5a33fa0cf184f37bc112d071463ab6d,8fc7:0x8fc7c0442e582bca195978c5a4fdec2e7c5bb0f7,69b0:0x69b05701f8175c276ecd0138387a197948e240bb
@@ -320,77 +330,261 @@ COPY_ENABLED__8BAE=false   COPY_OBSERVE_ONLY__8BAE=true   ALLOW_EXECUTE__8BAE=fa
 COPY_ENABLED__8FC7=false   COPY_OBSERVE_ONLY__8FC7=true   ALLOW_EXECUTE__8FC7=false
 COPY_ENABLED__69B0=false   COPY_OBSERVE_ONLY__69B0=true   ALLOW_EXECUTE__69B0=false
 ```
-(one key per line in the real file). Loco lane settings were not changed. Restart the bot to load the lanes.
+(مفتاح واحد في كل سطر في الملف الحقيقي). إعدادات Loco لم تتغير. أعد تشغيل البوت ليُحمّل المتداولين.
+مرحلة المراقبة (منذ 2026-10-12): المتداولون الثلاثة محوّلون إلى وضع المحاكاة من لوحة التحكم (محفوظ في قاعدة البيانات ويبقى
+بعد إعادة التشغيل)، وملف `.env` يبقى على «مراقبة فقط» كوضع آمن افتراضي. Loco مراقبة فقط مع `ALLOW_EXECUTE__LOCO=false`.
 
-## V5.2 Leaders and expected activity (last 365 days, crypto round trips; `data/a365/trade_rate_trio.json`)
+## V5.2 المتداولون والنشاط المتوقع (آخر 365 يومًا، صفقات العملات الرقمية؛ `data/a365/trade_rate_trio.json`)
 
-| lane | address | trades/day | trades/week | trades/month | orders/day (fills grouped ≤60 s) | median hold | longest pause |
+| المتداول | العنوان | صفقات/يوم | صفقات/أسبوع | صفقات/شهر | أوامر/يوم (حركات مجمّعة ≤ 60 ث) | وسيط مدة الاحتفاظ | أطول توقف |
 |---|---|---|---|---|---|---|---|
-| 8bae | 0x8bae3527e5a33fa0cf184f37bc112d071463ab6d | 0.22 | 1.55 | 6.8 | 1.04 | 75 h | 38 days |
-| 8fc7 | 0x8fc7c0442e582bca195978c5a4fdec2e7c5bb0f7 | 0.25 | 1.76 | 7.7 | 1.06 | 111 h | **130 days** |
-| 69b0 | 0x69b05701f8175c276ecd0138387a197948e240bb | 0.23 | 1.59 | 6.9 | 1.65 | 73 h | 21 days |
-| **trio** | — | **0.70** | **4.9** | **21.3** | **3.75** | — | busiest day: 8 new trades |
-| loco (watch) | 0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1 | 1.15 | 8.1 | 35.0 | 5.38 | 6 h | 25 days |
+| 8bae | 0x8bae3527e5a33fa0cf184f37bc112d071463ab6d | 0.22 | 1.55 | 6.8 | 1.04 | 75 ساعة | 38 يومًا |
+| 8fc7 | 0x8fc7c0442e582bca195978c5a4fdec2e7c5bb0f7 | 0.25 | 1.76 | 7.7 | 1.06 | 111 ساعة | **130 يومًا** |
+| 69b0 | 0x69b05701f8175c276ecd0138387a197948e240bb | 0.23 | 1.59 | 6.9 | 1.65 | 73 ساعة | 21 يومًا |
+| **الثلاثي** | — | **0.70** | **4.9** | **21.3** | **3.75** | — | أكثر يوم: 8 صفقات جديدة |
+| loco (مراقبة) | 0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1 | 1.15 | 8.1 | 35.0 | 5.38 | 6 ساعات | 25 يومًا |
 
-Trades come in bursts (8fc7: 23 in Jan 2026, 0 in May–Jul 2026). A quiet lane is normal, not a fault.
+الصفقات تأتي على دفعات (8fc7: ‏23 في يناير 2026، و0 في مايو–يوليو 2026). المتداول الهادئ أمر طبيعي وليس عطلًا.
 
-## V5.3 Strategy — shared account (= `analysis365/multi.py`, verified equal to the single-leader engine)
+## V5.3 الاستراتيجية — الحساب المشترك (= `analysis365/multi.py`، تحقق أنها مطابقة لمحرك المتداول الواحد)
 
-- One Bybit account, **CROSS**, leverage **3** (`L=3`), crypto only, every fill copied (open/add/reduce/close/flip), exits only with the leader, no TP/SL.
-- Per lane i, per trade: `R_i = K × E0 / W0_i` with `K = 0.8 × L = 2.4`, `E0` = **whole account** equity at the open, `W0_i` = that leader's equity. Each lane is sized as if it had the whole account (alloc 1.0 each).
-- Per-trade cap: margin ≤ **20 % of E0** (notional ≤ `0.2 × L × E0`). No absolute $ cap (owner's choice 2026-10-12).
-- Free-margin check on every OPEN/ADD across all lanes (total margin ≤ equity); exposure limit `6 × equity` (existing rule) stays.
-- Same coin in two lanes: keep a **virtual position per lane**; the exchange order is the net delta (one-way mode). Exits of one lane never close another lane's virtual part.
-- Account kill switch (new, shared): equity < **0.75 × peak** → block OPEN/ADD on all lanes (exits never blocked), alert, owner decides.
+- حساب Bybit واحد، **هامش مشترك (CROSS)**، رافعة **3** (`L=3`)، عملات رقمية فقط، كل حركة تُنسخ (فتح/تعزيز/تقليص/إغلاق/انعكاس)، الخروج مع المتداول فقط، بدون هدف ربح أو وقف خسارة.
+- لكل متداول i ولكل صفقة: `R_i = K × E0 / W0_i` حيث `K = 0.8 × L = 2.4`، و`E0` = رصيد **الحساب كاملًا** عند الفتح، و`W0_i` = رصيد ذلك المتداول. كل متداول يُحسب حجمه كأن له الحساب كله (حصة 1.0 لكل واحد).
+- سقف لكل صفقة: الهامش ≤ **20% من E0** (الحجم ≤ `0.2 × L × E0`). بدون سقف مطلق بالدولار (اختيار المالك 2026-10-12).
+- فحص الهامش المتاح عند كل فتح/تعزيز عبر كل المتداولين (مجموع الهامش ≤ الرصيد)؛ وحد الحجم الكلي `6 × الرصيد` (القاعدة الحالية) يبقى.
+- نفس العملة عند متداولَين: **مركز افتراضي لكل متداول**؛ والأمر على المنصة هو الفرق الصافي (اتجاه واحد). خروج متداول لا يغلق أبدًا حصة متداول آخر.
+- قاطع الحساب (جديد، مشترك): الرصيد < **0.75 × القمة** ← منع الفتح/التعزيز لكل المتداولين (الخروج لا يُمنع أبدًا)، تنبيه، والمالك يقرر.
 
-## V5.4 Backtest reference for the go/no-go (from $10,000, 3x)
+## V5.4 المرجع التاريخي لشروط الانتقال (من $10,000، ‏3x)
 
-| scenario | balance after 1 year | max drawdown | note |
+| السيناريو | الرصيد بعد سنة | أقصى تراجع | ملاحظة |
 |---|---|---|---|
-| perfect copy | (not used — unrealistic) | | |
-| realistic (trips < 60 min removed, 15-min adverse delay, fee 0.15 %/side) | $351,352 | 21.2 % | in-sample selection; **with funding 0.01 %/8h: $316,355, DD 21.6 % (§V5.0)** |
-| stress (realistic + each leader's 5 best trades removed) | $103,466 | 21.5 % | |
-| last 6 months only (realistic) | $62,784 | 16.2 % | |
-| Monte Carlo median / 10 % worst | $355,333 / $183,252 | — | P(≥ $100k) = 99.2 % if the future looks like the past year |
-| leaders' edge halved (Monte Carlo median) | $64,341 | — | P(≥ $100k) = 3.4 % |
-Only 8bae is confirmed out-of-sample (chosen on H1, H2 x2.77). 8fc7 / 69b0 were chosen with the full year.
+| نسخ مثالي | (لا يُستخدم — غير واقعي) | | |
+| واقعي (استبعاد الصفقات < 60 دقيقة، تأخير 15 دقيقة ضدنا، رسوم 0.15% لكل جهة) | $351,352 | 21.2% | اختيار داخل نفس العينة؛ **مع تمويل 0.01% كل 8 ساعات: $316,355، تراجع 21.6% (§V5.0)** |
+| ضغط (واقعي + حذف أفضل 5 صفقات لكل متداول) | $103,466 | 21.5% | |
+| آخر 6 أشهر فقط (واقعي) | $62,784 | 16.2% | |
+| مونت كارلو: الوسيط / أسوأ 10% | $355,333 / $183,252 | — | احتمال (≥ $100k) = 99.2% إذا شابه المستقبل السنة الماضية |
+| أفضلية المتداولين للنصف (وسيط مونت كارلو) | $64,341 | — | احتمال (≥ $100k) = 3.4% |
+فقط 8bae مُؤكَّد خارج العينة (اختير على النصف الأول، والنصف الثاني ×2.77). 8fc7 و69b0 اختيرا باستخدام السنة كاملة.
 
-## V5.5 Observe phase (now → 4 weeks), no orders
+## V5.5 مرحلة المراقبة (من الآن ← 4 أسابيع)، بدون أوامر
 
-For every leader fill on lanes 8bae / 8fc7 / 69b0 record:
-1. `leader_ts`, `leader_px`, `seen_ts` → **latency** = seen − leader.
-2. Bybit best bid/ask at `seen_ts` → **would-be price** and slippage vs `leader_px`.
-3. A **virtual "trio" ledger** ($10,000 start, rules §V5.3) filled at the would-be price + 0.055 % taker fee.
-4. Daily line (Telegram + dashboard): new trades per lane, virtual equity, open exposure, latency p50/p95, slippage median.
-Weekly: replay the same weeks offline with `python -m analysis365.multi` on the recorded fills and compare.
+لكل حركة لمتداولي 8bae و8fc7 و69b0 يُسجَّل:
+1. `leader_ts` و`leader_px` و`seen_ts` ← **زمن الالتقاط** = لحظة الرؤية − لحظة المتداول.
+2. أفضل سعر شراء/بيع في Bybit عند `seen_ts` ← **السعر المفترض** والانزلاق مقارنة بـ `leader_px`.
+3. **حساب افتراضي للثلاثي** (بداية $10,000، قواعد §V5.3) يُنفَّذ بالسعر المفترض + رسوم تنفيذ 0.055%.
+4. سطر يومي (تيليجرام + لوحة التحكم): الصفقات الجديدة لكل متداول، الرصيد الافتراضي، الحجم المفتوح، زمن الالتقاط الوسيط/p95، وسيط الانزلاق.
+أسبوعيًا: إعادة تشغيل نفس الأسابيع دون اتصال بـ `python -m analysis365.multi` على الحركات المسجّلة والمقارنة.
 
-## V5.6 Go / no-go after the observe phase (all must hold)
+## V5.6 شروط الانتقال بعد مرحلة المراقبة (يجب أن تنجح كلها)
 
-| check | pass |
+| الفحص | شرط النجاح |
 |---|---|
-| missed leader exits | 0 |
-| latency p95 | ≤ 10 s |
-| median slippage vs leader price | ≤ 0.15 % |
-| virtual ledger vs offline replay of the same weeks | within ±30 % |
-| feed / reconcile errors | none unresolved |
-| trades observed | ≥ 10 across the trio (expected ~20 in 4 weeks; fewer is possible — extend the phase, do not lower the bar) |
+| إغلاقات المتداول الفائتة | 0 |
+| زمن الالتقاط p95 | ≤ 10 ثوانٍ |
+| وسيط الانزلاق عن سعر المتداول | ≤ 0.15% |
+| الحساب الافتراضي مقابل إعادة تشغيل نفس الأسابيع | ضمن ±30% |
+| أخطاء المصدر / المطابقة | لا شيء معلّق |
+| الصفقات المرصودة | ≥ 10 عبر الثلاثي (المتوقع ~20 في 4 أسابيع؛ الأقل ممكن — تُمدَّد المرحلة ولا يُخفض الشرط) |
 
-Then: Bybit **demo** with the trio (`ALLOW_EXECUTE__8BAE/8FC7/69B0=true`, demo key) for 30 days → real money $2,000–3,000 → $10,000. Leverage stays 3.
+بعدها: Bybit **التجريبي** مع الثلاثي (`ALLOW_EXECUTE__8BAE/8FC7/69B0=true`، مفتاح تجريبي) لمدة 30 يومًا ← مال حقيقي $2,000–3,000 ← $10,000. الرافعة تبقى 3.
 
-## V5.7 Lane rules (monthly review with the research pipeline)
+## V5.7 قواعد المتداولين (مراجعة شهرية بأدوات البحث)
 
-- Pause a lane (owner decision) if: its copy drawdown > 30 %, or the leader's own account loses > 15 % in one month, or the leader stops trading crypto (only stocks/`xyz:`).
-- A lane idle for 60+ days is **not** a reason to drop it alone (8fc7 paused 130 days and was still profitable); review it.
-- Re-run `run_collect_12h.bat` + `run_analysis365.bat` monthly; replacements must pass `analysis365/robust.py` + `plan.py` checks.
+- يُوقف متداول (قرار المالك) إذا: تجاوز تراجع نسخه 30%، أو خسر حساب المتداول نفسه أكثر من 15% في شهر، أو توقف عن تداول العملات الرقمية (أسهم/`xyz:` فقط).
+- توقف المتداول 60 يومًا أو أكثر **ليس** سببًا وحده لحذفه (8fc7 توقف 130 يومًا وبقي رابحًا)؛ يُراجَع.
+- يُعاد تشغيل `run_collect_12h.bat` + `run_analysis365.bat` شهريًا؛ والبدلاء يجب أن ينجحوا في فحوص `analysis365/robust.py` + `plan.py`.
 
-## V5.8 Code work needed (not done yet)
+## V5.8 العمل البرمجي — أُنجز في 2026-10-12
 
-| file | change |
+| المطلوب | أين نُفّذ |
 |---|---|
-| `config.py` | lanes exist; add `ACCOUNT_KILL_DD_PCT=0.25`, `SHARED_EQUITY=true` (global). |
-| `engine.py` | sizing with **account** equity shared by lanes (§V5.3); per-lane virtual positions + net order. |
-| `risk.py` / `rules.py` | account kill switch; free-margin check across lanes. |
-| `paper.py` / new `virtual.py` | "trio" virtual ledger fed by observed fills (would-be price, taker fee). |
-| `metrics.py` / `notify.py` | latency, slippage, per-lane counts, daily Telegram line. |
-| dashboard | Trio panel: lanes, virtual equity curve, latency/slippage, last fills. |
-| tests | two lanes same coin (net order + correct per-lane exits), cap at 20 % with shared E0, kill switch blocks opens never exits, idle lane. |
+| `ACCOUNT_KILL_DD_PCT=0.25` و`SHARED_EQUITY=true` (إعدادات عامة) | `config.py` (القيمة `ACCOUNT_KILL_DD_PCT` تُقبل `25` أو `0.25`) |
+| حساب الحجم من رصيد **الحساب كاملًا** المشترك بين المتداولين؛ مركز افتراضي لكل متداول + أمر صافٍ واحد | `cap20.py` (`Cap20Engine` و`Book`) |
+| قاطع الحساب؛ فحص الهامش المتاح عبر كل المتداولين | `risk.py` (`AccountGuard`) و`cap20.py` |
+| الحساب الافتراضي للثلاثي (السعر المفترض + رسوم التنفيذ) | `brokers/virtual.py` (`VirtualAccount`)، والأسعار الحية في `brokers/bybit_stream.py` |
+| زمن الالتقاط، الانزلاق، عدد الحركات لكل متداول، الملخص اليومي على تيليجرام | `observe.py` و`notify.py` (`report`) |
+| لوحة الثلاثي في لوحة التحكم | `dashboard/app/trio` وواجهة `GET /api/virtual` |
+| الاختبارات | `test_trio.py` و`test_cap20_*.py` و`test_virtual_account.py` و`test_replay_matches_cap20.py` و`test_speed.py` |
+
+## V5.9 ملاحظات التنفيذ (2026-10-12)
+
+**ما يعمل الآن (على السيرفر، `BROKER=bybit`، مفتاح الحساب التجريبي):** استراتيجية `cap20_cross` لكل المتداولين، هامش مشترك،
+رافعة 3x، ‏K = 2.4، سقف 20%. المتداولون في وضع المحاكاة يُسجَّلون على الحساب الافتراضي المشترك `virtual` ($10,000، رسوم
+0.055%) بسعر Bybit الحي (شراء/بيع) لحظة التقاط الحركة، والتصفية بنسب الصيانة الأولى في Bybit (C-6). كل حركة يُحفظ معها سعر
+المتداول وسعرنا (أو المفترض) وزمن الالتقاط. صفحة `/trio` في لوحة التحكم تعرض الحساب وشروط §V5.6، والملخص اليومي يُرسل للسجل
+وتيليجرام. أول صفقات مرصودة: 8fc7 فتح صفقات بيع على IO وLINEA وEIGEN في 2026-10-12.
+
+**فحص إعادة التشغيل (§6 / M1):** سنة Loco المسجّلة عبر محرك البوت الحقيقي مقابل محاكي البحث نفسه (`hl_verify_sim.run`،
+عملات رقمية فقط، 0.095% لكل جهة): 3x ‏**$17,908 مقابل $17,841** (+0.4%)، و5x ‏**$25,679 مقابل $25,518** (+0.6%)؛ نفس أقصى
+تراجع (16.4% / 26.7%)، ونفس أقرب مسافة من التصفية (6.98× / 3.9×)، و0 تصفيات، و416 صفقة مغلقة، ونسبة ربح 78.6%. كشف الفحص
+خطأً حقيقيًا أُصلح: صفقة بلغت سقفها بعد تقريب الكمية لم تُعلَّم «بلغت السقف»، فكانت التعزيزات تعود بعد أي تقليص. لإعادة الفحص:
+`loco-copy replay --strategy cap20_cross --source fixtures`.
+
+**كيف نُفّذت النقاط غير الواضحة في المواصفة:**
+- `TAKE_PROFIT_ROI` و`DAILY_LOSS_LIMIT_PCT` و`LEADER_DD_BREAKER_PCT` و`MAX_ENTRY_DRIFT` و`MAX_SIGNAL_AGE_MS` و`MAX_OPEN_POSITIONS`:
+  متوقفة في استراتيجية السقف (فارغة في `.env`)؛ وإذا وُضع هدف ربح مع هذه الاستراتيجية يرفض البوت التشغيل. استراتيجية «أول صفقة»
+  القديمة تحتفظ بقيمها الافتراضية.
+- حد الحجم الكلي (المواصفة §7): التعزيز الذي يرفع الحجم الكلي فوق 6 أضعاف الرصيد **يُمنع** ويُسجَّل، ولا يُصغَّر؛ والصفقة الجديدة
+  التي تتجاوز الحد تُتخطّى كاملة.
+- «بلغت السقف» = السقف هو الذي حدّد حجم الأمر (التقريب يترك فتاتًا لا مساحة حقيقية)، أو المساحة الباقية أقل من الحد الأدنى للأمر.
+- الكمية المؤجلة تُقلَّص مع التقليص (المواصفة §4.3؛ البحث لم يفعل ذلك — وهذا جزء من فرق أقل من 1% في إعادة التشغيل).
+- الحساب المشترك: الخروج أمر سوق عادي وليس «تقليص فقط» (§V5.3 الأمر الصافي)؛ خروج متداول لا يغلق حصة متداول آخر أبدًا.
+- إذا أظهرت لقطة المتداول أنه أغلق مركزه ← تُغلق صفقتنا عبر نظام الإغلاق الفائت بعد `MISSED_EXIT_SECONDS` (C-4: بلقطة حديثة
+  فقط)؛ واللقطة القديمة لا تحرّك شيئًا وتطلق تنبيه `RECONCILE_STALE_SNAPSHOT`.
+- رصيد المتداول W0 لا يكون أقدم من `LEADER_EQUITY_REFRESH_SECONDS` (يُحدَّث قبلها بدقيقة، ويُعاد المحاولة كل دقيقة).
+- السحب الاحتياطي للصفقات عبر REST: حدود Hyperliquid (1,200 وزن في الدقيقة) لا تسمح بسحب كل محفظة كل ثانيتين، فالمتداولون
+  النشطون يتناوبون (كل واحد كل ~6 ثوانٍ تقريبًا)؛ والاتصال اللحظي (WebSocket) هو المسار الأساسي.
+- أسماء القرارات: `COPIED` / `OBSERVED_ONLY` (فتح)، `ADDED`، `ADD_PENDING`، `ADD_CAPPED`، `REDUCED`، `CLOSED`؛ وحركات المراكز
+  القديمة المتجاهلة تُسجَّل باسم `SKIPPED_PREEXISTING`.
+
+**السرعة (قيست في 2026-10-12):** السيرفر في أوروبا — Hyperliquid (طوكيو) ~250 ملي ثانية وBybit (سنغافورة) ~175 ملي ثانية لكل
+طلب؛ من صفقة المتداول إلى البوت: الوسيط ≈ 350 ملي ثانية. ما أُنجز: أسعار Bybit تُبث حيًا (≈ 160 عملة، بلا طلب لكل أمر)، وكل
+قراءات الفتح بالتوازي (ذهاب وإياب واحد)، وتأكيد التنفيذ يُفحص كل 50 ملي ثانية، وطابور لكل متداول فلا يتوقف استقبال الحركات أبدًا،
+والمطابقة وتحديث الحالة خارج القفل، والرافعة تُضبط مسبقًا للمتداولين في وضع التنفيذ. الزمن المتوقع من صفقة المتداول إلى تنفيذ
+صفقتنا عند التنفيذ الفعلي: ~0.9 ثانية من أوروبا، و~0.3 ثانية من سنغافورة. **قرار معلّق عند المالك:** نقل البوت إلى سيرفر في سنغافورة
+(يحتاج مفتاح Bybit تجريبي جديدًا مقيّدًا بعنوان IP السيرفر الجديد).
+
+**ما لم يُنجز بعد:** تسجيل التمويل (funding) لكل صفقة (§9) — لازم قبل مرحلة الحساب التجريبي؛ وسم git باسم `v3-final` (M0)؛
+والمقارنة الأسبوعية مع `analysis365.multi` (§V5.5) تبقى خطوة يدوية في البحث.
+
+---
+
+# إضافة v6 (2026-10-14) — محاكي «الثلاثي الجديد»: Loco + 0x8477 + 0xc0b2 بحساب وهمي واحد على Hyperliquid
+
+## V6.0 القرار
+
+- **الاستراتيجية:** `claude/portfolio-strategy-v1.md` في مشروع Crypto (الإصدار 1.0، 2026-10-14)، والمحاكي المرجعي `claude/portfolio_sim.py`.
+  تُحاكى **كما هي في كود البحث** `portfolio_sim.psim` الذي أنتج أرقامها.
+- **المرحلة الحالية:** الخطوة 1 من خطة التشغيل (§9 في المواصفة) — **أسبوعان وهمي** بـ $10,000 ورافعة 3x، بدون أي أمر حقيقي.
+- ثلاثي v5 (8bae + 8fc7 + 69b0 على Bybit) **يبقى يعمل كما هو** بالتوازي؛ المحاكي الجديد مستقل عنه تمامًا (حساب، جداول، صفحة).
+
+| المحفظة | العنوان | الوزن |
+|---|---|---|
+| loco | `0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1` | 50% |
+| 8477 | `0x8477e447846c758f5a675856001ea72298fd9cb5` | 25% |
+| c0b2 | `0xc0b2a1ce425d0cd8bc321c445fa6ae0eaed2e688` | 25% |
+
+## V6.1 ما يفعله المحاكي (كل حركة، بالكامل)
+
+- **كل حركة لكل محفظة تُنسخ:** فتح، تعزيز، تقليص، إغلاق، انعكاس — في **كل أسواق Hyperliquid الدائمة**: العملات الرقمية + أسواق
+  HIP-3 (الأسهم والسلع `xyz:` وغيرها، 11 منصة فرعية). السبوت وعقود `#` لا تُنسخ.
+- **الحجم:** عند بداية الصفقة (مركز المحفظة يخرج من الصفر): `R = K × w × E ÷ W` و`CAP = 20% × L × w × E`، حيث `K = 0.8 × L = 2.4`،
+  و`E` رصيدنا الكلي، و`w` وزن المحفظة، و`W` رصيد المحفظة (`portfolio` ← `day`، يُحدَّث كل 4 دقائق). ثابتان طوال الصفقة.
+- **التعزيز:** `pending += |Δ| × R`، محدود بمساحة السقف وبحد `6 × الرصيد` للحجم الكلي، ويُنفَّذ عندما يبلغ $10.
+- **التقليص** بنفس نسبة المحفظة · **الإغلاق** 100% · **الانعكاس** = إغلاق + صفقة جديدة · **المراكز المفتوحة قبل التشغيل** تُتجاهل حتى تُغلق.
+- **نفس العملة من محفظتين:** حصة مستقلة لكل (محفظة، عملة) — كما في المواصفة §5.
+- **الحساب:** هامش مشترك؛ التصفية عندما الرصيد < مجموع `الحجم ÷ (2 × maxLeverage)` (قاعدة Hyperliquid، كما في البحث)؛
+  تراجع 25% من القمة ← لا صفقات جديدة 7 أيام (الإغلاقات مستمرة).
+- **سيناريوهان على نفس الحركات** (حسب تفضيل المالك: أساسي وواقعي فقط):
+
+| السيناريو | سعرنا | التكلفة لكل جهة | الغرض |
+|---|---|---|---|
+| أساسي | سعر المحفظة نفسه | 0.045% | نفس الاختبار التاريخي، حيًا — للمقارنة المباشرة مع البحث |
+| واقعي | سعر وسط Hyperliquid **لحظة رؤية البوت للحركة** | 0.045% + انزلاق 0.05% = 0.095% | ما كان سيحدث فعلًا؛ يقيس تكلفة التأخير |
+
+  في الواقعي: حركة تصل متأخرة أكثر من دقيقتين (انقطاع أو توقف البوت) لا تفتح ولا تعزّز (`SKIP_STALE`)، والإغلاقات تُتابع دائمًا.
+- **إغلاق فائت:** إذا أظهرت **لقطتان متتاليتان** (كل 60 ثانية لكل محفظة، بعد آخر حركة معالجة) أن المحفظة بلا مركز ونحن ما زلنا
+  نحمله ← نُغلق حصتنا بسعر الوسط (`PF_MISSED_EXIT_CLOSED`). لا يُفتح شيء أبدًا من لقطة.
+- **قرار تنفيذي:** نص المواصفة §4 يقول «إذا وصلنا CAP نتجاهل إضافاته الباقية»، لكن كود البحث الذي أنتج الأرقام يسمح بالتعزيز مجددًا
+  إذا حرّر التقليص مساحة في السقف. **المحاكي يتبع الكود** (حتى تتطابق المقارنة مع البحث فلسًا بفلس). التمويل (funding) غير محسوب،
+  مثل البحث.
+
+## V6.2 مصادر البيانات (عامة، بدون مفاتيح)
+
+| ماذا | كيف | الوزن على Hyperliquid |
+|---|---|---|
+| حركات المحافظ | نفس WebSocket البوت: `userFills` لكل محفظة (خام، كل المنصات) | 0 |
+| الأسعار | نفس WebSocket: `allMids` للمنصة الرئيسية + كل منصات HIP-3 (≈ 540 سوقًا، كل ~3 ثوانٍ) | 0 |
+| سد الفجوات | REST `userFillsByTime` لكل محفظة كل 60 ثانية بالتناوب، وفورًا بعد كل إعادة اتصال | ≈ 60 / دقيقة |
+| رصيد المحفظة W | REST `portfolio` كل 4 دقائق | ≈ 15 / دقيقة |
+| الإغلاقات الفائتة | REST `clearinghouseState` (الرئيسية + منصات ما نحمله) كل 60 ثانية لكل محفظة | ≈ 10 / دقيقة |
+
+المجموع الإضافي ≈ 85 من حد 1,200 في الدقيقة (البوت يبقى تحت ميزانيته الداخلية 900).
+
+## V6.3 الكود (داخل `loco_copy/`)
+
+| الملف | ماذا |
+|---|---|
+| `loco_copy/pf_ledger.py` (جديد) | دفتر الحساب الوهمي — منقول سطرًا بسطر من `portfolio_sim.psim`، بلا اتصال ولا ساعة |
+| `loco_copy/portfolio.py` (جديد) | المحاكي الحي `PortfolioSim`: الحركات، الأسعار، رصيد المحافظ، الإغلاقات الفائتة، الحفظ، الملخص اليومي، حالة اللوحة |
+| `feed.py` | الـWebSocket يمرر الحركات الخام (كل المنصات) للمحاكي ويشترك في `allMids`؛ مسار المتداولين القديم بلا تغيير |
+| `app.py` | يشغّل المحاكي مع البوت (`PORTFOLIO_ENABLED=true` افتراضيًا) |
+| `store.py` | جداول جديدة (إضافية، بدون ترحيل): `pf_seen` (منع التكرار)، `pf_events` (كل حركة وما فعله كل سيناريو)، `pf_trades` (الصفقات المغلقة)؛ منحنيا الرصيد `portfolio:base` و`portfolio:real` |
+| `web.py` | `GET /api/portfolio?days=N` |
+| `config.py` | إعدادات `PORTFOLIO_*` (عامة فقط، لا تُضبط لكل متداول) |
+| `dashboard/app/portfolio/page.tsx` (جديد) | صفحة «الثلاثي الجديد (محاكاة)» في القائمة الجانبية |
+| `tests/test_portfolio.py`، `tests/test_portfolio_parity.py` | 14 + 2 اختبارًا (المجموع 207 ناجحة، ruff وmypy نظيفان) |
+
+الحالة تُحفظ في `state['portfolio:state']` كل 10 ثوانٍ وبعد كل حركة: إعادة تشغيل البوت تكمل من حيث توقف (وتسد الفجوة من REST).
+
+## V6.4 الإعدادات (`.env`) — الافتراضي = المواصفة، لا حاجة لإضافة شيء
+
+```dotenv
+PORTFOLIO_ENABLED=true
+PORTFOLIO_WALLETS=loco:0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1:0.50,8477:0x8477e447846c758f5a675856001ea72298fd9cb5:0.25,c0b2:0xc0b2a1ce425d0cd8bc321c445fa6ae0eaed2e688:0.25
+PORTFOLIO_LEVERAGE=3
+PORTFOLIO_START_EQUITY=10000
+PORTFOLIO_CAP_PCT=20
+PORTFOLIO_FEE_BASE=0.00045        # أساسي؛ الواقعي = هذا + PORTFOLIO_SLIPPAGE
+PORTFOLIO_SLIPPAGE=0.0005
+PORTFOLIO_MIN_ORDER_USD=10
+PORTFOLIO_MAX_TOTAL_X=6
+PORTFOLIO_DD_PAUSE_PCT=25
+PORTFOLIO_DD_PAUSE_DAYS=7
+PORTFOLIO_COPY_HIP3=true
+PORTFOLIO_STALE_SECONDS=120
+PORTFOLIO_POLL_SECONDS=60
+```
+
+تبديل محفظة (§8 في المواصفة، بعد المسح الأسبوعي): عدّل `PORTFOLIO_WALLETS` وأعد التشغيل. المحفظة المحذوفة التي ما زالت لها صفقات
+مفتوحة تبقى متابَعة **للإغلاقات فقط** (وزن 0: لا صفقات جديدة منها، تنبيه `PF_WALLET_EXITS_ONLY`) — كما تقول المواصفة. المحفظة
+الجديدة تبدأ من لحظة إضافتها، ومراكزها المفتوحة وقتها لا تُنسخ.
+
+## V6.5 التحقق (2026-10-14)
+
+- **مطابقة البحث:** آخر 55 يومًا من حركات المحافظ الثلاث الحقيقية + شموع 4 ساعات، عبر `psim` الأصلي وعبر دفتر البوت:
+  أساسي **$12,846.06 = $12,846.06**، واقعي **$12,497.36 = $12,497.36**، 379 صفقة، أقصى تراجع 5.97% / 6.07%، 0 تصفيات — تطابق تام.
+  مثبّت كاختبار دائم على 20 يومًا مسجّلة (`tests/fixtures/portfolio_psim_20d.json.gz`، يشمل أسواق `xyz:`).
+- **تشغيل حي:** البوت كاملًا مع Hyperliquid: الأسعار تصل لـ 541 سوقًا عبر 11 منصة؛ على محفظة نشطة جدًا (اختبار المسار فقط):
+  133 حركة في دقيقتين، زمن الالتقاط الوسيط **343 ملي ثانية**، p95 ‏1.2 ثانية، وفرق سعرنا عن سعرها بضع نقاط أساس.
+- **لوحة التحكم:** `next build` نظيف، والصفحة جُرّبت على بيانات حقيقية لآخر 3 أيام (سطح المكتب والجوال).
+
+## V6.6 لوحة التحكم — صفحة `/portfolio` «الثلاثي الجديد (محاكاة)»
+
+الرصيدان (واقعي / أساسي) · التراجع الحالي والأقصى · غير المحقق · الحجم ÷ الرصيد · البعد عن التصفية · الصفقات ونسبة الربح ·
+زمن الالتقاط ووسيط فرق السعر · منحنى الحسابين مع خطّي المتوقع (+130% بالسنة من الاختبار الواقعي، و+69% من اختبار بدون معرفة
+المستقبل) · جدول المحافظ (الوزن، رصيدها، حركاتها، صفقاتها، صافيها) · شروط الانتقال · المراكز المفتوحة (الحجم، السقف المستخدم،
+التعزيزات) · الصفقات المغلقة · آخر الحركات (سعرها مقابل سعرنا، زمن الالتقاط، وما فعله كل سيناريو). اختيار السيناريو والفترة من أعلى
+الصفحة. ملخص يومي يُرسل لتيليجرام (`PF_DAILY`)، وتنبيهات: `PF_LIQUIDATED`، `PF_DD_PAUSE`، `PF_MISSED_EXIT_CLOSED`، `PF_STALE_FILL`.
+
+## V6.7 النشر على السيرفر
+
+1. انسخ الملفات أعلاه (أو `git pull`) إلى السيرفر.
+2. أعد تشغيل البوت (`loco-copy run`، المهمة المجدولة `LocoCopy`) — يظهر في السجل `PF_STARTED`، والمحاكاة تبدأ من تلك اللحظة.
+3. أعد تشغيل واجهة اللوحة (`loco-copy api`) لتظهر `/api/portfolio`.
+4. انشر `dashboard/` على Vercel (نفس المشروع) لتظهر الصفحة الجديدة.
+لا يلزم تعديل `.env`. لا مفاتيح جديدة. قاعدة البيانات تُوسَّع تلقائيًا (جداول جديدة فقط).
+
+## V6.8 شروط الانتقال (المواصفة §9) — تظهر في الصفحة
+
+| الفحص | الشرط |
+|---|---|
+| مدة التشغيل الوهمي | ≥ 14 يومًا |
+| أقصى تراجع (واقعي) | < 20% (علامة توقف) |
+| التصفيات | 0 |
+| الإغلاقات الفائتة المصححة | 0 |
+| الحركات المتأخرة > دقيقتين | 0 |
+| واقعي − أساسي | للمتابعة (تكلفة التأخير الفعلية) |
+| يوميًا | مقارنة المنحنى مع خطّي المتوقع |
+
+بعدها (قرار المالك): شهر حقيقي صغير $1,000–3,000 برافعة 3x **على Hyperliquid** — يحتاج أولًا وسيط تنفيذ لـ Hyperliquid (مفتاح API
+wallet بصلاحية تداول فقط) **لم يُبنَ بعد**؛ ثلاثي v5 الحالي ينفذ على Bybit فقط.
+
+## V6.9 ما لم يُنجز بعد
+
+- وسيط التنفيذ الحقيقي على Hyperliquid (أوامر IOC، الرافعة لكل سوق، أسواق HIP-3) — الخطوة التالية بعد الأسبوعين.
+- التمويل (funding) في الحساب الوهمي (البحث لا يحسبه أيضًا).
+- تبديل المحافظ آليًا حسب المسح الأسبوعي (§8): يبقى قرارًا يدويًا عبر `PORTFOLIO_WALLETS`.
+
+*محاكاة فقط. ليست نصيحة مالية. الأداء السابق لا يضمن النتائج المستقبلية.*

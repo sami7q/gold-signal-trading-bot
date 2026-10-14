@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ArrowLeftRight, Radar, Activity, LineChart, SlidersHorizontal, ScrollText, Users, Layers, X } from "lucide-react";
+import { LayoutDashboard, ArrowLeftRight, Radar, Activity, LineChart, SlidersHorizontal, ScrollText, Users, Layers, FlaskConical, X } from "lucide-react";
 import { cn } from "@/lib/format";
 import { UserMenu } from "@/components/shell/user-menu";
 
 const NAV_ITEMS = [
   { href: "/", label: "نظرة عامة", icon: LayoutDashboard },
   { href: "/leaders", label: "المتداولين", icon: Users },
+  { href: "/portfolio", label: "الثلاثي الجديد (محاكاة)", icon: FlaskConical },
   { href: "/trio", label: "الثلاثي (مراقبة)", icon: Layers },
   { href: "/loco", label: "مراكز المتداولين", icon: Radar },
   { href: "/trades", label: "صفقاتنا", icon: ArrowLeftRight },

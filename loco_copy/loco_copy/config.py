@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from dotenv import dotenv_values
-from pydantic import Field, PrivateAttr, TypeAdapter, field_validator, model_validator
+from pydantic import AliasChoices, Field, PrivateAttr, TypeAdapter, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from loco_copy.constants import LIVE_CONFIRM_PHRASE
@@ -23,10 +23,17 @@ from loco_copy.constants import LIVE_CONFIRM_PHRASE
 #: The project folder (the one holding pyproject.toml), independent of the current working directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOCO_ADDRESS = "0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1"
+#: botup.md §V6 (portfolio-strategy-v1.md, 2026-10-14): Loco 50 % + 0x8477 25 % + 0xc0b2 25 %.
+DEFAULT_PORTFOLIO_WALLETS = ("loco:0xf97ad6704baec104d00b88e0c157e2b7b3a1ddd1:0.50,"
+                             "8477:0x8477e447846c758f5a675856001ea72298fd9cb5:0.25,"
+                             "c0b2:0xc0b2a1ce425d0cd8bc321c445fa6ae0eaed2e688:0.25")
 #: The v2 single leader. Its lane keeps every v2 name: state keys, `loco:` client ids, keyring service.
 DEFAULT_LABEL = "loco"
 LABEL_RE = re.compile(r"^[a-z0-9]{2,12}$")
 OVERRIDE_KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*?)__([A-Za-z0-9]+)$")
+
+#: Other names a setting is known by in the docs (botup.md v5: COPY_RATIO_K).
+SETTING_ALIASES = {"copy_ratio_k": "size_k"}
 
 #: Settings that exist once for the whole process and can never be overridden per lane (botup.md v3 §4).
 GLOBAL_ONLY = frozenset({
@@ -34,6 +41,10 @@ GLOBAL_ONLY = frozenset({
     "shared_equity", "account_kill_dd_pct", "virtual_start_equity", "virtual_fee_rate", "fill_poll_seconds",
     "api_host", "api_port", "dashboard_origins", "api_cookie_secure", "session_days", "alert_telegram_token",
     "alert_telegram_chat_id", "hl_info_url", "hl_ws_url", "stale_feed_seconds",
+    "portfolio_enabled", "portfolio_wallets", "portfolio_leverage", "portfolio_start_equity", "portfolio_cap_pct",
+    "portfolio_fee_base", "portfolio_slippage", "portfolio_min_order_usd", "portfolio_max_total_x",
+    "portfolio_dd_pause_pct", "portfolio_dd_pause_days", "portfolio_copy_hip3", "portfolio_stale_seconds",
+    "portfolio_poll_seconds",
 })
 
 
@@ -106,7 +117,8 @@ class Settings(BaseSettings):
     #: copied with ratio R = K x E0 / W0, adds stop at the per-trade margin cap, exits only with the leader).
     strategy: Literal["first_fill", "cap20_cross"] = "first_fill"
     margin_mode: Literal["ISOLATED", "CROSS"] = "ISOLATED"
-    size_k: Decimal | None = Field(default=None, gt=0)  # empty = 0.8 x LEVERAGE
+    #: empty = 0.8 x LEVERAGE. botup.md v5 writes it COPY_RATIO_K: both names are read.
+    size_k: Decimal | None = Field(default=None, gt=0, validation_alias=AliasChoices("size_k", "copy_ratio_k"))
     per_trade_margin_cap_pct: Decimal = Field(default=Decimal("20"), gt=0, le=100)
     copy_xyz_dex: bool = False
     copy_spot: bool = False
@@ -125,6 +137,28 @@ class Settings(BaseSettings):
     #: The observe ledger (botup.md v5 §V5.5): a virtual cross account, filled at Bybit's live bid / ask + fee.
     virtual_start_equity: Decimal = Field(default=Decimal("10000"), gt=0)
     virtual_fee_rate: Decimal = Field(default=Decimal("0.00055"), ge=0)
+
+    # -- the «new trio» portfolio simulator (botup.md §V6 = portfolio-strategy-v1.md). Simulation only: it never
+    #    sends an order. Weights are shares of ONE virtual account: R = K x w x E / W, CAP = cap% x L x w x E.
+    portfolio_enabled: bool = True
+    portfolio_wallets: str = DEFAULT_PORTFOLIO_WALLETS
+    portfolio_leverage: int = Field(default=3, ge=1, le=20)
+    portfolio_start_equity: Decimal = Field(default=Decimal("10000"), gt=0)
+    portfolio_cap_pct: Decimal = Field(default=Decimal("20"), gt=0, le=100)
+    #: Hyperliquid taker fee (the "base" scenario); the "real" one adds PORTFOLIO_SLIPPAGE (0.045 + 0.05 = 0.095 %)
+    portfolio_fee_base: Decimal = Field(default=Decimal("0.00045"), ge=0)
+    portfolio_slippage: Decimal = Field(default=Decimal("0.0005"), ge=0)
+    portfolio_min_order_usd: Decimal = Field(default=Decimal("10"), gt=0)
+    portfolio_max_total_x: Decimal = Field(default=Decimal("6"), gt=0)
+    #: equity this far (%) below its peak -> no new trades for PORTFOLIO_DD_PAUSE_DAYS (exits continue); empty = off
+    portfolio_dd_pause_pct: Decimal | None = Field(default=Decimal("25"), gt=0, lt=100)
+    portfolio_dd_pause_days: Decimal = Field(default=Decimal("7"), gt=0)
+    #: HIP-3 markets (xyz: stocks / commodities, ...) are copied too, priced on Hyperliquid
+    portfolio_copy_hip3: bool = True
+    #: a wallet fill we see later than this opens / adds nothing in the "real" scenario (exits still follow)
+    portfolio_stale_seconds: int = Field(default=120, ge=10)
+    #: REST gap poll: every wallet once per this many seconds (in turn), next to the WebSocket
+    portfolio_poll_seconds: int = Field(default=60, ge=10)
 
     broker: Literal["paper", "bybit"] = "paper"
     broker_env: Literal["demo", "live"] = "demo"
@@ -353,6 +387,7 @@ def read_lane_overrides(labels: list[str], env_file: Path | None) -> dict[str, d
         if not m:
             continue
         name, label = m.group(1).lower(), m.group(2).lower()
+        name = SETTING_ALIASES.get(name, name)
         if name not in fields and label not in labels:
             continue  # someone else's variable
         if name not in fields or label not in labels:

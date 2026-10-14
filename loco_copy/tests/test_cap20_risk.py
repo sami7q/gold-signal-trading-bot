@@ -86,3 +86,16 @@ def test_leverage_outside_3_or_5_is_warned(tmp_path):
     base = dict(strategy="cap20_cross", margin_mode="CROSS", follow_adds=True)
     assert strategy_warnings(make_settings(tmp_path, **base, leverage=3)) == []
     assert strategy_warnings(make_settings(tmp_path, **base, leverage=10))
+
+
+def test_copy_ratio_k_is_read_as_size_k(tmp_path):
+    from loco_copy.config import LOCO_ADDRESS, Settings, read_lane_overrides
+
+    env = tmp_path / ".env"
+    env.write_text(f"COPY_RATIO_K=2.4\nLEVERAGE=3\nSTRATEGY=cap20_cross\nMARGIN_MODE=CROSS\nFOLLOW_ADDS=true\n"
+                   f"LEADERS=loco:{LOCO_ADDRESS},x1:0x8bae3527e5a33fa0cf184f37bc112d071463ab6d\nCOPY_RATIO_K__X1=2\n",
+                   encoding="utf-8")
+    s = Settings(_env_file=env, data_dir=tmp_path)
+    assert s.size_k == Decimal("2.4") and s.k == Decimal("2.4")
+    s = s.model_copy(update={"lane_overrides": read_lane_overrides(s.labels, env)})
+    assert s.for_lane("x1").k == Decimal(2)

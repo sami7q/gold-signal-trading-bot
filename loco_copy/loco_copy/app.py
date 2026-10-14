@@ -45,6 +45,7 @@ from loco_copy.feed import FillHandler, HyperliquidClient, HyperliquidFeed, now_
 from loco_copy.models import Account, Copy, InstrumentInfo, LeaderFill, Position
 from loco_copy.notify import Notifier, configure_logging
 from loco_copy.observe import daily_line
+from loco_copy.portfolio import PortfolioSim
 from loco_copy.reconcile import Reconciler
 from loco_copy.risk import AccountGuard, RiskGuard
 from loco_copy.store import Store, lane_key
@@ -180,6 +181,9 @@ class App:
         self._poll_failures = 0
         #: live Bybit prices for every quote the bot takes (orders, the observe ledger, marks)
         self.quotes = QuoteBook()
+        #: botup.md §V6: the «new trio» portfolio simulator (Hyperliquid prices, every dex, never an order)
+        self.portfolio = PortfolioSim(settings, self.store, self.n, self.client) if settings.portfolio_enabled \
+            else None
 
     @property
     def default(self) -> Lane:
@@ -752,13 +756,24 @@ class App:
         if self.cap20_lanes:
             await self.start_quotes()
 
+        pf = self.portfolio
+        if pf is not None:
+            await pf.start()
+
+        def connected() -> None:
+            self.n.info("WS_CONNECTED", leaders=list(self.lanes))
+            if pf is not None:
+                pf.backfill_wanted.set()  # the simulator's wallets: REST fills any gap the WS left
+
         by_address = {lane.address: lane for lane in self.lanes.values()}
         self.feed = HyperliquidFeed(
             ws_url=self.base.hl_ws_url, users={a: self.fill_handler(x) for a, x in by_address.items()},
             client=self.client, on_frame=self.on_frame, last_seen_ms=lambda a: by_address[a].last_seen_ms,
-            on_connected=lambda: self.n.info("WS_CONNECTED", leaders=list(self.lanes)),
+            on_connected=connected,
             on_error=lambda err: self.n.warning("WS_DISCONNECTED", error=err),
-            on_unknown_user=lambda user: self.n.warning("WS_UNKNOWN_USER", user=user))
+            on_unknown_user=lambda user: self.n.warning("WS_UNKNOWN_USER", user=user),
+            raw_users={a: pf.on_raw_fills for a in pf.addresses} if pf else None,
+            mid_dexes=pf.dexes if pf else None, on_mids=pf.on_mids if pf else None)
         step = self.base.leader_snapshot_seconds / len(self.lanes)
         tasks += [asyncio.create_task(self.feed.run()), asyncio.create_task(self.reconcile_loop()),
                   asyncio.create_task(self.control_loop()), asyncio.create_task(self.fill_poll_loop())]
@@ -766,12 +781,16 @@ class App:
         if self.cap20_lanes:
             tasks += [asyncio.create_task(self.leader_equity_loop()), asyncio.create_task(self.virtual_loop()),
                       asyncio.create_task(self.daily_loop()), asyncio.create_task(self.prewarm_loop())]
+        if pf is not None:
+            tasks += pf.tasks()
         try:
             await asyncio.gather(*tasks)
         finally:
             for t in tasks:
                 t.cancel()
             self.save_runtime()
+            if pf is not None:
+                pf.save()
             await self.client.close()
             self.n.info("STOPPED")
 

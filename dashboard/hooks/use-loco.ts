@@ -10,6 +10,7 @@ import type {
   LeaderEvent,
   LeaderSummary,
   LocoPositions,
+  PortfolioPanel,
   LogEntry,
   Mode,
   Overview,
@@ -84,6 +85,15 @@ export function useAnalytics(days: number, leader?: string) {
     queryKey: ["analytics", days, leader ?? "ALL"],
     queryFn: () => api.get<Analytics>(`/api/analytics?${qs}`),
     refetchInterval: 30_000,
+  });
+}
+
+/** botup.md §V6: the «new trio» portfolio simulator (both scenarios, Hyperliquid prices). */
+export function usePortfolio(days = 28) {
+  return useQuery({
+    queryKey: ["portfolio", days],
+    queryFn: () => api.get<PortfolioPanel>(`/api/portfolio?days=${days}`),
+    refetchInterval: 15_000,
   });
 }
 
