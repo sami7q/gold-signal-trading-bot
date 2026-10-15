@@ -319,14 +319,16 @@ export default function PortfolioComparePage() {
               ))}
             </Select>
           </div>
-          <div>
-            <Label>الرافعة</Label>
-            <Select value={leverage ?? d?.leverage ?? 3} onChange={(e) => setLeverage(Number(e.target.value))}>
-              {(d?.leverages ?? [3, 5, 10]).map((x) => (
-                <option key={x} value={x}>{`${x}x`}</option>
-              ))}
-            </Select>
-          </div>
+          {d?.leverages && d.leverages.length > 1 ? (
+            <div>
+              <Label>الرافعة</Label>
+              <Select value={leverage ?? d.leverage ?? d.leverages[0]} onChange={(e) => setLeverage(Number(e.target.value))}>
+                {d.leverages.map((x) => (
+                  <option key={x} value={x}>{`${x}x`}</option>
+                ))}
+              </Select>
+            </div>
+          ) : null}
           <div>
             <Label>السيناريو</Label>
             <Select value={scenario} onChange={(e) => setScenario(e.target.value as Scenario)}>

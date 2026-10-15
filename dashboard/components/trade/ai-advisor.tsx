@@ -9,6 +9,7 @@ import { AlertTriangle, Bell, Bot, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAdvice, useRefreshAdvice } from "@/hooks/use-loco";
+import { isNotFound } from "@/lib/api";
 import { cn, formatDateTime, formatNumber, formatPercent, formatPrice, formatRelativeTime } from "@/lib/format";
 import type { AdviceData, MarketState } from "@/types/api";
 
@@ -204,6 +205,8 @@ function Body({ d, wallet, coin }: { d: AdviceData; wallet: string; coin: string
 export function AiAdvisor({ wallet, coin }: { wallet: string; coin: string }) {
   const q = useAdvice(wallet, coin);
   if (q.isLoading) return <p className="px-4 py-6 text-sm text-muted">تحميل التحليل…</p>;
+  if (isNotFound(q.error))
+    return <p className="px-4 py-6 text-sm text-muted">التحليل غير موجود بعد في البوت على السيرفر (إصدار أقدم من اللوحة) — يعمل بعد تشغيل loco_copy\deploy_server.ps1 على السيرفر.</p>;
   if (q.isError || !q.data) return <p className="px-4 py-6 text-sm text-warn">تعذّر تحميل التحليل.</p>;
   if (!q.data.enabled) {
     return <p className="px-4 py-6 text-sm text-muted">محلل الصفقات لم يبدأ بعد على السيرفر (يحتاج تحديث البوت وإعادة تشغيله).</p>;
