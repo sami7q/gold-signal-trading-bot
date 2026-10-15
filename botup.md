@@ -1196,3 +1196,44 @@ $10,000 و$50,000 و$100,000)، **وقسم مقارنة** بين: 8bae + 8fc7 + 
 - ربح المحفظة الفعلي يشمل كل صفقاتها (ومنها ما بدأ قبل القسم ولم ننسخه) — لذا يختلف عن ربحنا طبيعيًا.
 
 *محاكاة فقط. ليست نصيحة مالية.*
+
+---
+
+# إضافة V14 (2026-10-15) — النشر على السيرفر يعمل في كل الحالات + تحديث تلقائي اختياري
+
+## V14.0 ما وُجد بالفحص الحي (2026-10-15، من متصفح المالك)
+
+- GitHub: `5d23c6d` ✅ · Vercel: اللوحة الجديدة منشورة ✅ (قائمة الرافعة، رسائل «السيرفر أقدم»، السعر اللحظي يعمل: BTC 80,835.5).
+- **السيرفر ما زال بإصدار V7**: `/api/portfolio/chart` يعمل، أما `/api/portfolio/advice` و`/api/research` و`/api/portfolio/compare`
+  و`/api/live` ← 404، و`/api/portfolio?group=mix2ac4` يرد ببيانات الثلاثي. أي أن §V8–§V13 لم تُشغَّل على السيرفر.
+- كل صفحات البوت القديمة تعمل (200، ~0.25 ث للطلب)، لا أخطاء في المتصفح، والتقاط الحركات p50 0.4 ث / p95 0.85 ث.
+- أُصلح في اللوحة: قائمة «الرافعة» تختفي مع بوت لا يدعمها (كانت ستعرض أرقام 3x باسم 5x/10x)، ورسالة واضحة بدل
+  «تعذّر تحميل التحليل».
+
+## V14.1 `deploy_server.ps1` صار يعمل في كل الحالات
+
+- **سيرفر قديم ليس فيه السكربت بعد:** يُنزَّل السكربت نفسه ويُشغَّل مع مسار المشروع (الأمر أدناه).
+- **المجلد ليس نسخة git، أو git غير مثبت، أو `git pull` فشل** (ملفات عُدّلت يدويًا): ينزّل أرشيف GitHub ويكتب الكود فقط فوق
+  القديم — **لا يلمس أبدًا** `.env` ولا `data\` ولا `.venv\` — بعد نسخة احتياطية للكود في `_deploy\code-backup-<الوقت>`.
+- الخدمات: خدمة Windows أو مهمة مجدولة (`LocoCopy` و`LocoCopyApi`، أو `-BotService` / `-ApiService`).
+- الفحص النهائي صار يشمل `/api/portfolio/advice` أيضًا، ويُسجَّل الالتزام المنشور في `loco_copy\data\deployed_commit.txt`.
+- **`-InstallAutoUpdate` (اختياري، مرة واحدة):** مهمة مجدولة `LocoCopyAutoDeploy` كل 10 دقائق: إن وُجد التزام جديد على GitHub ينشره
+  بنفس الخطوات (نسخة احتياطية ← تحديث ← اختبارات ← إعادة تشغيل)، **ولا يعيد التشغيل إن فشل أي اختبار**. سجله في
+  `loco_copy\data\logs\autodeploy.log`. بعدها يكفي `git push` من جهاز المالك وكل شيء يصل وحده.
+
+## V14.2 خطوات Claude Code — **على السيرفر** (RDP / الجلسة التي تُدار منها الخدمات)
+
+```powershell
+# 1) ادخل مجلد المشروع على السيرفر (المجلد الذي فيه loco_copy\)، ثم:
+iwr https://raw.githubusercontent.com/sami7q/boot/main/loco_copy/deploy_server.ps1 -OutFile $env:TEMP\deploy.ps1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\deploy.ps1 -ProjectDir (Get-Location).Path
+
+# 2) (اختياري، مستحسن) التحديث التلقائي بعد كل git push:
+powershell -ExecutionPolicy Bypass -File .\loco_copy\deploy_server.ps1 -InstallAutoUpdate
+```
+
+النتيجة المطلوبة في آخر الخطوة 1: خمسة أسطر `OK` (health، research، compare، advice، live) ثم `Deployed <commit>`.
+ثم في المتصفح: «اللوحة: لحظي» أخضر · `/research` · `/portfolio/compare` · `/portfolio/mix2ac4` · قائمة الرافعة · تحليل الصفقة.
+للتحليل المكتوب من Claude: على السيرفر `.\loco_copy\.venv\Scripts\loco-copy.exe set-key anthropic` (المالك يكتب المفتاح بنفسه).
+
+*محاكاة فقط. ليست نصيحة مالية.*
