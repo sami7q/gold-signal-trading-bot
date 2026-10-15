@@ -227,8 +227,18 @@ def pf_groups(rt: dict[str, Any]) -> list[dict[str, Any]]:
              "started_ms": rt.get("started_ms"), "research_year": None, "research_half": None}]
 
 
-def pf_ledger_name(scenario: str, capital: int, group: str) -> str:
-    return f"{scenario}:{capital}" if group == "trio" else f"{group}:{scenario}:{capital}"
+def pf_ledger_name(scenario: str, capital: int, group: str, lev: int = 0) -> str:
+    """Same names as portfolio.ledger_name: lev=0 (or the base leverage, see pf_lev) keeps the pre-§V13 name."""
+    name = f"{scenario}:{capital}" if group == "trio" else f"{group}:{scenario}:{capital}"
+    return f"{name}:x{lev}" if lev else name
+
+
+def pf_lev(rt: dict[str, Any], leverage: int | None) -> tuple[int, int, list[int]]:
+    """(the chosen leverage, its ledger suffix -- 0 for the base leverage --, every leverage simulated)."""
+    base = int(rt.get("base_leverage") or (rt.get("settings") or {}).get("leverage") or 3)
+    levs = [int(x) for x in rt.get("leverages") or [base]]
+    lev = leverage if leverage in levs else base
+    return lev, (0 if lev == base else lev), levs
 
 
 def pf_actions(e: sqlite3.Row, group: str) -> tuple[str, float, str, float] | None:
@@ -236,7 +246,7 @@ def pf_actions(e: sqlite3.Row, group: str) -> tuple[str, float, str, float] | No
     section did not see the fill (wallet not in it, or before it started). Rows older than §V10 are the trio's."""
     raw = e["actions"]
     if raw:
-        a = json.loads(raw).get(group)
+        a = json.loads(raw).get(group)  # "mix2ac4" (base leverage) or "mix2ac4:x5"
         return (str(a[0]), float(a[1]), str(a[2]), float(a[3])) if a else None
     if group == "trio":
         return e["base_action"], e["base_qty"], e["real_action"], e["real_qty"]
@@ -664,7 +674,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/portfolio")
     def portfolio(_user: UserDep, store: StoreDep, days: int = 28, capital: int | None = None,
-                  group: str = "trio") -> dict[str, Any]:
+                  group: str = "trio", leverage: int | None = None) -> dict[str, Any]:
         """One simulator section on Hyperliquid (botup.md §V6; sections §V10): for one starting balance, both
         ledgers (base / real), their equity curves, open positions and closed trades; every fill of the section's
         wallets with our price and latency; a summary of every balance; and the go / no-go checks."""
@@ -676,14 +686,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         gname = g["name"]
         capitals: list[int] = rt["capitals"]
         cap = capital if capital in capitals else capitals[0]
-        names = {sc: pf_ledger_name(sc, cap, gname) for sc in ("base", "real")}
+        lev, suffix, levs = pf_lev(rt, leverage)
+        akey = gname if not suffix else f"{gname}:x{lev}"
+        names = {sc: pf_ledger_name(sc, cap, gname, suffix) for sc in ("base", "real")}
         now = now_ms()
         since = now - max(1, min(days, 365)) * DAY_MS
         curves = {sc: [{"t": iso(ts), "equity": float(eq)} for ts, eq in
                        store.equity_history(f"portfolio:{name}", since)] for sc, name in names.items()}
         events = []
         for e in store.pf_events_since(since):
-            a = pf_actions(e, gname)
+            a = pf_actions(e, akey)
             if a is not None:
                 events.append((e, a))
         lat = [float(e["detected_at_ms"] - e["leader_time_ms"]) for e, _ in events]
@@ -726,7 +738,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         base = ledgers.get(names["base"]) or {}
         missed = sum(1 for r in store.logs_since(since) if r["type"] == "PF_MISSED_EXIT_CLOSED")
         stale = sum(1 for _, a in events if a[2] == "SKIP_STALE")
-        run_days = (now - int(g.get("started_ms") or rt.get("started_ms") or now)) / DAY_MS
+        started = int(real.get("started_ms") or g.get("started_ms") or rt.get("started_ms") or now)
+        run_days = (now - started) / DAY_MS
         gap = None
         if base.get("equity") and real.get("equity") is not None and base.get("start_equity"):
             gap = (float(real["equity"]) - float(base["equity"])) / float(base["start_equity"]) * 100
@@ -742,7 +755,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         trades_out = {name: [{**r, "opened": iso(r["opened_ms"]), "closed": iso(r["closed_ms"])} for r in rows[:80]]
                       for name, rows in trades.items()}
         expected = []
-        if gname == "trio":
+        if suffix:  # the research numbers are for the base leverage only
+            pass
+        elif gname == "trio":
             for part in s.portfolio_expected.split(";"):
                 label, _, growth = part.rpartition(":")
                 if label and growth.strip():
@@ -754,17 +769,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if g.get("research_half"):
                 h = float(g["research_half"])
                 expected.append({"label": f"متحفظ — نصف أفضلية المتداولين ({(h - 1) * 100:+,.0f}%)", "year": h})
-        summary = [{"capital": c, **{sc: {k: (ledgers.get(pf_ledger_name(sc, c, gname)) or {}).get(k) for k in
+        summary = [{"capital": c, **{sc: {k: (ledgers.get(pf_ledger_name(sc, c, gname, suffix)) or {}).get(k) for k in
                                           ("equity", "return_pct", "max_drawdown_pct", "trades", "win_rate",
                                            "liquidations", "open_trades", "exposure_x")}
                                      for sc in ("base", "real")}} for c in capitals]
+        base_lev = pf_lev(rt, None)[0]
+        by_lev = [{"leverage": x, "capital": c, **{k: (ledgers.get(pf_ledger_name(
+            "real", c, gname, 0 if x == base_lev else x)) or {}).get(k) for k in
+            ("equity", "return_pct", "max_drawdown_pct", "trades", "liquidations", "open_trades")}}
+            for x in levs for c in capitals]  # every leverage x balance of this section, real scenario (§V13)
         return {
             "enabled": True, "days": days, "capital": cap, "capitals": capitals, "summary": summary,
-            "group": g, "groups": groups,
+            "group": g, "groups": groups, "leverage": lev, "leverages": levs,
+            # every leverage x balance of this section, real scenario (§V13)
+            "by_leverage": by_lev,
             "ledger": {"base": base, "real": real},
             "runtime": {k: v for k, v in rt.items() if k != "ledgers"} | {
-                "started_ms": g.get("started_ms") or rt.get("started_ms"),
-                "wallets": [w for w in rt.get("wallets") or [] if w["label"] in g["labels"]]},
+                "started_ms": started,
+                "wallets": [w | {"real_pnl": (w.get("real_pnl") or {}).get(gname)}
+                            for w in rt.get("wallets") or [] if w["label"] in g["labels"]]},
             "run_days": run_days, "curves": curves, "expected": expected, "orders": orders, "fees_in_period": fees,
             "stats": {"events": len(events), "latency_p50_ms": percentile(lat, 0.5),
                       "latency_p95_ms": percentile(lat, 0.95), "slippage_median_bps": percentile(slip, 0.5),
@@ -776,7 +799,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/portfolio/chart")
     def portfolio_chart(_user: UserDep, store: StoreDep, wallet: str, coin: str, capital: int | None = None,
                         scenario: Literal["real", "base"] = "real", days: int = 7,
-                        group: str = "trio") -> dict[str, Any]:
+                        group: str = "trio", leverage: int | None = None) -> dict[str, Any]:
         """The live trade chart (botup.md §V7): for one trader + coin, every fill of the trader (where he opened,
         added, reduced, closed) and every order of ours on that ledger (price, size, fee), plus our open position,
         its average entry and the approximate liquidation price of the account if only this coin moved.
@@ -787,19 +810,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"enabled": False}
         cap = capital if capital in capitals else capitals[0]
         gname = next((x["name"] for x in pf_groups(rt) if x["name"] == group), "trio")
-        name = pf_ledger_name(scenario, cap, gname)
+        lev, suffix, _ = pf_lev(rt, leverage)
+        name = pf_ledger_name(scenario, cap, gname, suffix)
         since = now_ms() - max(1, min(days, 90)) * DAY_MS
         ledger = (rt.get("ledgers") or {}).get(name) or {}
         pos = next((p for p in ledger.get("positions") or [] if p["wallet"] == wallet and p["coin"] == coin), None)
         liq = None
         if pos and ledger.get("equity") is not None:
-            q, m, lev = float(pos["qty"]), float(pos["mark"]), float(pos.get("maxlev") or 10)
-            other_mm = float(ledger.get("maintenance") or 0) - q * m / (2 * lev)
+            q, m, mlev = float(pos["qty"]), float(pos["mark"]), float(pos.get("maxlev") or 10)
+            other_mm = float(ledger.get("maintenance") or 0) - q * m / (2 * mlev)
             eq = float(ledger["equity"])
             if pos["side"] < 0:  # equity - q (p - m) = other_mm + q p / 2L
-                liq = (eq + q * m - other_mm) / (q * (1 + 1 / (2 * lev)))
+                liq = (eq + q * m - other_mm) / (q * (1 + 1 / (2 * mlev)))
             else:  # equity + q (p - m) = other_mm + q p / 2L
-                liq = (q * m - eq + other_mm) / (q * (1 - 1 / (2 * lev)))
+                liq = (q * m - eq + other_mm) / (q * (1 - 1 / (2 * mlev)))
             liq = liq if liq > 0 else None
         fills = []
         for e in store.pf_events_for(wallet, coin, since):
@@ -807,7 +831,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s1 = s0 + (e["sz"] if e["side"] == "B" else -e["sz"])
             kind = ("OPEN" if abs(s0) < 1e-12 else "CLOSE" if abs(s1) < 1e-9 else
                     "FLIP" if (s0 > 0) != (s1 > 0) else "ADD" if abs(s1) > abs(s0) else "REDUCE")
-            a = pf_actions(e, gname)
+            a = pf_actions(e, gname if not suffix else f"{gname}:x{lev}")
             fills.append({"t": e["leader_time_ms"], "side": e["side"], "px": e["px"], "sz": e["sz"], "kind": kind,
                           "pos_after": s1, "our_action": (a[2] if scenario == "real" else a[0]) if a else None})
         orders = [{"t": o["ts"], "kind": o["kind"], "qty": o["qty"], "px": o["px"], "notional": o["notional"],
@@ -853,7 +877,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                  headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
     @app.get("/api/portfolio/compare")
-    def portfolio_compare(_user: UserDep, store: StoreDep, capital: int | None = None) -> dict[str, Any]:
+    def portfolio_compare(_user: UserDep, store: StoreDep, capital: int | None = None,
+                          leverage: int | None = None) -> dict[str, Any]:
         """botup.md §V10: every simulator section side by side -- each since its own start, and all of them from
         the common start (the latest section start) so the comparison is on the same trades."""
         rt = store.get_state("portfolio_runtime")
@@ -862,8 +887,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         groups = pf_groups(rt)
         capitals: list[int] = rt["capitals"]
         cap = capital if capital in capitals else capitals[0]
+        lev, suffix, levs = pf_lev(rt, leverage)
         ledgers = rt.get("ledgers") or {}
         common = max(int(g.get("started_ms") or 0) for g in groups)
+        if suffix:  # a leverage added later starts later than its section
+            common = max([common] + [int((ledgers.get(pf_ledger_name("real", cap, g["name"], suffix)) or {})
+                                         .get("started_ms") or 0) for g in groups])
         now = now_ms()
         keys = ("equity", "return_pct", "max_drawdown_pct", "drawdown_pct", "trades", "wins", "win_rate",
                 "liquidations", "open_trades", "exposure_x", "fees_paid", "notional", "pauses", "per_wallet")
@@ -872,19 +901,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             row: dict[str, Any] = {k: g.get(k) for k in ("name", "title", "labels", "started_ms", "research_year",
                                                          "research_half")}
             row["days"] = (now - int(g.get("started_ms") or now)) / DAY_MS
-            row["capitals"] = {str(c): {sc: {k: (ledgers.get(pf_ledger_name(sc, c, g["name"])) or {}).get(k)
+            row["capitals"] = {str(c): {sc: {k: (ledgers.get(pf_ledger_name(sc, c, g["name"], suffix)) or {}).get(k)
                                             for k in keys} for sc in ("base", "real")} for c in capitals}
             row["curves"] = {}
             row["since_common"] = {}
             for sc in ("base", "real"):
-                name = pf_ledger_name(sc, cap, g["name"])
+                name = pf_ledger_name(sc, cap, g["name"], suffix)
                 pts = store.equity_history(f"portfolio:{name}", int(g.get("started_ms") or 0))
                 row["curves"][sc] = [{"t": iso(ts), "ms": ts, "equity": float(eq)} for ts, eq in pts]
                 at = next((float(eq) for ts, eq in pts if ts >= common), None)
                 cur = (ledgers.get(name) or {}).get("equity")
                 row["since_common"][sc] = (float(cur) / at - 1) * 100 if at and cur is not None else None
             out.append(row)
-        return {"enabled": True, "capital": cap, "capitals": capitals, "common_start_ms": common,
+        return {"enabled": True, "capital": cap, "capitals": capitals, "leverage": lev, "leverages": levs,
+                "common_start_ms": common,
                 "updated_ms": rt.get("updated_ms"), "groups": out}
 
     @app.get("/api/portfolio/advice")

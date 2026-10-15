@@ -94,7 +94,7 @@ function CommonChart({ d, scenario }: { d: PortfolioCompare; scenario: Scenario 
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />
         {groups.map((g, i) => (
-          <Line key={g.name} type="monotone" dataKey={`g${i}`} name={name(g)} stroke={COLORS[i % COLORS.length]} strokeWidth={i ? 1.75 : 2} dot={false} connectNulls />
+          <Line key={g.name} type="monotone" dataKey={`g${i}`} name={name(g)} stroke={COLORS[i % COLORS.length]} strokeWidth={i ? 1.75 : 2} dot={false} connectNulls isAnimationActive={false} />
         ))}
       </LineChart>
     </ResponsiveContainer>
@@ -297,7 +297,8 @@ function Body({ d, scenario }: { d: PortfolioCompare; scenario: Scenario }) {
 export default function PortfolioComparePage() {
   const [capital, setCapital] = useState<number | undefined>(undefined);
   const [scenario, setScenario] = useState<Scenario>("real");
-  const q = usePortfolioCompare(capital);
+  const [leverage, setLeverage] = useState<number | undefined>(undefined);
+  const q = usePortfolioCompare(capital, leverage);
   const d = q.data;
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -315,6 +316,14 @@ export default function PortfolioComparePage() {
             <Select value={capital ?? d?.capital ?? ""} onChange={(e) => setCapital(Number(e.target.value))}>
               {(d?.capitals ?? [10000, 50000, 100000]).map((c) => (
                 <option key={c} value={c}>{formatUsd(c)}</option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <Label>الرافعة</Label>
+            <Select value={leverage ?? d?.leverage ?? 3} onChange={(e) => setLeverage(Number(e.target.value))}>
+              {(d?.leverages ?? [3, 5, 10]).map((x) => (
+                <option key={x} value={x}>{`${x}x`}</option>
               ))}
             </Select>
           </div>

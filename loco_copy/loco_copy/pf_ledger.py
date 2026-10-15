@@ -338,6 +338,7 @@ class Ledger:
                 "liquidations": self.liquidations, "trades": self.trades, "wins": self.wins,
                 "win_rate": self.wins / self.trades if self.trades else None, "fees_paid": self.fees_paid,
                 "open_trades": sum(1 for t in self.T.values() if t["opened"]), "leverage": self.leverage,
+                "started_ms": self.started_ms,
                 "fee": self.fee, "per_wallet": self.per_wallet}
 
     def to_dict(self) -> dict[str, Any]:

@@ -28,7 +28,7 @@ GROUPS = "mixc=aa+bb+cc:29.01:5.79;mixd=aa+bb+dd"
 
 def make(tmp_path: Any, now: list[int], groups: str = GROUPS) -> tuple[PortfolioSim, Store]:
     s = make_settings(tmp_path, portfolio_wallets=f"aa:{A}:1,bb:{B}:1", portfolio_extra_wallets=f"cc:{C}:1,dd:{D}:1",
-                      portfolio_groups=groups, api_cookie_secure=False)
+                      portfolio_groups=groups, api_cookie_secure=False, portfolio_leverages="3")
     store = Store(s.db_path)
     sim = PortfolioSim(s, store, Notifier(store, echo=False), FakeClient(), clock=lambda: now[0])  # type: ignore[arg-type]
     return sim, store
@@ -50,8 +50,9 @@ def test_default_settings_are_the_trio_and_two_mixes(tmp_path):
     sim = PortfolioSim(s, Store(s.db_path), Notifier(Store(s.db_path), echo=False), FakeClient())  # type: ignore[arg-type]
     assert [(g.name, "+".join(g.labels)) for g in sim.groups] == [
         ("trio", "8bae+8fc7+69b0"), ("mix2ac4", "8bae+8fc7+69b0+2ac4"), ("mix2396", "8bae+8fc7+69b0+2396")]
-    assert len(sim.wallets) == 5 and len(sim.ledgers) == 3 * 3 * 2  # 3 sections x 3 balances x base/real
+    assert len(sim.wallets) == 5 and len(sim.ledgers) == 3 * 3 * 3 * 2  # sections x leverages x balances x scenarios
     assert "real:10000" in sim.ledgers and "mix2ac4:real:100000" in sim.ledgers
+    assert sim.leverages == [3, 5, 10] and "real:10000:x5" in sim.ledgers and "mix2396:base:50000:x10" in sim.ledgers
 
 
 async def test_each_section_copies_its_own_wallets(tmp_path):
@@ -130,3 +131,63 @@ async def test_dashboard_api_per_section_and_compare(tmp_path):
     assert cmp_["groups"][1]["capitals"]["10000"]["real"]["open_trades"] == 2
     assert chart["ledger"] == "mixc:real:10000" and chart["position"]["wallet"] == "cc"
     assert unknown["group"]["name"] == "trio"
+
+
+async def test_leverages_5x_and_10x_are_simulated_side_by_side(tmp_path):
+    """§V13: the same fills at 3x / 5x / 10x -- K = 0.8 x L and the cap 20 % x L scale with the leverage."""
+    now = [T0 - 1000]
+    s = make_settings(tmp_path, portfolio_wallets=f"aa:{A}:1", portfolio_leverages="3,5,10")
+    store = Store(s.db_path)
+    sim = PortfolioSim(s, store, Notifier(store, echo=False), FakeClient(), clock=lambda: now[0])  # type: ignore[arg-type]
+    await sim.start()
+    now[0] = T0 + 500
+    await sim.on_raw_fills(A, [raw(0, "BTC", "B", 100, 1, 0, 1)], False)
+    q = {lev: sim.ledgers[sim.lname("base", 10000, "trio", lev)].P["aa|BTC"]["q"] for lev in (3, 5, 10)}
+    assert q[5] == pytest.approx(q[3] * 5 / 3) and q[10] == pytest.approx(q[3] * 10 / 3)  # R = 0.8 L w E / W
+    assert sim.ledgers["base:10000:x10"].T["aa|BTC"]["cap"] == pytest.approx(0.2 * 10 * 10_000)
+    assert sim.ledgers["base:10000:x10"].max_total_x == pytest.approx(20)  # 6x at 3x, scaled
+    a = json.loads(store.pf_events_since(0)[0]["actions"])
+    assert set(a) == {"trio", "trio:x5", "trio:x10"} and a["trio:x10"][0] == "OPEN"
+    await sim.mark_once()
+    rt = store.get_state("portfolio_runtime")
+    assert rt["leverages"] == [3, 5, 10] and rt["base_leverage"] == 3
+    store.upsert_user("sami", "Sami", hash_password("correct-horse"))
+    with TestClient(create_app(make_settings(tmp_path, api_cookie_secure=False)), headers={"origin": ORIGIN}) as c:
+        login(c)
+        d = c.get("/api/portfolio", params={"leverage": 10}).json()
+        cmp_ = c.get("/api/portfolio/compare", params={"leverage": 5}).json()
+        chart = c.get("/api/portfolio/chart", params={"wallet": "aa", "coin": "BTC", "leverage": 10}).json()
+    assert d["leverage"] == 10 and d["leverages"] == [3, 5, 10] and d["ledger"]["real"]["name"] == "real:10000:x10"
+    assert len(d["by_leverage"]) == 9 and {r["leverage"] for r in d["by_leverage"]} == {3, 5, 10}
+    assert "real_pnl" in d["runtime"]["wallets"][0] and d["expected"] == []  # research lines are for 3x only
+    assert cmp_["leverage"] == 5 and chart["ledger"] == "real:10000:x10"
+
+
+async def test_a_new_leverage_on_a_running_simulator_starts_now(tmp_path):
+    now = [T0 - 1000]
+    s1 = make_settings(tmp_path, portfolio_wallets=f"aa:{A}:1", portfolio_leverages="3")
+    store = Store(s1.db_path)
+    sim = PortfolioSim(s1, store, Notifier(store, echo=False), FakeClient(), clock=lambda: now[0])  # type: ignore[arg-type]
+    await sim.start()
+    now[0] = T0 + 500
+    await sim.on_raw_fills(A, [raw(0, "BTC", "B", 100, 1, 0, 1)], False)
+    sim.save()
+    now[0] = T0 + 3_600_000
+    s2 = make_settings(tmp_path, portfolio_wallets=f"aa:{A}:1", portfolio_leverages="3,5")
+    sim2 = PortfolioSim(s2, store, Notifier(store, echo=False), FakeClient(), clock=lambda: now[0])  # type: ignore[arg-type]
+    await sim2.start()
+    assert sim2.ledgers["base:10000"].started_ms == T0 - 1000 and sim2.ledgers["base:10000:x5"].started_ms == now[0]
+    assert "aa|BTC" in sim2.ledgers["base:10000"].P and not sim2.ledgers["base:10000:x5"].P  # nothing inherited
+
+
+def test_trader_real_pnl_since_start():
+    from loco_copy.feed import pnl_since
+
+    periods = {"day": {"pnlHistory": [[1000, "10"], [2000, "30"], [3000, "50"]],
+                       "accountValueHistory": [[1000, "1000"], [2000, "1000"], [3000, "1040"]]},
+               "week": {"pnlHistory": [[0, "0"], [3000, "50"]], "accountValueHistory": [[0, "990"], [3000, "1040"]]}}
+    r = pnl_since(periods, 1500)  # inside the day window: PnL at start 20 (interpolated), now 50
+    assert r is not None and r["pnl"] == pytest.approx(30) and r["ret_pct"] == pytest.approx(3.0)
+    assert r["window"] == "day"
+    assert pnl_since(periods, 500)["window"] == "week"  # type: ignore[index]
+    assert pnl_since(periods, -5) is None

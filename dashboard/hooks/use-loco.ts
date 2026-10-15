@@ -99,17 +99,21 @@ export function useAnalytics(days: number, leader?: string) {
 }
 
 /** Query options shared by the hooks and the sidebar's hover prefetch (botup.md §V12): same key, same fetch. */
-export const portfolioOptions = (days = 28, capital?: number, group = "trio") => ({
-  queryKey: ["portfolio", group, days, capital ?? null] as const,
+export const portfolioOptions = (days = 28, capital?: number, group = "trio", leverage?: number) => ({
+  queryKey: ["portfolio", group, days, capital ?? null, leverage ?? null] as const,
   queryFn: () =>
     api.get<PortfolioPanel>(
-      `/api/portfolio?days=${days}&group=${encodeURIComponent(group)}${capital ? `&capital=${capital}` : ""}`,
+      `/api/portfolio?days=${days}&group=${encodeURIComponent(group)}${capital ? `&capital=${capital}` : ""}` +
+        (leverage ? `&leverage=${leverage}` : ""),
     ),
 });
 
-export const compareOptions = (capital?: number) => ({
-  queryKey: ["portfolio-compare", capital ?? null] as const,
-  queryFn: () => api.get<PortfolioCompare>(`/api/portfolio/compare${capital ? `?capital=${capital}` : ""}`),
+export const compareOptions = (capital?: number, leverage?: number) => ({
+  queryKey: ["portfolio-compare", capital ?? null, leverage ?? null] as const,
+  queryFn: () => {
+    const qs = new URLSearchParams({ ...(capital ? { capital: String(capital) } : {}), ...(leverage ? { leverage: String(leverage) } : {}) });
+    return api.get<PortfolioCompare>(`/api/portfolio/compare${qs.size ? `?${qs}` : ""}`);
+  },
 });
 
 export const researchOptions = () => ({
@@ -118,28 +122,36 @@ export const researchOptions = () => ({
 });
 
 /** botup.md §V6: the «new trio» portfolio simulator (both scenarios, Hyperliquid prices); §V10 any section. */
-export function usePortfolio(days = 28, capital?: number, group = "trio") {
+export function usePortfolio(days = 28, capital?: number, group = "trio", leverage?: number) {
   return useQuery({
-    ...portfolioOptions(days, capital, group),
+    ...portfolioOptions(days, capital, group, leverage),
     refetchInterval: livePoll(15_000),
     placeholderData: keepPreviousData, // switching balance / period keeps the page on screen while it loads
   });
 }
 
 /** botup.md §V10: every simulator section side by side. */
-export function usePortfolioCompare(capital?: number) {
-  return useQuery({ ...compareOptions(capital), refetchInterval: livePoll(30_000), placeholderData: keepPreviousData });
+export function usePortfolioCompare(capital?: number, leverage?: number) {
+  return useQuery({ ...compareOptions(capital, leverage), refetchInterval: livePoll(30_000), placeholderData: keepPreviousData });
 }
 
 /** botup.md §V7: one trader + coin -- his fills, our orders, our position and its liquidation price. */
-export function useTradeChart(wallet: string | null, coin: string | null, capital?: number, scenario = "real", group = "trio") {
+export function useTradeChart(
+  wallet: string | null,
+  coin: string | null,
+  capital?: number,
+  scenario = "real",
+  group = "trio",
+  leverage?: number,
+) {
   return useQuery({
-    queryKey: ["trade-chart", group, wallet, coin, capital ?? null, scenario],
+    queryKey: ["trade-chart", group, wallet, coin, capital ?? null, scenario, leverage ?? null],
     enabled: Boolean(wallet && coin),
     queryFn: () =>
       api.get<TradeChartData>(
         `/api/portfolio/chart?wallet=${encodeURIComponent(wallet ?? "")}&coin=${encodeURIComponent(coin ?? "")}` +
-          `&scenario=${scenario}&group=${encodeURIComponent(group)}${capital ? `&capital=${capital}` : ""}`,
+          `&scenario=${scenario}&group=${encodeURIComponent(group)}${capital ? `&capital=${capital}` : ""}` +
+          (leverage ? `&leverage=${leverage}` : ""),
       ),
     refetchInterval: livePoll(10_000),
   });

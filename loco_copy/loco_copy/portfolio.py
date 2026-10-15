@@ -37,7 +37,7 @@ from decimal import Decimal
 from typing import Any
 
 from loco_copy.config import Settings
-from loco_copy.feed import HyperliquidClient
+from loco_copy.feed import HyperliquidClient, equity_of, pnl_since
 from loco_copy.models import LeaderFill
 from loco_copy.notify import Notifier
 from loco_copy.pf_ledger import DAY_MS, Ledger, Outcome, split_key
@@ -153,9 +153,18 @@ def parse_capitals(raw: str) -> list[int]:
     return out
 
 
-def ledger_name(scenario: str, capital: int, group: str = TRIO) -> str:
-    """The trio keeps its v2 names ("real:10000"); a group's are "<group>:real:10000"."""
-    return f"{scenario}:{capital}" if group == TRIO else f"{group}:{scenario}:{capital}"
+def ledger_name(scenario: str, capital: int, group: str = TRIO, lev: int = 0) -> str:
+    """The trio keeps its v2 names ("real:10000"); a group's are "<group>:real:10000"; another leverage than
+    PORTFOLIO_LEVERAGE adds ":x<L>" ("real:10000:x5", "mix2ac4:real:10000:x10"). lev=0 = the base leverage."""
+    name = f"{scenario}:{capital}" if group == TRIO else f"{group}:{scenario}:{capital}"
+    return f"{name}:x{lev}" if lev else name
+
+
+def parse_leverages(raw: str, base: int) -> list[int]:
+    out = sorted({int(x) for x in raw.split(",") if x.strip()} | {base})
+    if any(x < 1 or x > 50 for x in out):
+        raise ValueError("PORTFOLIO_LEVERAGES: whole numbers 1-50, e.g. 3,5,10")
+    return out
 
 
 def dex_of(coin: str) -> str:
@@ -208,24 +217,35 @@ class PortfolioSim:
         self.lock = asyncio.Lock()
         self.started_ms = 0
         self.capitals = parse_capitals(s.portfolio_start_equities)
+        self.base_lev = s.portfolio_leverage
+        self.leverages = parse_leverages(s.portfolio_leverages, s.portfolio_leverage)
         self.ledgers: dict[str, Ledger] = {}
         self.ledger_group: dict[str, Group] = {}
+        self.ledger_lev: dict[str, int] = {}
+        self.fresh: set[str] = set()  # ledgers with no saved state (new): they start now
+        self.trader_pnl: dict[str, dict[str, Any]] = {}  # address -> portfolio windows (the trader's own result)
         for g in self.groups:
-            for cap in self.capitals:  # "base:10000", "real:10000", ..., "mix2ac4:base:10000", ...
-                for sc, fee in (("base", s.portfolio_fee_base), ("real", s.portfolio_fee_base + s.portfolio_slippage)):
-                    name = ledger_name(sc, cap, g.name)
-                    self.ledgers[name] = self._ledger(name, cap, float(fee))
-                    self.ledger_group[name] = g
+            for lev in self.leverages:
+                for cap in self.capitals:  # "base:10000", "real:10000", "mix2ac4:base:10000", "real:10000:x5" ...
+                    for sc, fee in (("base", s.portfolio_fee_base),
+                                    ("real", s.portfolio_fee_base + s.portfolio_slippage)):
+                        name = self.lname(sc, cap, g.name, lev)
+                        self.ledgers[name] = self._ledger(name, cap, float(fee), lev)
+                        self.ledger_group[name] = g
+                        self.ledger_lev[name] = lev
         self.backfill_wanted = asyncio.Event()
         self._last_history = 0
         self._snap_turn = 0
         self._poll_turn = 0
 
-    def _ledger(self, name: str, capital: int, fee: float) -> Ledger:
+    def lname(self, scenario: str, capital: int, group: str = TRIO, lev: int | None = None) -> str:
+        return ledger_name(scenario, capital, group, 0 if lev in (None, self.base_lev) else int(lev))
+
+    def _ledger(self, name: str, capital: int, fee: float, lev: int) -> Ledger:
         s = self.s
-        return Ledger(name, start_equity=float(capital), leverage=s.portfolio_leverage, fee=fee,
+        return Ledger(name, start_equity=float(capital), leverage=lev, fee=fee,
                       cap_pct=float(s.portfolio_cap_pct), min_order=float(s.portfolio_min_order_usd),
-                      max_total_x=float(s.portfolio_max_total_x),
+                      max_total_x=float(s.portfolio_max_total_x) * lev / s.portfolio_leverage,
                       dd_pause_pct=float(s.portfolio_dd_pause_pct) if s.portfolio_dd_pause_pct else None,
                       dd_pause_days=float(s.portfolio_dd_pause_days), maxlev=self.maxlev)
 
@@ -254,6 +274,8 @@ class PortfolioSim:
         for name, ledger in self.ledgers.items():
             if name in saved.get("ledgers", {}):
                 ledger.load(saved["ledgers"][name])
+            else:
+                self.fresh.add(name)
         self.last_seen = {k: int(v) for k, v in saved.get("last_seen", {}).items()}
         self.started_ms = int(saved.get("started_ms", 0))
         self.group_started = {k: int(v) for k, v in saved.get("group_started", {}).items()}
@@ -316,7 +338,10 @@ class PortfolioSim:
         for g in self.groups:  # a group added later starts now: only trades opened from now on
             self.group_started.setdefault(g.name, now)
         for name, ledger in self.ledgers.items():
-            if not ledger.started_ms:
+            if not restored or name in self.fresh:  # a new section or a new leverage starts now: new trades only
+                ledger.started_ms = max(now, self.group_started[self.ledger_group[name].name]) if restored \
+                    else self.group_started[self.ledger_group[name].name]
+            elif not ledger.started_ms:
                 ledger.started_ms = self.group_started[self.ledger_group[name].name]
         for w in self.wallets:
             self.last_seen.setdefault(w.address, now)  # a wallet added later starts from now
@@ -361,7 +386,7 @@ class PortfolioSim:
         """Every simulated order of each section's smallest real account also goes to the bot log (dashboard
         «السجلات»): which section, trader, coin, what we did, size, price and the fee taken off it."""
         g = self.ledger_group[ledger.name]
-        if ledger.name != ledger_name("real", self.capitals[0], g.name):
+        if ledger.name != self.lname("real", self.capitals[0], g.name):
             return
         for o in ledger.orders:
             self.n.info("PF_ORDER", account=ledger.name, group=g.name, wallet=o["wallet"], coin=o["coin"],
@@ -399,22 +424,25 @@ class PortfolioSim:
             return out
         names = {g.name for g in mine}
         for name, ledger in self.ledgers.items():
-            if self.ledger_group[name].name not in names:
+            if self.ledger_group[name].name not in names or f.time_ms < ledger.started_ms:
                 continue
-            if name.startswith("base:") or ":base:" in name:
+            if name.startswith("base:") or ":base:" in name:  # (the base scenario, at every leverage)
                 out[name] = ledger.on_fill(w.label, w.weight, f.coin, s0, d, px, f.time_ms, wallet_eq)
             else:
                 out[name] = ledger.on_fill(w.label, w.weight, f.coin, s0, d, real_px, f.time_ms, wallet_eq,
                                            allow_new=not stale)
         first = self.capitals[0]
         actions = {}
+        none = Outcome("IGNORED")
         for g in mine:
-            b, r = out[ledger_name("base", first, g.name)], out[ledger_name("real", first, g.name)]
-            actions[g.name] = [b.action, b.qty, r.action, r.qty]
+            for lev in self.leverages:  # key "mix2ac4" = base leverage (as before §V13), "mix2ac4:x5" = 5x
+                b = out.get(self.lname("base", first, g.name, lev), none)
+                r = out.get(self.lname("real", first, g.name, lev), none)
+                actions[g.name if lev == self.base_lev else f"{g.name}:x{lev}"] = [b.action, b.qty, r.action, r.qty]
         lead = mine[0]  # the trio when the wallet is one of the trio: the event's own columns stay the trio's
-        out["base"] = out[ledger_name("base", first, lead.name)]
-        out["real"] = out[ledger_name("real", first, lead.name)]
-        lead_real = self.ledgers[ledger_name("real", first, lead.name)]
+        out["base"] = out.get(self.lname("base", first, lead.name), none)
+        out["real"] = out.get(self.lname("real", first, lead.name), none)
+        lead_real = self.ledgers[self.lname("real", first, lead.name)]
         self.last_fill_at[f"{w.label}|{f.coin}"] = self.clock()
         self.traded[f.coin] = max(self.traded.get(f.coin, 0), f.time_ms)
         self.store.pf_insert_event({
@@ -541,8 +569,15 @@ class PortfolioSim:
                 self.store.record_equity(f"portfolio:{name}", now, Decimal(str(round(ledger.equity(), 4))))
 
     async def refresh_equity(self, w: Wallet) -> None:
+        """The wallet's account value (sizing) and, from the same call, its own real result (§V13)."""
+        fetch = getattr(self.client, "portfolio", None)
         try:
-            value = await self.client.portfolio_equity(w.address)
+            if fetch is not None:
+                periods = await fetch(w.address)
+                self.trader_pnl[w.address] = periods
+                value = equity_of(periods)
+            else:
+                value = await self.client.portfolio_equity(w.address)
         except Exception as exc:  # noqa: BLE001
             self.n.warning("PF_WALLET_EQUITY_FAILED", wallet=w.label, error=str(exc))
             return
@@ -646,13 +681,17 @@ class PortfolioSim:
             days = (now - self.group_started.get(g.name, self.started_ms)) / DAY_MS
             parts = [f"{'Trio' if g.name == TRIO else g.name} sim ({'+'.join(g.labels)}) day {days:.0f}"]
             for cap in self.capitals:
-                b, r = self.ledgers[ledger_name("base", cap, g.name)], self.ledgers[ledger_name("real", cap, g.name)]
+                b, r = self.ledgers[self.lname("base", cap, g.name)], self.ledgers[self.lname("real", cap, g.name)]
                 parts.append(f"${cap:,}: real ${r.equity():,.0f} ({(r.equity() / r.start_equity - 1) * 100:+.2f}%, "
                              f"max DD {r.mdd * 100:.1f}%) base ${b.equity():,.0f} "
                              f"({(b.equity() / b.start_equity - 1) * 100:+.2f}%)")
-            r0 = self.ledgers[ledger_name("real", self.capitals[0], g.name)]
+            r0 = self.ledgers[self.lname("real", self.capitals[0], g.name)]
             trades = self.store.pf_trades_since(now - DAY_MS, ledger=r0.name)
             parts.append(f"closed today {len(trades)} | open {len(r0.P)}")
+            other = [self.ledgers[self.lname("real", self.capitals[0], g.name, lev)] for lev in self.leverages
+                     if lev != self.base_lev]
+            if other:
+                parts.append(" ".join(f"x{x.leverage} ${x.equity():,.0f}" for x in other))
             lines.append(" | ".join(parts))
         return "\n".join(lines)
 
@@ -660,13 +699,18 @@ class PortfolioSim:
         now = self.clock()
         self.store.set_state(RUNTIME_KEY, {
             "updated_ms": now, "started_ms": self.started_ms, "enabled": True, "capitals": self.capitals,
+            "base_leverage": self.base_lev, "leverages": self.leverages,
             "groups": [{"name": g.name, "title": g.title, "labels": list(g.labels),
                         "started_ms": self.group_started.get(g.name, self.started_ms),
                         "research_year": g.research_year, "research_half": g.research_half} for g in self.groups],
             "wallets": [{"label": w.label, "address": w.address, "weight": w.weight,
                          "equity": self.wallet_equity.get(w.address, (None, None))[0],
                          "equity_at_ms": self.wallet_equity.get(w.address, (None, None))[1],
-                         "last_fill_ms": self.last_seen.get(w.address)} for w in self.wallets],
+                         "last_fill_ms": self.last_seen.get(w.address),
+                         # the trader's own real result since each section started (deposits are not profit)
+                         "real_pnl": {g.name: pnl_since(self.trader_pnl.get(w.address) or {},
+                                                        self.group_started.get(g.name, self.started_ms))
+                                      for g in self.groups if w.label in g.labels}} for w in self.wallets],
             "settings": {"leverage": self.s.portfolio_leverage, "k": 0.8 * self.s.portfolio_leverage,
                          "cap_pct": float(self.s.portfolio_cap_pct), "fee_base": float(self.s.portfolio_fee_base),
                          "fee_real": float(self.s.portfolio_fee_base + self.s.portfolio_slippage),

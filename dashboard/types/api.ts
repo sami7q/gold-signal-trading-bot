@@ -548,6 +548,8 @@ export interface PfWallet {
   equity: number | null;
   equity_at_ms: number | null;
   last_fill_ms: number | null;
+  /** botup.md §V13: the trader's own result on Hyperliquid since this section started (null until known) */
+  real_pnl?: PfTraderPnl | null;
 }
 
 export interface PfRuntime {
@@ -665,16 +667,39 @@ export interface PfCompareGroup extends PfGroup {
 export interface PortfolioCompare {
   enabled: boolean;
   capital?: number;
+  leverage?: number;
+  leverages?: number[];
   capitals?: number[];
   common_start_ms?: number;
   updated_ms?: number;
   groups?: PfCompareGroup[];
 }
 
+export interface PfTraderPnl {
+  pnl: number;
+  value0: number;
+  ret_pct: number;
+  value: number;
+  window: string;
+  at: number;
+}
+
 export interface PortfolioPanel {
   enabled: boolean;
   group?: PfGroup;
   groups?: PfGroup[];
+  leverage?: number;
+  leverages?: number[];
+  by_leverage?: {
+    leverage: number;
+    capital: number;
+    equity: number | null;
+    return_pct: number | null;
+    max_drawdown_pct: number | null;
+    trades: number | null;
+    liquidations: number | null;
+    open_trades: number | null;
+  }[];
   days?: number;
   runtime?: PfRuntime;
   run_days?: number;

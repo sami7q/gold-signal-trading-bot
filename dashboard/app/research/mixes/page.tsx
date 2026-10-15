@@ -42,7 +42,7 @@ function Curves({ mixes }: { mixes: ResearchMix[] }) {
           formatter={(value, name) => [usd0(value as number), mixes[Number(String(name).slice(1))]?.labels.join(" + ")]}
         />
         {mixes.map((m, j) => (
-          <Line key={m.labels.join("+")} type="monotone" dataKey={`m${j}`} stroke={LINES[j % LINES.length]} strokeWidth={j === 0 ? 2 : 1.5} dot={false} />
+          <Line key={m.labels.join("+")} type="monotone" dataKey={`m${j}`} stroke={LINES[j % LINES.length]} strokeWidth={j === 0 ? 2 : 1.5} dot={false} isAnimationActive={false} />
         ))}
       </LineChart>
     </ResponsiveContainer>

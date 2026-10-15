@@ -103,7 +103,7 @@ function EquityChart({ data }: { data: VirtualPanel }) {
           labelFormatter={(v) => formatDateTime(v as string)}
           formatter={(value) => [formatUsd(value as number), "الرصيد"]}
         />
-        <Area type="monotone" dataKey="equity" stroke={GOLD} strokeWidth={2} fill="url(#trioFill)" />
+        <Area type="monotone" dataKey="equity" stroke={GOLD} strokeWidth={2} fill="url(#trioFill)" isAnimationActive={false} />
       </AreaChart>
     </ResponsiveContainer>
   );

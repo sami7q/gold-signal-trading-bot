@@ -122,12 +122,14 @@ export function LiveTradeChart({
   capital,
   scenario,
   group = "trio",
+  leverage,
 }: {
   wallet: string;
   coin: string;
   capital?: number;
   scenario: "real" | "base";
   group?: string;
+  leverage?: number;
 }) {
   const [interval, setInterval_] = useState<IntervalKey>("1h");
   const ms = INTERVALS.find((x) => x.key === interval)!.ms;
@@ -138,7 +140,7 @@ export function LiveTradeChart({
   const linesRef = useRef<IPriceLine[]>([]);
   const [status, setStatus] = useState<"loading" | "live" | "empty" | "error">("loading");
   const [last, setLast] = useState<number | null>(null);
-  const q = useTradeChart(wallet, coin, capital, scenario, group);
+  const q = useTradeChart(wallet, coin, capital, scenario, group, leverage);
   const data = q.data;
 
   // the chart + candles: rebuilt when the coin or the interval changes
@@ -146,6 +148,9 @@ export function LiveTradeChart({
     let disposed = false;
     let ws: WebSocket | null = null;
     let resize: ResizeObserver | null = null;
+    // botup.md §V13: the last candle follows the book top (bbo, ~10 updates / s) between candle frames
+    let lastBar: CandlestickData<Time> | null = null;
+    let lastPaint = 0;
     (async () => {
       const lw = await import("lightweight-charts");
       if (disposed || !box.current) return;
@@ -188,6 +193,7 @@ export function LiveTradeChart({
         const decimals = Math.min(8, Math.max(2, 6 - Math.floor(Math.log10(Math.max(ref, 1e-9)))));
         series.applyOptions({ priceFormat: { type: "price", precision: decimals, minMove: Math.pow(10, -decimals) } });
         series.setData(bars);
+        lastBar = { ...bars[bars.length - 1] };
         setLast(ref);
         chart.timeScale().scrollToRealTime();
         setStatus("live");
@@ -196,13 +202,31 @@ export function LiveTradeChart({
         return;
       }
       ws = new WebSocket(HL_WS);
-      ws.onopen = () => ws?.send(JSON.stringify({ method: "subscribe", subscription: { type: "candle", coin, interval } }));
+      ws.onopen = () => {
+        ws?.send(JSON.stringify({ method: "subscribe", subscription: { type: "candle", coin, interval } }));
+        ws?.send(JSON.stringify({ method: "subscribe", subscription: { type: "bbo", coin } }));
+      };
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data as string);
+        if (msg.channel === "bbo" && msg.data?.coin === coin && lastBar) {
+          const [bid, ask] = msg.data.bbo ?? [];
+          if (!bid || !ask) return;
+          const mid = (+bid.px + +ask.px) / 2;
+          lastBar = { ...lastBar, close: mid, high: Math.max(lastBar.high, mid), low: Math.min(lastBar.low, mid) };
+          seriesRef.current?.update(lastBar);
+          const now = Date.now();
+          if (now - lastPaint > 250) {
+            lastPaint = now;
+            setLast(mid);
+          }
+          return;
+        }
         if (msg.channel !== "candle" || !msg.data) return;
         const k = msg.data as HlCandle & { s: string };
         if (k.s !== coin) return;
-        seriesRef.current?.update(toBar(k));
+        const bar = toBar(k);
+        lastBar = { ...bar };
+        seriesRef.current?.update(bar);
         setLast(+k.c);
       };
       const ping = window.setInterval(() => ws?.readyState === 1 && ws.send(JSON.stringify({ method: "ping" })), 30_000);

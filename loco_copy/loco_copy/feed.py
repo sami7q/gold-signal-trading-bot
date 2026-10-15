@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import time
 from collections import deque
@@ -76,6 +77,40 @@ def parse_snapshot(raw: dict[str, Any], taken_at_ms: int) -> LeaderSnapshot:
                           account_value=Decimal(str(summary.get("accountValue") or "0")), taken_at_ms=taken_at_ms)
 
 
+def equity_of(periods: dict[str, Any]) -> Decimal | None:
+    history = (periods.get("day") or {}).get("accountValueHistory") or []
+    return Decimal(str(history[-1][1])) if history else None
+
+
+def _at(series: list[list[Any]], t: int) -> float | None:
+    """Linear interpolation of a [[ms, value], ...] series at t (None if t is outside it)."""
+    pts = [(int(a), float(b)) for a, b in series]
+    if not pts or t < pts[0][0] or t > pts[-1][0]:
+        return None
+    for (t0, v0), (t1, v1) in itertools.pairwise(pts):
+        if t0 <= t <= t1:
+            return v0 if t1 == t0 else v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+    return pts[-1][1]
+
+
+def pnl_since(periods: dict[str, Any], start_ms: int) -> dict[str, Any] | None:
+    """The trader's real result since start_ms (botup.md §V13): PnL now minus PnL at start, from the finest
+    `portfolio` window that covers the start (day ~20 min points, week ~2 h, month ~1 day, then allTime), and the
+    account value at start for the percentage. Deposits and withdrawals are not PnL."""
+    for window in ("day", "week", "month", "allTime"):
+        data = periods.get(window) or {}
+        pnl = data.get("pnlHistory") or []
+        value = data.get("accountValueHistory") or []
+        p0 = _at(pnl, start_ms)
+        if p0 is None or not pnl:
+            continue
+        v0 = _at(value, start_ms)
+        diff = float(pnl[-1][1]) - p0
+        return {"pnl": diff, "value0": v0 or 0.0, "ret_pct": diff / v0 * 100 if v0 else 0.0,
+                "value": float(value[-1][1]) if value else 0.0, "window": window, "at": int(pnl[-1][0])}
+    return None
+
+
 class HyperliquidClient:
     """REST /info with a simple per-minute weight budget."""
 
@@ -106,13 +141,16 @@ class HyperliquidClient:
             self._spent.append((time.monotonic(), len(data) // 20))
         return data
 
+    async def portfolio(self, user: str) -> dict[str, Any]:
+        """`portfolio` by window: {"day": {"accountValueHistory": [[ms, v]..], "pnlHistory": [[ms, pnl]..]}, "week",
+        "month", "allTime", ...}. PnL excludes deposits / withdrawals (the trader's real result)."""
+        raw = await self.info({"type": "portfolio", "user": user}, 20)
+        return {name: data for name, data in raw} if isinstance(raw, list) else {}
+
     async def portfolio_equity(self, user: str) -> Decimal | None:
         """The leader's account value W for cap20 sizing: last point of `portfolio` -> "day" ->
         accountValueHistory (botup.md v4 §2.4). None when Hyperliquid has no history for the wallet."""
-        raw = await self.info({"type": "portfolio", "user": user}, 20)
-        periods = {name: data for name, data in raw} if isinstance(raw, list) else {}
-        history = (periods.get("day") or {}).get("accountValueHistory") or []
-        return Decimal(str(history[-1][1])) if history else None
+        return equity_of(await self.portfolio(user))
 
     async def snapshot(self, user: str) -> LeaderSnapshot:
         taken = now_ms()

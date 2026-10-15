@@ -50,7 +50,7 @@ GLOBAL_ONLY = frozenset({
     "portfolio_fee_base", "portfolio_slippage", "portfolio_min_order_usd", "portfolio_max_total_x",
     "portfolio_dd_pause_pct", "portfolio_dd_pause_days", "portfolio_copy_hip3", "portfolio_stale_seconds",
     "portfolio_poll_seconds", "portfolio_expected", "portfolio_extra_wallets", "portfolio_groups",
-    "portfolio_trio_research", "advisor_enabled", "advisor_model", "advisor_refresh_hours",
+    "portfolio_trio_research", "portfolio_leverages", "advisor_enabled", "advisor_model", "advisor_refresh_hours",
     "advisor_max_daily_calls",
 })
 
@@ -176,6 +176,9 @@ class Settings(BaseSettings):
     portfolio_groups: str = DEFAULT_PORTFOLIO_GROUPS
     #: the trio on the same research basis as the groups (hunt2, $50k cap per trade): realistic year:half edge
     portfolio_trio_research: str = "24.45:5.33"
+    #: botup.md §V13: every section x every balance is also simulated at these leverages (K = 0.8 x L, cap 20 % x L,
+    #: total exposure PORTFOLIO_MAX_TOTAL_X x L / PORTFOLIO_LEVERAGE). PORTFOLIO_LEVERAGE keeps its v2 ledger names.
+    portfolio_leverages: str = "3,5,10"
 
     # -- AI trade advisor (botup.md §V8): numbers for every open simulator trade + Claude's written analysis.
     #    The Anthropic key lives in the OS keyring (`loco-copy set-key anthropic`), never here.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { AlertTriangle, Bell, CheckCircle2, CircleDashed, FlaskConical, XCircle } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -11,6 +11,8 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-stat
 import { LiveTradeChart } from "@/components/trade/live-chart";
 import { AiAdvisor } from "@/components/trade/ai-advisor";
 import { useAdviceAlerts, usePortfolio } from "@/hooks/use-loco";
+import { useLivePrices } from "@/hooks/use-live-prices";
+import type { Book } from "@/lib/hl-live";
 import { ServerOutdated } from "@/components/ui/server-outdated";
 import {
   cn,
@@ -25,7 +27,26 @@ import {
   pnlClass,
   pnlTone,
 } from "@/lib/format";
-import type { PfCheck, PfGroup, PfLedger, PortfolioPanel } from "@/types/api";
+import type { PfCheck, PfGroup, PfLedger, PfPosition, PortfolioPanel } from "@/types/api";
+
+/** botup.md §V13: a position marked on the live book (mid) when the browser has it, else on the bot's mark. */
+function livePosition(p: PfPosition, books: Record<string, Book>): PfPosition & { live: boolean } {
+  const b = books[p.coin];
+  if (!b) return { ...p, live: false };
+  return { ...p, mark: b.mid, upnl: p.side * p.qty * (b.mid - p.entry), notional: p.qty * b.mid, live: true };
+}
+
+/** The ledger re-marked live: equity = cash + every position's live unrealized PnL. */
+type LivePosition = PfPosition & { live: boolean };
+type LiveLedger = Omit<PfLedger, "positions"> & { positions: LivePosition[] };
+
+function liveLedger(l: PfLedger, books: Record<string, Book>): LiveLedger {
+  const positions = l.positions.map((p) => livePosition(p, books));
+  if (!positions.some((p) => p.live)) return { ...l, positions };
+  const unrealized = positions.reduce((a, p) => a + p.upnl, 0);
+  const equity = l.cash + unrealized;
+  return { ...l, positions, unrealized, equity, return_pct: (equity / l.start_equity - 1) * 100 };
+}
 
 const CHART_TEXT = "#8b8f98";
 const COLORS = { real: "#c9a227", base: "#5b8def" };
@@ -141,7 +162,8 @@ function CheckRow({ c }: { c: PfCheck }) {
   );
 }
 
-function EquityChart({ d }: { d: PortfolioPanel }) {
+// memo: re-rendered only when the curves / expected lines change, not on every live price tick (§V13)
+const EquityChart = memo(function EquityChart({ d }: { d: Pick<PortfolioPanel, "runtime" | "ledger" | "expected" | "curves"> }) {
   const rt = d.runtime!;
   const start = d.ledger!.real.start_equity;
   const expected = d.expected ?? [];
@@ -177,8 +199,8 @@ function EquityChart({ d }: { d: PortfolioPanel }) {
           formatter={(value, name) => [formatUsd(value as number), name]}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        <Line type="monotone" dataKey="real" name="واقعي" stroke={COLORS.real} strokeWidth={2} dot={false} />
-        <Line type="monotone" dataKey="base" name="أساسي" stroke={COLORS.base} strokeWidth={1.5} dot={false} />
+        <Line type="monotone" dataKey="real" name="واقعي" stroke={COLORS.real} strokeWidth={2} dot={false} isAnimationActive={false} />
+        <Line type="monotone" dataKey="base" name="أساسي" stroke={COLORS.base} strokeWidth={1.5} dot={false} isAnimationActive={false} />
         {expected.map((x, i) => (
           <Line
             key={x.label}
@@ -189,10 +211,80 @@ function EquityChart({ d }: { d: PortfolioPanel }) {
             strokeDasharray={i === 0 ? "5 4" : "2 4"}
             strokeWidth={1}
             dot={false}
+            isAnimationActive={false}
           />
         ))}
       </LineChart>
     </ResponsiveContainer>
+  );
+});
+
+/** botup.md §V13: the wallets' own real result next to ours -- did copying keep up with the traders? */
+function TraderSummaryRow({ d, scenario, ourReturn }: { d: PortfolioPanel; scenario: Scenario; ourReturn: number }) {
+  const ws = d.runtime!.wallets.filter((w) => w.real_pnl);
+  if (!ws.length) return null;
+  const avg = ws.reduce((a, w) => a + (w.real_pnl?.ret_pct ?? 0), 0) / ws.length;
+  const ours = Object.values(d.by_wallet ?? {}).reduce((a, x) => a + (x[scenario]?.pnl ?? 0), 0);
+  return (
+    <tr className="border-t-2 border-t-border bg-white/[0.02]">
+      <td className="px-3 py-2 font-sans text-xs text-muted" colSpan={7}>
+        ربح المحافظ الفعلي (متوسط نسبتها منذ البدء) مقابل حسابنا ({SCENARIO_AR[scenario]})
+      </td>
+      <td className={cn("px-3 py-2 text-right", pnlClass(ours))}>
+        {formatMoney(ours)} <span className="text-xs">({ourReturn >= 0 ? "+" : ""}{formatNumber(ourReturn, 2)}%)</span>
+      </td>
+      <td className={cn("px-3 py-2 text-right font-semibold", pnlClass(avg))}>{`${avg >= 0 ? "+" : ""}${formatNumber(avg, 2)}%`}</td>
+    </tr>
+  );
+}
+
+/** botup.md §V13: the same section at every leverage x every balance (real scenario). */
+function LeverageMatrix({ d }: { d: PortfolioPanel }) {
+  const rows = d.by_leverage ?? [];
+  const levs = d.leverages ?? [];
+  const caps = d.capitals ?? [];
+  if (levs.length < 2) return null;
+  return (
+    <Card>
+      <CardHeader title="الرافعة المالية على كل الأرصدة" subtitle="نفس الصفقات بالضبط؛ الحجم والسقف يكبران مع الرافعة (K = 0.8 × الرافعة، السقف 20% × الرافعة). واقعي. اختر الرافعة من أعلى الصفحة لتفاصيلها" />
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-sm">
+          <thead>
+            <tr className="border-b border-border-soft text-[11px] text-muted-dim">
+              <Th>الرافعة</Th>
+              {caps.map((c) => <Th key={c} end>{formatUsd(c)}</Th>)}
+              <Th end>أقصى تراجع</Th>
+              <Th end>تصفيات</Th>
+            </tr>
+          </thead>
+          <tbody className="font-data whitespace-nowrap">
+            {levs.map((x) => {
+              const r = rows.filter((row) => row.leverage === x);
+              const first = r[0];
+              return (
+                <tr key={x} className={cn("border-b border-border-soft/60", x === d.leverage && "bg-gold/5")}>
+                  <td className="px-3 py-2 text-gold-bright">{x}x</td>
+                  {caps.map((c) => {
+                    const row = r.find((y) => y.capital === c);
+                    return (
+                      <td key={c} className="px-3 py-2 text-right">
+                        <span className="text-bone">{formatUsd(row?.equity ?? null)}</span>{" "}
+                        <span className={cn("text-xs", pnlClass(row?.return_pct ?? 0))}>{`${(row?.return_pct ?? 0) >= 0 ? "+" : ""}${formatNumber(row?.return_pct ?? 0, 2)}%`}</span>
+                      </td>
+                    );
+                  })}
+                  <td className={cn("px-3 py-2 text-right", (first?.max_drawdown_pct ?? 0) >= 20 ? "text-loss-bright" : "text-muted")}>{`${formatNumber(first?.max_drawdown_pct ?? 0, 1)}%`}</td>
+                  <td className={cn("px-3 py-2 text-right", first?.liquidations ? "text-loss-bright" : "text-muted")}>{first?.liquidations ?? 0}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="border-t border-border-soft px-4 py-2.5 text-xs leading-relaxed text-muted-dim">
+        5x و10x بدأا لحظة تفعيلهما (صفقات جديدة فقط) — قارِنها من ذلك اليوم. رافعة أعلى = ربح أكبر وخسارة وتصفية أسرع. محاكاة فقط.
+      </p>
+    </Card>
   );
 }
 
@@ -236,7 +328,8 @@ export function PortfolioView({ group = "trio" }: { group?: string }) {
   const [days, setDays] = useState(28);
   const [scenario, setScenario] = useState<Scenario>("real");
   const [capital, setCapital] = useState<number | undefined>(undefined);
-  const query = usePortfolio(days, capital, group);
+  const [leverage, setLeverage] = useState<number | undefined>(undefined);
+  const query = usePortfolio(days, capital, group, leverage);
   const d = query.data;
   const rt = d?.runtime;
   const g: PfGroup | undefined = d?.group;
@@ -267,6 +360,14 @@ export function PortfolioView({ group = "trio" }: { group?: string }) {
             <Select value={capital ?? d?.capital ?? ""} onChange={(e) => setCapital(Number(e.target.value))}>
               {(d?.capitals ?? [10000, 50000, 100000]).map((c) => (
                 <option key={c} value={c}>{formatUsd(c)}</option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <Label>الرافعة</Label>
+            <Select value={leverage ?? d?.leverage ?? 3} onChange={(e) => setLeverage(Number(e.target.value))}>
+              {(d?.leverages ?? [3, 5, 10]).map((x) => (
+                <option key={x} value={x}>{`${x}x`}</option>
               ))}
             </Select>
           </div>
@@ -331,8 +432,16 @@ export function PortfolioView({ group = "trio" }: { group?: string }) {
 function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: Scenario; fetchedAt: number; group: string }) {
   const isTrio = group === "trio";
   const rt = d.runtime!;
-  const l = d.ledger![scenario];
-  const real = d.ledger!.real;
+  const coins = useMemo(
+    () => [...new Set([...d.ledger!.real.positions, ...d.ledger!.base.positions].map((p) => p.coin))],
+    [d.ledger],
+  );
+  const books = useLivePrices(coins);
+  const realLive = liveLedger(d.ledger!.real, books);
+  const baseLive = liveLedger(d.ledger!.base, books);
+  const l = scenario === "real" ? realLive : baseLive;
+  const real = realLive;
+  const live = l.positions.some((p) => p.live);
   const stats = d.stats!;
   const passed = d.checks?.filter((c) => c.pass).length ?? 0;
   const graded = d.checks?.filter((c) => c.pass !== null).length ?? 0;
@@ -376,8 +485,8 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
       ) : null}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <LedgerCards l={d.ledger!.real} label="واقعي" />
-        <LedgerCards l={d.ledger!.base} label="أساسي" />
+        <LedgerCards l={realLive} label="واقعي" />
+        <LedgerCards l={baseLive} label="أساسي" />
         <StatCard
           label={`التراجع — ${SCENARIO_AR[scenario]}`}
           value={`${formatNumber(l.drawdown_pct, 1)}%`}
@@ -385,7 +494,7 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
           sub={`الأقصى ${formatNumber(l.max_drawdown_pct, 1)}% · القمة ${formatUsd(l.peak)}`}
         />
         <StatCard
-          label="غير المحقق الآن"
+          label={live ? "غير المحقق الآن · لحظي" : "غير المحقق الآن"}
           value={formatMoney(l.unrealized)}
           tone={pnlTone(l.unrealized)}
           sub={`${l.positions.length} مركز مفتوح`}
@@ -454,6 +563,8 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
         </div>
       </Card>
 
+      <LeverageMatrix d={d} />
+
       <Card>
         <CardHeader
           title="منحنى الحسابين"
@@ -464,8 +575,8 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
         </div>
       </Card>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
-        <Card className="lg:col-span-3">
+      <div className="grid grid-cols-1 gap-6 2xl:grid-cols-5">
+        <Card className="2xl:col-span-3">
           <CardHeader title="المتداولون" subtitle={`الحجم = K × الوزن × رصيدنا ÷ رصيد المتداول · K = ${formatNumber(rt.settings.k, 1)} · السقف ${rt.settings.cap_pct}% هامش من الرصيد لكل صفقة`} />
           <div className="overflow-x-auto">
             <table className="w-full min-w-[640px] text-left text-sm">
@@ -479,6 +590,7 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
                   <Th end>صفقات</Th>
                   <Th end>نسبة الربح</Th>
                   <Th end>الصافي ({SCENARIO_AR[scenario]})</Th>
+                  <Th end>ربحه الفعلي منذ البدء</Th>
                 </tr>
               </thead>
               <tbody className="font-data whitespace-nowrap">
@@ -498,9 +610,18 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
                       <td className="px-3 py-2 text-right text-bone">{s?.trades ?? 0}</td>
                       <td className="px-3 py-2 text-right text-muted">{s?.trades ? `${formatNumber((s.wins / s.trades) * 100, 0)}%` : "—"}</td>
                       <td className={cn("px-3 py-2 text-right", pnlClass(s?.pnl ?? 0))}>{formatMoney(s?.pnl ?? 0)}</td>
+                      <td className={cn("px-3 py-2 text-right", pnlClass(w.real_pnl?.pnl ?? 0))} title="ربح/خسارة المحفظة نفسها على Hyperliquid منذ بدء هذا القسم — الإيداع والسحب لا يُحسبان">
+                        {w.real_pnl ? (
+                          <>
+                            {formatMoney(w.real_pnl.pnl)}
+                            <span className="ms-1 text-xs">({w.real_pnl.ret_pct >= 0 ? "+" : ""}{formatNumber(w.real_pnl.ret_pct, 2)}%)</span>
+                          </>
+                        ) : "—"}
+                      </td>
                     </tr>
                   );
                 })}
+                <TraderSummaryRow d={d} scenario={scenario} ourReturn={real.return_pct} />
               </tbody>
             </table>
           </div>
@@ -509,7 +630,7 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
           </p>
         </Card>
 
-        <Card className="lg:col-span-2">
+        <Card className="2xl:col-span-2">
           <CardHeader title="شروط الانتقال للحقيقي" subtitle={`botup §V6.8 — ${passed} / ${graded} ناجحة`} />
           <ul className="px-4 py-1">{d.checks?.map((c) => <CheckRow key={c.key} c={c} />)}</ul>
         </Card>
@@ -544,7 +665,7 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
           }
         />
         {chartOn ? (
-          <LiveTradeChart key={`${group}|${chartOn.wallet}|${chartOn.coin}`} wallet={chartOn.wallet} coin={chartOn.coin} capital={d.capital} scenario={scenario} group={group} />
+          <LiveTradeChart key={`${group}|${chartOn.wallet}|${chartOn.coin}`} wallet={chartOn.wallet} coin={chartOn.coin} capital={d.capital} scenario={scenario} group={group} leverage={d.leverage} />
         ) : (
           <EmptyState icon={FlaskConical} title="لا صفقات بعد" description={`أول ما يفتح أحد ${isTrio ? "الثلاثة" : "الأربعة"} صفقة، يظهر شارتها هنا مع نقاط الدخول والتعزيز.`} />
         )}
@@ -604,7 +725,10 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
                     <td className="px-3 py-2"><Side side={p.side} /></td>
                     <td className="px-3 py-2 text-right text-bone">{formatUsd(p.notional)}</td>
                     <td className="px-3 py-2 text-right text-muted">{formatPrice(p.entry)}</td>
-                    <td className="px-3 py-2 text-right text-muted">{formatPrice(p.mark)}</td>
+                    <td className={cn("px-3 py-2 text-right", p.live ? "text-bone" : "text-muted")}>
+                      {formatPrice(p.mark)}
+                      {p.live ? <span className="pulse ms-1.5 inline-block h-1.5 w-1.5 rounded-full bg-win-bright align-middle" title="سعر لحظي من Hyperliquid" /> : null}
+                    </td>
                     <td className={cn("px-3 py-2 text-right", pnlClass(p.upnl))}>{formatMoney(p.upnl)}</td>
                     <td className="px-3 py-2 text-right text-muted">{formatMoney(-p.fees)}</td>
                     <td className={cn("px-3 py-2 text-right", p.capped ? "text-warn" : "text-muted")}>

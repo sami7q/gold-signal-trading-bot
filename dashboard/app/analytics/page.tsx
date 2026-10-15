@@ -99,7 +99,7 @@ export default function AnalyticsPage() {
                       labelFormatter={(v) => formatDateTime(v as string)}
                       formatter={(value) => [formatMoney(value as number), "تراكمي"]}
                     />
-                    <Area type="monotone" dataKey="cumulative" stroke={GOLD} strokeWidth={2} fill="url(#profitFill)" />
+                    <Area type="monotone" dataKey="cumulative" stroke={GOLD} strokeWidth={2} fill="url(#profitFill)" isAnimationActive={false} />
                   </AreaChart>
                 </ResponsiveContainer>
               )}
@@ -119,8 +119,8 @@ export default function AnalyticsPage() {
                     <YAxis stroke={CHART_TEXT} fontSize={11} tickLine={false} allowDecimals={false} width={30} />
                     <Tooltip contentStyle={{ background: "#1b1f26", border: "1px solid #262b33", borderRadius: 6 }} labelStyle={{ color: CHART_TEXT }} />
                     <Legend wrapperStyle={{ fontSize: 12, color: CHART_TEXT }} />
-                    <Bar dataKey="wins" name="رابحة" fill={WIN} radius={[2, 2, 0, 0]} />
-                    <Bar dataKey="losses" name="خاسرة" fill={LOSS} radius={[2, 2, 0, 0]} />
+                    <Bar dataKey="wins" name="رابحة" fill={WIN} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                    <Bar dataKey="losses" name="خاسرة" fill={LOSS} radius={[2, 2, 0, 0]} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               )}
