@@ -84,7 +84,7 @@ function CommonChart({ d, scenario }: { d: PortfolioCompare; scenario: Scenario 
           tickLine={false}
           minTickGap={40}
         />
-        <YAxis stroke={CHART_TEXT} fontSize={11} tickLine={false} width={60} tickFormatter={(v) => `${formatNumber(v, 1)}%`} />
+        <YAxis stroke={CHART_TEXT} fontSize={11} tickLine={false} width={60} tickFormatter={(v) => `${formatNumber(v, Math.abs(v) < 1 ? 2 : 1)}%`} />
         <ReferenceLine y={0} stroke="#3a404b" strokeDasharray="4 4" />
         <Tooltip
           contentStyle={{ background: "#1b1f26", border: "1px solid #262b33", borderRadius: 6 }}
@@ -107,7 +107,10 @@ function Body({ d, scenario }: { d: PortfolioCompare; scenario: Scenario }) {
   const capitals = d.capitals ?? [];
   const common = d.common_start_ms ?? 0;
   const commonDays = Math.max(0, ((d.updated_ms ?? common) - common) / DAY_MS);
-  const leader = [...groups].sort((a, b) => (b.since_common[scenario] ?? -1e9) - (a.since_common[scenario] ?? -1e9))[0];
+  const ranked = [...groups].sort((a, b) => (b.since_common[scenario] ?? -1e9) - (a.since_common[scenario] ?? -1e9));
+  // a leader only when it is ahead by a real margin (0.1 point) -- at the start every section sits at ~0 %
+  const gap = (ranked[0]?.since_common[scenario] ?? 0) - (ranked[1]?.since_common[scenario] ?? 0);
+  const leader = ranked.length > 1 && gap >= 0.1 ? ranked[0] : undefined;
   const wallets = [...new Set(groups.flatMap((g) => g.labels))];
   return (
     <>
