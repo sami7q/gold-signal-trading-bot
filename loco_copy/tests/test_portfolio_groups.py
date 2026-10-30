@@ -14,7 +14,7 @@ from loco_copy.auth import hash_password
 from loco_copy.notify import Notifier
 from loco_copy.portfolio import PortfolioSim, parse_groups
 from loco_copy.store import Store
-from loco_copy.web import create_app
+from loco_copy.web import create_app, in_outage, outages
 from tests.conftest import T0, make_settings
 from tests.test_portfolio import FakeClient, raw
 from tests.test_web import ORIGIN, login
@@ -191,3 +191,34 @@ def test_trader_real_pnl_since_start():
     assert r["window"] == "day"
     assert pnl_since(periods, 500)["window"] == "week"  # type: ignore[index]
     assert pnl_since(periods, -5) is None
+
+
+def test_outages_are_gaps_in_the_equity_history():
+    m = 60_000
+    ts = [5 * m, 10 * m, 15 * m, 100 * m, 105 * m]  # stopped between minute 15 and minute 100
+    down = outages(ts, 0, 110 * m)
+    assert down == [(15 * m, 100 * m)]
+    assert in_outage(50 * m, down) and not in_outage(12 * m, down) and not in_outage(102 * m, down)
+    assert outages(ts, 0, 200 * m) == [(15 * m, 100 * m), (105 * m, 200 * m)]  # stopped again now
+    assert outages([], 0, 20 * m) == []
+
+
+async def test_fills_made_while_the_bot_was_stopped_are_counted_apart(tmp_path):
+    now = [T0 - 1000]
+    sim, store = make(tmp_path, now)
+    await sim.start()
+    now[0] = T0 + 500
+    await sim.on_raw_fills(A, [raw(0, "BTC", "B", 100, 1, 0, 1)], False)
+    await sim.mark_once()
+    # the bot is off for a day; the trader trades then, and the fill arrives on restart
+    now[0] = T0 + 86_400_000
+    await sim.on_raw_fills(A, [raw(3_600_000, "BTC", "A", 100, 1, 1, 2)], False)
+    await sim.mark_once()
+    store.upsert_user("sami", "Sami", hash_password("correct-horse"))
+    with TestClient(create_app(sim.s), headers={"origin": ORIGIN}) as c:
+        login(c)
+        trio = c.get("/api/portfolio", params={"days": 365}).json()
+    late = [r for r in trio["recent"] if r["during_outage"]]
+    assert trio["stats"]["outage_events"] == len(late) == 1 and late[0]["side"] == "A"
+    assert trio["stats"]["latency_p95_ms"] < 60_000  # the day-late fill is not a latency sample
+    assert trio["outage_days"] > 0.9 and trio["run_days"] < trio["outage_days"]

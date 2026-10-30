@@ -614,6 +614,8 @@ export interface PfEvent {
   base_qty: number;
   real_action: string;
   real_qty: number;
+  /** the trader made this fill while our bot was stopped: caught late on restart (older servers omit it) */
+  during_outage?: boolean;
 }
 
 export interface PfCheck {
@@ -719,7 +721,12 @@ export interface PortfolioPanel {
     slippage_samples: number;
     stale: number;
     missed_exits: number;
+    /** fills made while the bot was stopped, left out of latency / slippage / stale */
+    outage_events?: number;
   };
+  /** periods the bot was not running (no equity snapshot for > 30 min) */
+  outages?: { start: string; end: string }[];
+  outage_days?: number;
   by_wallet?: Record<string, Partial<Record<"base" | "real", PfWalletStats>>>;
   fills_by_wallet?: Record<string, number>;
   trades?: { base: PfTrade[]; real: PfTrade[] };

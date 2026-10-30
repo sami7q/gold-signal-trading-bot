@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
+from itertools import pairwise
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -216,6 +217,20 @@ def copy_detail_dict(store: Store, s: Settings, c: Copy) -> dict[str, Any]:
             "leader": {"open": open_order, "exit": exit_order, "exit_captured": exit_captured,
                        "exit_time": iso(exit_fill["time_ms"]) if exit_fill is not None else None},
             "orders": [order_dict(o) for o in orders], "timeline": timeline}
+
+
+#: the simulator records equity every 5 min; a longer silence means the bot was not running
+OUTAGE_MS = 30 * 60_000
+
+
+def outages(ts: list[int], start: int, end: int) -> list[tuple[int, int]]:
+    """Periods inside [start, end] with no equity snapshot for longer than OUTAGE_MS (bot or server stopped)."""
+    points = [start, *(t for t in ts if start <= t <= end), end]
+    return [(a, b) for a, b in pairwise(points) if b - a > OUTAGE_MS]
+
+
+def in_outage(t: int, down: list[tuple[int, int]]) -> bool:
+    return any(a < t <= b for a, b in down)
 
 
 def pf_groups(rt: dict[str, Any]) -> list[dict[str, Any]]:
@@ -698,12 +713,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             a = pf_actions(e, akey)
             if a is not None:
                 events.append((e, a))
-        lat = [float(e["detected_at_ms"] - e["leader_time_ms"]) for e, _ in events]
+        ledgers = rt.get("ledgers") or {}
+        real = ledgers.get(names["real"]) or {}
+        base = ledgers.get(names["base"]) or {}
+        started = int(real.get("started_ms") or g.get("started_ms") or rt.get("started_ms") or now)
+        # The bot stopped (server reboot): a fill the trader made then is caught on restart, hours or days late.
+        # Latency, stale moves and run time measure the bot while it runs, so those fills are counted apart.
+        down = outages([ts for ts, _ in store.equity_history(f"portfolio:{names['real']}", started)], started, now)
+        live = [(e, a) for e, a in events if not in_outage(e["leader_time_ms"], down)]
+        lat = [float(e["detected_at_ms"] - e["leader_time_ms"]) for e, _ in live]
         slip: list[float] = []
         recent = []
         for i, (e, a) in enumerate(events):
             bps = None
-            if e["real_px"] and e["px"]:
+            if e["real_px"] and e["px"] and not in_outage(e["leader_time_ms"], down):
                 bps = (1 if e["side"] == "B" else -1) * (e["real_px"] / e["px"] - 1) * 10_000
                 if abs(bps) < 5000:
                     slip.append(bps)
@@ -715,7 +738,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                "leader_time": iso(e["leader_time_ms"]), "detected_at": iso(e["detected_at_ms"]),
                                "lag_ms": e["detected_at_ms"] - e["leader_time_ms"], "real_px": e["real_px"],
                                "slippage_bps": bps, "base_action": a[0], "base_qty": a[1],
-                               "real_action": a[2], "real_qty": a[3]})
+                               "real_action": a[2], "real_qty": a[3],
+                               "during_outage": in_outage(e["leader_time_ms"], down)})
         trades = {sc: [dict(r) for r in store.pf_trades_since(since, ledger=name)] for sc, name in names.items()}
         orders = {sc: [{**dict(r), "time": iso(r["ts"])} for r in store.pf_orders_since(since, ledger=name)]
                   for sc, name in names.items()}
@@ -733,13 +757,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         fills_by_wallet: dict[str, int] = defaultdict(int)
         for e, _ in events:
             fills_by_wallet[e["wallet"]] += 1
-        ledgers = rt.get("ledgers") or {}
-        real = ledgers.get(names["real"]) or {}
-        base = ledgers.get(names["base"]) or {}
         missed = sum(1 for r in store.logs_since(since) if r["type"] == "PF_MISSED_EXIT_CLOSED")
-        stale = sum(1 for _, a in events if a[2] == "SKIP_STALE")
-        started = int(real.get("started_ms") or g.get("started_ms") or rt.get("started_ms") or now)
-        run_days = (now - started) / DAY_MS
+        stale = sum(1 for _, a in live if a[2] == "SKIP_STALE")
+        outage_ms = sum(b - a for a, b in down)
+        run_days = (now - started - outage_ms) / DAY_MS
         gap = None
         if base.get("equity") and real.get("equity") is not None and base.get("start_equity"):
             gap = (float(real["equity"]) - float(base["equity"])) / float(base["start_equity"]) * 100
@@ -791,7 +812,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "run_days": run_days, "curves": curves, "expected": expected, "orders": orders, "fees_in_period": fees,
             "stats": {"events": len(events), "latency_p50_ms": percentile(lat, 0.5),
                       "latency_p95_ms": percentile(lat, 0.95), "slippage_median_bps": percentile(slip, 0.5),
-                      "slippage_samples": len(slip), "stale": stale, "missed_exits": missed},
+                      "slippage_samples": len(slip), "stale": stale, "missed_exits": missed,
+                      # fills made while the bot was stopped: left out of latency / slippage / stale above
+                      "outage_events": len(events) - len(live)},
+            "outages": [{"start": iso(a), "end": iso(b)} for a, b in down], "outage_days": outage_ms / DAY_MS,
             "by_wallet": by_wallet, "fills_by_wallet": fills_by_wallet, "trades": trades_out, "recent": recent,
             "checks": checks,
         }

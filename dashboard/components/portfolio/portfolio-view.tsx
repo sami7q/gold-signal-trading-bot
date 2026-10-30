@@ -445,6 +445,7 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
   const real = realLive;
   const live = l.positions.some((p) => p.live);
   const stats = d.stats!;
+  const outageNote = stats.outage_events ? ` · ${stats.outage_events} أثناء توقف البوت (مستبعدة)` : "";
   const passed = d.checks?.filter((c) => c.pass).length ?? 0;
   const graded = d.checks?.filter((c) => c.pass !== null).length ?? 0;
   const stale = fetchedAt - rt.updated_ms > 120_000;
@@ -523,8 +524,8 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
           value={`${formatMs(stats.latency_p50_ms)} / ${formatMs(stats.latency_p95_ms)}`}
           sub={
             stats.slippage_median_bps === null
-              ? `${stats.events} حركة`
-              : `فرق السعر الوسيط ${formatNumber(stats.slippage_median_bps, 1)} bps · ${stats.events} حركة`
+              ? `${stats.events} حركة${outageNote}`
+              : `فرق السعر الوسيط ${formatNumber(stats.slippage_median_bps, 1)} bps · ${stats.events} حركة${outageNote}`
           }
         />
       </div>
@@ -635,6 +636,14 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
         <Card className="2xl:col-span-2">
           <CardHeader title="شروط الانتقال للحقيقي" subtitle={`botup §V6.8 — ${passed} / ${graded} ناجحة`} />
           <ul className="px-4 py-1">{d.checks?.map((c) => <CheckRow key={c.key} c={c} />)}</ul>
+          {d.outages?.length ? (
+            <p className="border-t border-border-soft px-4 py-2.5 text-xs leading-relaxed text-warn">
+              البوت كان متوقفًا {formatNumber(d.outage_days ?? 0, 1)} يوم (
+              {d.outages.map((o) => `${formatDateTime(o.start)} ← ${formatDateTime(o.end)}`).join("، ")}). مدة التشغيل محسوبة
+              بدونها، وحركات المتداولين خلالها لا تُحسب في الالتقاط ولا في الحركات المتأخرة. أما «واقعي − أساسي» فيشمل صفقات
+              نسخها «أساسي» بسعر المتداول خلال التوقف ورفضها «واقعي» لأنها وصلت متأخرة — فهو أكبر من تكلفة التأخير الفعلية.
+            </p>
+          ) : null}
         </Card>
       </div>
 
@@ -845,7 +854,7 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
             <table className="w-full min-w-[1320px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border-soft text-[11px] text-muted-dim">
-                  <Th>الوقت</Th>
+                  <Th>وقت صفقة المتداول</Th>
                   <Th>المتداول</Th>
                   <Th>العملة</Th>
                   <Th>الجهة</Th>
@@ -863,7 +872,10 @@ function Body({ d, scenario, fetchedAt, group }: { d: PortfolioPanel; scenario: 
               <tbody className="font-data whitespace-nowrap">
                 {d.recent.map((e) => (
                   <tr key={e.id} className="border-b border-border-soft/60">
-                    <td className="px-3 py-2 text-muted">{formatDateTime(e.detected_at)}</td>
+                    <td className="px-3 py-2 text-muted" title={`التُقطت ${formatDateTime(e.detected_at)}`}>
+                      {formatDateTime(e.leader_time)}
+                      {e.during_outage ? <span className="ms-2 font-sans"><Badge tone="warn">أثناء توقف البوت</Badge></span> : null}
+                    </td>
                     <td className="px-3 py-2 font-sans"><WalletBadge wallet={e.wallet} /></td>
                     <td className="px-3 py-2 text-bone">{e.coin}</td>
                     <td className="px-3 py-2"><Side side={e.side === "B" ? 1 : -1} /></td>
