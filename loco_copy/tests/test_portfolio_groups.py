@@ -116,8 +116,8 @@ async def test_dashboard_api_per_section_and_compare(tmp_path):
     app = create_app(sim.s)
     with TestClient(app, headers={"origin": ORIGIN}) as c:
         login(c)
-        trio = c.get("/api/portfolio").json()
-        mix = c.get("/api/portfolio", params={"group": "mixc", "capital": 50000}).json()
+        trio = c.get("/api/portfolio", params={"days": 365}).json()  # the fixtures are dated T0, not today
+        mix = c.get("/api/portfolio", params={"group": "mixc", "capital": 50000, "days": 365}).json()
         cmp_ = c.get("/api/portfolio/compare", params={"capital": 100000}).json()
         chart = c.get("/api/portfolio/chart", params={"wallet": "cc", "coin": "ETH", "group": "mixc"}).json()
         unknown = c.get("/api/portfolio", params={"group": "nope"}).json()
@@ -222,3 +222,26 @@ async def test_fills_made_while_the_bot_was_stopped_are_counted_apart(tmp_path):
     assert trio["stats"]["outage_events"] == len(late) == 1 and late[0]["side"] == "A"
     assert trio["stats"]["latency_p95_ms"] < 60_000  # the day-late fill is not a latency sample
     assert trio["outage_days"] > 0.9 and trio["run_days"] < trio["outage_days"]
+
+
+async def test_outage_what_if_replays_the_fills_made_while_the_bot_was_stopped(tmp_path):
+    now = [T0 - 1000]
+    sim, store = make(tmp_path, now)
+    await sim.start()
+    now[0] = T0 + 500
+    await sim.mark_once()
+    # off for a day: A opens and closes BTC meanwhile (+10 %); the restart sees both fills a day late
+    now[0] = T0 + 86_400_000
+    fills = [raw(3_600_000, "BTC", "B", 100, 1, 0, 1), raw(7_200_000, "BTC", "A", 110, 1, 1, 2)]
+    await sim.on_raw_fills(A, fills, False)
+    await sim.mark_once()
+    store.upsert_user("sami", "Sami", hash_password("correct-horse"))
+    with TestClient(create_app(sim.s), headers={"origin": ORIGIN}) as c:
+        login(c)
+        live = c.get("/api/portfolio").json()
+        what_if = c.get("/api/portfolio/outage").json()
+    assert live["ledger"]["real"]["trades"] == 0  # live: both fills came too late, nothing was copied
+    assert what_if["outage"]["days"] > 0.9 and what_if["fills"] == 2
+    t = what_if["trades"][0]
+    assert what_if["summary"]["trades"] == 1 and t["wallet"] == "aa" and t["coin"] == "BTC" and t["pnl"] > 0
+    assert what_if["summary"]["equity"] > 10_000 and what_if["positions"] == []

@@ -34,15 +34,15 @@ type IntervalKey = (typeof INTERVALS)[number]["key"];
 const BARS = 400;
 
 const C = {
-  bg: "#11141a",
-  grid: "#1f242c",
-  text: "#8b8f98",
-  up: "#22a06b",
-  down: "#e5484d",
-  leaderBuy: "#4cc38a",
-  leaderSell: "#f2777a",
-  ours: "#c9a227",
-  liq: "#e5484d",
+  bg: "rgba(0,0,0,0)", // the glass card shows through
+  grid: "rgba(255,255,255,0.05)",
+  text: "#9097ad",
+  up: "#16c784",
+  down: "#ea3943",
+  leaderBuy: "#2ee6a0",
+  leaderSell: "#ff6b74",
+  ours: "#f7931a",
+  liq: "#ea3943",
 };
 
 const KIND_AR: Record<ChartFill["kind"], string> = {
@@ -123,6 +123,8 @@ export function LiveTradeChart({
   scenario,
   group = "trio",
   leverage,
+  compact = false,
+  onClose,
 }: {
   wallet: string;
   coin: string;
@@ -130,6 +132,9 @@ export function LiveTradeChart({
   scenario: "real" | "base";
   group?: string;
   leverage?: number;
+  /** several charts side by side: shorter, and the legend under the chart is left out */
+  compact?: boolean;
+  onClose?: () => void;
 }) {
   const [interval, setInterval_] = useState<IntervalKey>("1h");
   const ms = INTERVALS.find((x) => x.key === interval)!.ms;
@@ -263,12 +268,12 @@ export function LiveTradeChart({
     const pos = data?.position;
     if (pos) {
       linesRef.current.push(
-        series.createPriceLine({ price: pos.entry, color: C.ours, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "متوسط دخولنا" }),
+        series.createPriceLine({ price: pos.entry, color: C.ours, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "" }),
       );
     }
     if (data?.liq_price) {
       linesRef.current.push(
-        series.createPriceLine({ price: data.liq_price, color: C.liq, lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: "تصفية تقريبية" }),
+        series.createPriceLine({ price: data.liq_price, color: C.liq, lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: "" }),
       );
     }
   }, [markers, data, status]);
@@ -280,7 +285,7 @@ export function LiveTradeChart({
     <div className="flex flex-col">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-soft px-4 py-2.5">
         <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 font-data text-sm">
-          <span className="text-bone">{coin}</span>
+          <span className="text-bone">{coin} <span className="text-xs text-muted-dim">· {wallet}</span></span>
           <span className="text-muted">السعر {last === null ? "—" : formatPrice(last)}</span>
           {pos ? (
             <>
@@ -294,7 +299,7 @@ export function LiveTradeChart({
             <span className="text-muted-dim">لا مركز مفتوح لنا الآن على هذه العملة</span>
           )}
         </div>
-        <div className="flex gap-1">
+        <div className="flex items-center gap-1">
           {INTERVALS.map((x) => (
             <button
               key={x.key}
@@ -313,17 +318,39 @@ export function LiveTradeChart({
               {x.label}
             </button>
           ))}
+          {onClose ? (
+            <button type="button" onClick={onClose} aria-label="إغلاق الشارت" className="ms-1 rounded-lg px-2 py-1 text-muted hover:bg-white/10 hover:text-bone">
+              ✕
+            </button>
+          ) : null}
         </div>
       </div>
-      <div className="relative h-[420px]">
+      <div className={cn("relative", compact ? "h-[340px]" : "h-[420px]")}>
         <div ref={box} className="absolute inset-0" dir="ltr" />
+        {status === "live" && (pos || data?.liq_price) ? (
+          // the lines' labels, fixed in the corner: only the lines themselves move with the price
+          <div className="glass pointer-events-none absolute left-3 top-3 z-10 flex flex-col gap-1 rounded-xl px-3 py-2 font-data text-[11px]" dir="rtl">
+            {pos ? (
+              <span className="flex items-center gap-2 text-bone">
+                <span className="inline-block w-4 border-t border-dashed" style={{ borderColor: C.ours }} />
+                متوسط دخولنا {formatPrice(pos.entry)}
+              </span>
+            ) : null}
+            {data?.liq_price ? (
+              <span className="flex items-center gap-2 text-loss-bright">
+                <span className="inline-block w-4 border-t" style={{ borderColor: C.liq }} />
+                تصفية تقريبية {formatPrice(data.liq_price)}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         {status !== "live" ? (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-muted">
             {status === "loading" ? "تحميل الشموع…" : status === "empty" ? "لا شموع لهذا السوق في هذا الإطار" : "تعذّر الوصول إلى Hyperliquid"}
           </div>
         ) : null}
       </div>
-      <div className="flex flex-wrap gap-x-5 gap-y-1 border-t border-border-soft px-4 py-2 text-xs text-muted">
+      <div className={cn("flex flex-wrap gap-x-5 gap-y-1 border-t border-border-soft px-4 py-2 text-xs text-muted", compact && "hidden")}>
         <span><span style={{ color: C.leaderBuy }}>●</span> / <span style={{ color: C.leaderSell }}>●</span> تنفيذات المتداول (شراء / بيع) — فتح، تعزيز، تقليص، إغلاق</span>
         <span><span style={{ color: C.ours }}>▲▼</span> أوامرنا في الحساب الوهمي</span>
         <span><span style={{ color: C.ours }}>- -</span> متوسط دخولنا</span>

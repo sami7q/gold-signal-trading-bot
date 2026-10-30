@@ -32,7 +32,7 @@ async def test_trio_panel_and_cap20_fields(tmp_path, cap20):
 
     c = TestClient(create_app(s), headers={"Origin": ORIGIN})
     login(c)
-    v = c.get("/api/virtual").json()
+    v = c.get("/api/virtual", params={"days": 365}).json()  # the fixtures are dated T0, not today
     assert v["name"] == "virtual" and v["account"]["start_equity"] == "10000" and len(v["curve"]) == 1
     lane = v["lanes"][0]
     assert lane["label"] == "8bae" and lane["trades"] == 1 and lane["open"] == 1 and lane["adds"] == 1

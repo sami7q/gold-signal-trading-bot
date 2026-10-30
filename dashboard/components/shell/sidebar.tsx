@@ -59,7 +59,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       className={cn(
         "fixed inset-y-0 left-0 z-50 flex h-full w-64 shrink-0 -translate-x-full flex-col",
         "border-r border-border bg-surface transition-transform duration-200 ease-out",
-        "lg:static lg:z-auto lg:w-56 lg:translate-x-0 lg:bg-surface/60",
+        "lg:static lg:z-auto lg:w-56 lg:translate-x-0 lg:bg-white/[0.03] lg:backdrop-blur-xl",
         open && "translate-x-0",
       )}
     >
@@ -94,8 +94,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               onMouseEnter={() => warm(item.href)}
               onFocus={() => warm(item.href)}
               className={cn(
-                "flex items-center gap-2.5 rounded px-2.5 py-2.5 text-sm transition-colors lg:py-2",
-                active ? "bg-gold/10 text-gold-bright" : "text-muted hover:bg-white/5 hover:text-bone",
+                "flex items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-sm transition-colors lg:py-2",
+                active ? "bg-gold/15 text-gold-bright shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]" : "text-muted hover:bg-white/5 hover:text-bone",
               )}
             >
               <Icon className="h-4 w-4" strokeWidth={1.75} />

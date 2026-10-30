@@ -1,26 +1,33 @@
 @import "tailwindcss";
 
+/* Liquid Glass on a crypto palette: Bitcoin orange (accent, still called "gold" in the class names),
+   Ethereum indigo (info), exchange green / red for profit and loss, Solana purple + green in the backdrop. */
 :root {
-  --ink: #0b0d10;
-  --surface: #14171c;
-  --surface-raised: #1b1f26;
-  --border: #262b33;
-  --border-soft: #1d2129;
+  --ink: #06070d;
+  --surface: #10121c;
+  --surface-raised: #171a28;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-soft: rgba(255, 255, 255, 0.06);
 
-  --gold: #c9a227;
-  --gold-bright: #e8c766;
-  --gold-dim: #8a7220;
+  --gold: #f7931a;
+  --gold-bright: #ffb547;
+  --gold-dim: #a8600d;
 
-  --bone: #ede7da;
-  --muted: #8b8f98;
-  --muted-dim: #5a5e66;
+  --bone: #eef0f7;
+  --muted: #9097ad;
+  --muted-dim: #5d6378;
 
-  --win: #4f9d69;
-  --win-bright: #6cc98a;
-  --loss: #c1554a;
-  --loss-bright: #e17469;
-  --warn: #d1a13a;
-  --info: #5c9ad1;
+  --win: #16c784;
+  --win-bright: #2ee6a0;
+  --loss: #ea3943;
+  --loss-bright: #ff6b74;
+  --warn: #f3ba2f;
+  --info: #8c9eff;
+
+  --btc: #f7931a;
+  --eth: #627eea;
+  --sol-purple: #9945ff;
+  --sol-green: #14f195;
 }
 
 @theme inline {
@@ -62,8 +69,28 @@ body {
   color: var(--bone);
   font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
   background-image:
-    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(201, 162, 39, 0.08), transparent);
+    radial-gradient(40rem 28rem at 8% -6%, rgba(247, 147, 26, 0.16), transparent 70%),
+    radial-gradient(36rem 30rem at 96% 8%, rgba(98, 126, 234, 0.16), transparent 70%),
+    radial-gradient(42rem 30rem at 70% 105%, rgba(153, 69, 255, 0.13), transparent 70%),
+    radial-gradient(30rem 22rem at 0% 100%, rgba(20, 241, 149, 0.07), transparent 70%);
+  background-attachment: fixed;
   background-repeat: no-repeat;
+}
+
+/* the glass panel: translucent fill, blur + saturation of what is behind, a hairline rim lit from the top */
+.glass {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(22px) saturate(165%);
+  -webkit-backdrop-filter: blur(22px) saturate(165%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.02),
+    0 10px 40px -12px rgba(0, 0, 0, 0.55);
+}
+
+.glass-strong {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.035));
 }
 
 .font-data {

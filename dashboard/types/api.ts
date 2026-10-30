@@ -734,6 +734,20 @@ export interface PortfolioPanel {
   checks?: PfCheck[];
 }
 
+/** What-if for the longest bot stop (/api/portfolio/outage): every fill since the stop through a fresh ledger. */
+export interface PfOutage {
+  enabled: boolean;
+  outage?: { start: string; end: string; days: number } | null;
+  capital?: number;
+  leverage?: number;
+  until?: string;
+  fills?: number;
+  summary?: Omit<PfLedger, "positions" | "name">;
+  positions?: PfPosition[];
+  trades?: (Omit<PfTrade, "id"> & { opened_ms: number | null; closed_ms: number })[];
+  orders?: (Omit<PfOrder, "id"> & { ts: number })[];
+}
+
 // -- botup.md §V7: the live trade chart (/api/portfolio/chart) ----------------------------------------------
 
 export interface ChartFill {

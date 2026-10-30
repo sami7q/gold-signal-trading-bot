@@ -1,7 +1,7 @@
 "use client";
 
-import { PortfolioView } from "@/components/portfolio/portfolio-view";
+import { TrioView } from "@/components/portfolio/trio-view";
 
 export default function PortfolioPage() {
-  return <PortfolioView group="trio" />;
+  return <TrioView />;
 }

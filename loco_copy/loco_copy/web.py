@@ -31,6 +31,7 @@ from loco_copy.metrics import compute, percentile
 from loco_copy.models import Copy
 from loco_copy.notify import Notifier
 from loco_copy.observe import event_slippage_bps, lane_ledger, observe_stats
+from loco_copy.pf_ledger import Ledger
 from loco_copy.risk import RiskGuard, release_everything
 from loco_copy.store import Store, lane_key, now_ms
 
@@ -818,6 +819,60 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "outages": [{"start": iso(a), "end": iso(b)} for a, b in down], "outage_days": outage_ms / DAY_MS,
             "by_wallet": by_wallet, "fills_by_wallet": fills_by_wallet, "trades": trades_out, "recent": recent,
             "checks": checks,
+        }
+
+    @app.get("/api/portfolio/outage")
+    def portfolio_outage(_user: UserDep, store: StoreDep, capital: int | None = None, group: str = "trio",
+                         leverage: int | None = None) -> dict[str, Any]:
+        """What-if for the longest bot stop: every fill the section's wallets made from the moment the bot stopped
+        until now, replayed in time order through a fresh real-scenario ledger as if the bot had never stopped
+        (the trader's own price + the real fee, today's wallet balances for sizing). Positions the traders held
+        before the stop are left alone until they close, as in the live run. Pure simulation, nothing stored."""
+        rt = store.get_state("portfolio_runtime")
+        if not rt or "capitals" not in rt:
+            return {"enabled": False}
+        groups = pf_groups(rt)
+        g = next((x for x in groups if x["name"] == group), groups[0])
+        capitals: list[int] = rt["capitals"]
+        cap = capital if capital in capitals else capitals[0]
+        lev, suffix, _levs = pf_lev(rt, leverage)
+        now = now_ms()
+        real_name = pf_ledger_name("real", cap, g["name"], suffix)
+        started = int(((rt.get("ledgers") or {}).get(real_name) or {}).get("started_ms") or g.get("started_ms") or now)
+        down = outages([ts for ts, _ in store.equity_history(f"portfolio:{real_name}", started)], started, now)
+        if not down:
+            return {"enabled": True, "outage": None}
+        ended = [x for x in down if x[1] < now] or down  # a stop still going on has nothing to replay yet
+        start, end = max(ended, key=lambda x: x[1] - x[0])  # the long stop, not a restart of a few minutes
+        st = rt.get("settings") or {}
+        base_lev = int(st.get("leverage") or 3)
+        ledger = Ledger(f"outage:{real_name}", start_equity=float(cap), leverage=lev,
+                        fee=float(st.get("fee_real", 0.00095)),
+                        cap_pct=float(st.get("cap_pct", 20.0)), min_order=float(st.get("min_order", 10.0)),
+                        max_total_x=float(st.get("max_total_x", 6.0)) * lev / base_lev,
+                        dd_pause_pct=float(st.get("dd_pause_pct") or 0) or None,
+                        dd_pause_days=float(st.get("dd_pause_days", 7.0)), started_ms=start)
+        wallets = {w["label"]: w for w in rt.get("wallets") or [] if w["label"] in g["labels"]}
+        fills = sorted((e for e in store.pf_events_since(start) if e["wallet"] in wallets
+                        and e["leader_time_ms"] >= start), key=lambda e: (e["leader_time_ms"], e["id"]))
+        seen: set[tuple[str, int]] = set()
+        n = 0
+        for e in fills:
+            if (e["wallet"], e["tid"]) in seen:
+                continue
+            seen.add((e["wallet"], e["tid"]))
+            w = wallets[e["wallet"]]
+            d = e["sz"] if e["side"] == "B" else -e["sz"]
+            ledger.on_fill(e["wallet"], float(w["weight"]), e["coin"], e["start_pos"], d, e["px"], e["leader_time_ms"],
+                           float(w.get("equity") or 0))
+            n += 1
+        return {
+            "enabled": True, "capital": cap, "leverage": lev, "group": g["name"],
+            "outage": {"start": iso(start), "end": iso(end), "days": (end - start) / DAY_MS},
+            "until": iso(now), "fills": n, "summary": ledger.summary(now), "positions": ledger.positions(),
+            "trades": [{**t, "opened": iso(t.get("opened_ms")), "closed": iso(t.get("closed_ms"))}
+                       for t in reversed(ledger.closed)],
+            "orders": [{**o, "time": iso(o["ts"])} for o in reversed(ledger.orders)][:300],
         }
 
     @app.get("/api/portfolio/chart")

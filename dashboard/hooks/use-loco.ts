@@ -13,6 +13,7 @@ import type {
   LocoPositions,
   PortfolioCompare,
   PortfolioPanel,
+  PfOutage,
   ResearchData,
   AdviceAlert,
   AdviceData,
@@ -127,6 +128,24 @@ export function usePortfolio(days = 28, capital?: number, group = "trio", levera
     ...portfolioOptions(days, capital, group, leverage),
     refetchInterval: livePoll(15_000),
     placeholderData: keepPreviousData, // switching balance / period keeps the page on screen while it loads
+  });
+}
+
+/** The trades the section would have made while the bot was stopped (replayed on the server, nothing stored). */
+export function useOutageSim(capital?: number, group = "trio", leverage?: number) {
+  return useQuery({
+    queryKey: ["portfolio-outage", group, capital ?? null, leverage ?? null],
+    queryFn: async () => {
+      const qs = new URLSearchParams({ group, ...(capital ? { capital: String(capital) } : {}), ...(leverage ? { leverage: String(leverage) } : {}) });
+      try {
+        return await api.get<PfOutage>(`/api/portfolio/outage?${qs}`);
+      } catch (e) {
+        if (isNotFound(e)) return { enabled: false } as PfOutage; // a server older than this page
+        throw e;
+      }
+    },
+    refetchInterval: livePoll(60_000),
+    placeholderData: keepPreviousData,
   });
 }
 
